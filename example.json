@@ -1,0 +1,354 @@
+{
+  "summary": {
+    "num_rows": 10,
+    "num_row_groups": 1,
+    "num_columns": 2,
+    "num_pages": 2,
+    "num_data_pages": 2,
+    "num_v1_data_pages": 2,
+    "num_v2_data_pages": 0,
+    "num_dict_pages": 0,
+    "page_header_size": 47,
+    "uncompressed_page_data_size": 130,
+    "compressed_page_data_size": 96,
+    "uncompressed_page_size": 177,
+    "compressed_page_size": 143,
+    "column_index_size": 48,
+    "offset_index_size": 23,
+    "bloom_fitler_size": 0,
+    "footer_size": 527,
+    "file_size": 753
+  },
+  "footer": {
+    "version": 1,
+    "schema": [
+      {
+        "name": "spark_schema",
+        "num_children": 2
+      },
+      {
+        "type": "INT64",
+        "repetition_type": "REQUIRED",
+        "name": "id"
+      },
+      {
+        "type": "BYTE_ARRAY",
+        "repetition_type": "REQUIRED",
+        "name": "x",
+        "converted_type": "UTF8",
+        "logicalType": {
+          "STRING": {}
+        }
+      }
+    ],
+    "num_rows": 10,
+    "row_groups": [
+      {
+        "columns": [
+          {
+            "file_offset": 4,
+            "meta_data": {
+              "type": "INT64",
+              "encodings": [
+                "BIT_PACKED",
+                "PLAIN"
+              ],
+              "path_in_schema": [
+                "id"
+              ],
+              "codec": "SNAPPY",
+              "num_values": 10,
+              "total_uncompressed_size": 104,
+              "total_compressed_size": 74,
+              "data_page_offset": 4,
+              "statistics": {
+                "max": {
+                  "type": "binary",
+                  "length": 8,
+                  "value": [
+                    9,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "min": {
+                  "type": "binary",
+                  "length": 8,
+                  "value": [
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "null_count": 0,
+                "max_value": {
+                  "type": "binary",
+                  "length": 8,
+                  "value": [
+                    9,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                },
+                "min_value": {
+                  "type": "binary",
+                  "length": 8,
+                  "value": [
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0,
+                    0
+                  ]
+                }
+              },
+              "encoding_stats": [
+                {
+                  "page_type": "DATA_PAGE",
+                  "encoding": "PLAIN",
+                  "count": 1
+                }
+              ]
+            },
+            "offset_index_offset": 195,
+            "offset_index_length": 11,
+            "column_index_offset": 147,
+            "column_index_length": 31
+          },
+          {
+            "file_offset": 78,
+            "meta_data": {
+              "type": "BYTE_ARRAY",
+              "encodings": [
+                "BIT_PACKED",
+                "PLAIN"
+              ],
+              "path_in_schema": [
+                "x"
+              ],
+              "codec": "SNAPPY",
+              "num_values": 10,
+              "total_uncompressed_size": 73,
+              "total_compressed_size": 69,
+              "data_page_offset": 78,
+              "statistics": {
+                "null_count": 0,
+                "max_value": {
+                  "type": "binary",
+                  "length": 1,
+                  "value": [
+                    57
+                  ]
+                },
+                "min_value": {
+                  "type": "binary",
+                  "length": 1,
+                  "value": [
+                    48
+                  ]
+                }
+              },
+              "encoding_stats": [
+                {
+                  "page_type": "DATA_PAGE",
+                  "encoding": "PLAIN",
+                  "count": 1
+                }
+              ]
+            },
+            "offset_index_offset": 206,
+            "offset_index_length": 12,
+            "column_index_offset": 178,
+            "column_index_length": 17
+          }
+        ],
+        "total_byte_size": 177,
+        "num_rows": 10,
+        "file_offset": 4,
+        "total_compressed_size": 143,
+        "ordinal": 0
+      }
+    ],
+    "key_value_metadata": [
+      {
+        "key": "org.apache.spark.version",
+        "value": "3.5.5"
+      },
+      {
+        "key": "org.apache.spark.sql.parquet.row.metadata",
+        "value": "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":false,\"metadata\":{}},{\"name\":\"x\",\"type\":\"string\",\"nullable\":false,\"metadata\":{}}]}"
+      }
+    ],
+    "created_by": "parquet-mr version 1.13.1 (build db4183109d5b734ec5930d870cdae161e408ddba)",
+    "column_orders": [
+      {
+        "TYPE_ORDER": {}
+      },
+      {
+        "TYPE_ORDER": {}
+      }
+    ]
+  },
+  "pages": [
+    {
+      "$index": 0,
+      "column": [
+        "id"
+      ],
+      "row_groups": [
+        {
+          "$index": 0,
+          "data_pages": [
+            {
+              "$offset": 4,
+              "type": "DATA_PAGE",
+              "uncompressed_page_size": 80,
+              "compressed_page_size": 50,
+              "crc": 2131223702,
+              "data_page_header": {
+                "num_values": 10,
+                "encoding": "PLAIN",
+                "definition_level_encoding": "BIT_PACKED",
+                "repetition_level_encoding": "BIT_PACKED"
+              }
+            }
+          ],
+          "column_index": {
+            "$offset": 147,
+            "null_pages": [
+              false
+            ],
+            "min_values": [
+              {
+                "type": "binary",
+                "length": 8,
+                "value": [
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            ],
+            "max_values": [
+              {
+                "type": "binary",
+                "length": 8,
+                "value": [
+                  9,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0,
+                  0
+                ]
+              }
+            ],
+            "boundary_order": "ASCENDING",
+            "null_counts": [
+              0
+            ]
+          },
+          "offset_index": {
+            "$offset": 195,
+            "page_locations": [
+              {
+                "offset": 4,
+                "compressed_page_size": 74,
+                "first_row_index": 0
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "$index": 1,
+      "column": [
+        "x"
+      ],
+      "row_groups": [
+        {
+          "$index": 0,
+          "data_pages": [
+            {
+              "$offset": 78,
+              "type": "DATA_PAGE",
+              "uncompressed_page_size": 50,
+              "compressed_page_size": 46,
+              "crc": -1809926333,
+              "data_page_header": {
+                "num_values": 10,
+                "encoding": "PLAIN",
+                "definition_level_encoding": "BIT_PACKED",
+                "repetition_level_encoding": "BIT_PACKED"
+              }
+            }
+          ],
+          "column_index": {
+            "$offset": 178,
+            "null_pages": [
+              false
+            ],
+            "min_values": [
+              {
+                "type": "binary",
+                "length": 1,
+                "value": [
+                  48
+                ]
+              }
+            ],
+            "max_values": [
+              {
+                "type": "binary",
+                "length": 1,
+                "value": [
+                  57
+                ]
+              }
+            ],
+            "boundary_order": "ASCENDING",
+            "null_counts": [
+              0
+            ]
+          },
+          "offset_index": {
+            "$offset": 206,
+            "page_locations": [
+              {
+                "offset": 78,
+                "compressed_page_size": 69,
+                "first_row_index": 0
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

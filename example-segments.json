@@ -1,0 +1,1481 @@
+[
+  {
+    "offset": 0,
+    "length": 4,
+    "name": "magic_number",
+    "value": "PAR1"
+  },
+  {
+    "offset": 4,
+    "length": 24,
+    "name": "page",
+    "value": [
+      {
+        "offset": 5,
+        "length": 1,
+        "name": "type",
+        "value": 0,
+        "metadata": {
+          "type": "i32",
+          "enum_type": "PageType",
+          "enum_name": "DATA_PAGE"
+        }
+      },
+      {
+        "offset": 7,
+        "length": 2,
+        "name": "uncompressed_page_size",
+        "value": 80,
+        "metadata": {
+          "type": "i32"
+        }
+      },
+      {
+        "offset": 10,
+        "length": 1,
+        "name": "compressed_page_size",
+        "value": 50,
+        "metadata": {
+          "type": "i32"
+        }
+      },
+      {
+        "offset": 12,
+        "length": 5,
+        "name": "crc",
+        "value": 2131223702,
+        "metadata": {
+          "type": "i32"
+        }
+      },
+      {
+        "offset": 18,
+        "length": 9,
+        "name": "data_page_header",
+        "value": [
+          {
+            "offset": 19,
+            "length": 1,
+            "name": "num_values",
+            "value": 10,
+            "metadata": {
+              "type": "i32"
+            }
+          },
+          {
+            "offset": 21,
+            "length": 1,
+            "name": "encoding",
+            "value": 0,
+            "metadata": {
+              "type": "i32",
+              "enum_type": "Encoding",
+              "enum_name": "PLAIN"
+            }
+          },
+          {
+            "offset": 23,
+            "length": 1,
+            "name": "definition_level_encoding",
+            "value": 4,
+            "metadata": {
+              "type": "i32",
+              "enum_type": "Encoding",
+              "enum_name": "BIT_PACKED"
+            }
+          },
+          {
+            "offset": 25,
+            "length": 1,
+            "name": "repetition_level_encoding",
+            "value": 4,
+            "metadata": {
+              "type": "i32",
+              "enum_type": "Encoding",
+              "enum_name": "BIT_PACKED"
+            }
+          }
+        ],
+        "metadata": {
+          "type": "struct",
+          "type_class": "DataPageHeader"
+        }
+      }
+    ],
+    "metadata": {
+      "type": "struct",
+      "type_class": "PageHeader"
+    }
+  },
+  {
+    "offset": 28,
+    "length": 50,
+    "name": "page_data",
+    "value": null
+  },
+  {
+    "offset": 78,
+    "length": 23,
+    "name": "page",
+    "value": [
+      {
+        "offset": 79,
+        "length": 1,
+        "name": "type",
+        "value": 0,
+        "metadata": {
+          "type": "i32",
+          "enum_type": "PageType",
+          "enum_name": "DATA_PAGE"
+        }
+      },
+      {
+        "offset": 81,
+        "length": 1,
+        "name": "uncompressed_page_size",
+        "value": 50,
+        "metadata": {
+          "type": "i32"
+        }
+      },
+      {
+        "offset": 83,
+        "length": 1,
+        "name": "compressed_page_size",
+        "value": 46,
+        "metadata": {
+          "type": "i32"
+        }
+      },
+      {
+        "offset": 85,
+        "length": 5,
+        "name": "crc",
+        "value": -1809926333,
+        "metadata": {
+          "type": "i32"
+        }
+      },
+      {
+        "offset": 91,
+        "length": 9,
+        "name": "data_page_header",
+        "value": [
+          {
+            "offset": 92,
+            "length": 1,
+            "name": "num_values",
+            "value": 10,
+            "metadata": {
+              "type": "i32"
+            }
+          },
+          {
+            "offset": 94,
+            "length": 1,
+            "name": "encoding",
+            "value": 0,
+            "metadata": {
+              "type": "i32",
+              "enum_type": "Encoding",
+              "enum_name": "PLAIN"
+            }
+          },
+          {
+            "offset": 96,
+            "length": 1,
+            "name": "definition_level_encoding",
+            "value": 4,
+            "metadata": {
+              "type": "i32",
+              "enum_type": "Encoding",
+              "enum_name": "BIT_PACKED"
+            }
+          },
+          {
+            "offset": 98,
+            "length": 1,
+            "name": "repetition_level_encoding",
+            "value": 4,
+            "metadata": {
+              "type": "i32",
+              "enum_type": "Encoding",
+              "enum_name": "BIT_PACKED"
+            }
+          }
+        ],
+        "metadata": {
+          "type": "struct",
+          "type_class": "DataPageHeader"
+        }
+      }
+    ],
+    "metadata": {
+      "type": "struct",
+      "type_class": "PageHeader"
+    }
+  },
+  {
+    "offset": 101,
+    "length": 46,
+    "name": "page_data",
+    "value": null
+  },
+  {
+    "offset": 147,
+    "length": 31,
+    "name": "column_index",
+    "value": [
+      {
+        "offset": 148,
+        "length": 2,
+        "name": "null_pages",
+        "value": [
+          false
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      },
+      {
+        "offset": 151,
+        "length": 10,
+        "name": "min_values",
+        "value": [
+          {
+            "type": "binary",
+            "length": 8,
+            "value": [
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      },
+      {
+        "offset": 162,
+        "length": 10,
+        "name": "max_values",
+        "value": [
+          {
+            "type": "binary",
+            "length": 8,
+            "value": [
+              9,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0
+            ]
+          }
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      },
+      {
+        "offset": 173,
+        "length": 1,
+        "name": "boundary_order",
+        "value": 1,
+        "metadata": {
+          "type": "i32",
+          "enum_type": "BoundaryOrder",
+          "enum_name": "ASCENDING"
+        }
+      },
+      {
+        "offset": 175,
+        "length": 2,
+        "name": "null_counts",
+        "value": [
+          0
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      }
+    ],
+    "metadata": {
+      "type": "struct",
+      "type_class": "ColumnIndex"
+    }
+  },
+  {
+    "offset": 178,
+    "length": 17,
+    "name": "column_index",
+    "value": [
+      {
+        "offset": 179,
+        "length": 2,
+        "name": "null_pages",
+        "value": [
+          false
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      },
+      {
+        "offset": 182,
+        "length": 3,
+        "name": "min_values",
+        "value": [
+          {
+            "type": "binary",
+            "length": 1,
+            "value": [
+              48
+            ]
+          }
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      },
+      {
+        "offset": 186,
+        "length": 3,
+        "name": "max_values",
+        "value": [
+          {
+            "type": "binary",
+            "length": 1,
+            "value": [
+              57
+            ]
+          }
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      },
+      {
+        "offset": 190,
+        "length": 1,
+        "name": "boundary_order",
+        "value": 1,
+        "metadata": {
+          "type": "i32",
+          "enum_type": "BoundaryOrder",
+          "enum_name": "ASCENDING"
+        }
+      },
+      {
+        "offset": 192,
+        "length": 2,
+        "name": "null_counts",
+        "value": [
+          0
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      }
+    ],
+    "metadata": {
+      "type": "struct",
+      "type_class": "ColumnIndex"
+    }
+  },
+  {
+    "offset": 195,
+    "length": 11,
+    "name": "offset_index",
+    "value": [
+      {
+        "offset": 196,
+        "length": 9,
+        "name": "page_locations",
+        "value": [
+          {
+            "offset": 197,
+            "length": 8,
+            "name": "element",
+            "value": [
+              {
+                "offset": 198,
+                "length": 1,
+                "name": "offset",
+                "value": 4,
+                "metadata": {
+                  "type": "i64"
+                }
+              },
+              {
+                "offset": 200,
+                "length": 2,
+                "name": "compressed_page_size",
+                "value": 74,
+                "metadata": {
+                  "type": "i32"
+                }
+              },
+              {
+                "offset": 203,
+                "length": 1,
+                "name": "first_row_index",
+                "value": 0,
+                "metadata": {
+                  "type": "i64"
+                }
+              }
+            ],
+            "metadata": {
+              "type": "struct",
+              "type_class": "PageLocation"
+            }
+          }
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      }
+    ],
+    "metadata": {
+      "type": "struct",
+      "type_class": "OffsetIndex"
+    }
+  },
+  {
+    "offset": 206,
+    "length": 12,
+    "name": "offset_index",
+    "value": [
+      {
+        "offset": 207,
+        "length": 10,
+        "name": "page_locations",
+        "value": [
+          {
+            "offset": 208,
+            "length": 9,
+            "name": "element",
+            "value": [
+              {
+                "offset": 209,
+                "length": 2,
+                "name": "offset",
+                "value": 78,
+                "metadata": {
+                  "type": "i64"
+                }
+              },
+              {
+                "offset": 212,
+                "length": 2,
+                "name": "compressed_page_size",
+                "value": 69,
+                "metadata": {
+                  "type": "i32"
+                }
+              },
+              {
+                "offset": 215,
+                "length": 1,
+                "name": "first_row_index",
+                "value": 0,
+                "metadata": {
+                  "type": "i64"
+                }
+              }
+            ],
+            "metadata": {
+              "type": "struct",
+              "type_class": "PageLocation"
+            }
+          }
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      }
+    ],
+    "metadata": {
+      "type": "struct",
+      "type_class": "OffsetIndex"
+    }
+  },
+  {
+    "offset": 218,
+    "length": 527,
+    "name": "footer",
+    "value": [
+      {
+        "offset": 219,
+        "length": 1,
+        "name": "version",
+        "value": 1,
+        "metadata": {
+          "type": "i32"
+        }
+      },
+      {
+        "offset": 221,
+        "length": 41,
+        "name": "schema",
+        "value": [
+          {
+            "offset": 222,
+            "length": 17,
+            "name": "element",
+            "value": [
+              {
+                "offset": 223,
+                "length": 13,
+                "name": "name",
+                "value": "spark_schema",
+                "metadata": {
+                  "type": "string"
+                }
+              },
+              {
+                "offset": 237,
+                "length": 1,
+                "name": "num_children",
+                "value": 2,
+                "metadata": {
+                  "type": "i32"
+                }
+              }
+            ],
+            "metadata": {
+              "type": "struct",
+              "type_class": "SchemaElement"
+            }
+          },
+          {
+            "offset": 239,
+            "length": 9,
+            "name": "element",
+            "value": [
+              {
+                "offset": 240,
+                "length": 1,
+                "name": "type",
+                "value": 2,
+                "metadata": {
+                  "type": "i32",
+                  "enum_type": "Type",
+                  "enum_name": "INT64"
+                }
+              },
+              {
+                "offset": 242,
+                "length": 1,
+                "name": "repetition_type",
+                "value": 0,
+                "metadata": {
+                  "type": "i32",
+                  "enum_type": "FieldRepetitionType",
+                  "enum_name": "REQUIRED"
+                }
+              },
+              {
+                "offset": 244,
+                "length": 3,
+                "name": "name",
+                "value": "id",
+                "metadata": {
+                  "type": "string"
+                }
+              }
+            ],
+            "metadata": {
+              "type": "struct",
+              "type_class": "SchemaElement"
+            }
+          },
+          {
+            "offset": 248,
+            "length": 14,
+            "name": "element",
+            "value": [
+              {
+                "offset": 249,
+                "length": 1,
+                "name": "type",
+                "value": 6,
+                "metadata": {
+                  "type": "i32",
+                  "enum_type": "Type",
+                  "enum_name": "BYTE_ARRAY"
+                }
+              },
+              {
+                "offset": 251,
+                "length": 1,
+                "name": "repetition_type",
+                "value": 0,
+                "metadata": {
+                  "type": "i32",
+                  "enum_type": "FieldRepetitionType",
+                  "enum_name": "REQUIRED"
+                }
+              },
+              {
+                "offset": 253,
+                "length": 2,
+                "name": "name",
+                "value": "x",
+                "metadata": {
+                  "type": "string"
+                }
+              },
+              {
+                "offset": 256,
+                "length": 1,
+                "name": "converted_type",
+                "value": 0,
+                "metadata": {
+                  "type": "i32",
+                  "enum_type": "ConvertedType",
+                  "enum_name": "UTF8"
+                }
+              },
+              {
+                "offset": 258,
+                "length": 3,
+                "name": "logicalType",
+                "value": [
+                  {
+                    "offset": 259,
+                    "length": 1,
+                    "name": "STRING",
+                    "value": [],
+                    "metadata": {
+                      "type": "struct",
+                      "type_class": "StringType"
+                    }
+                  }
+                ],
+                "metadata": {
+                  "type": "struct",
+                  "type_class": "LogicalType"
+                }
+              }
+            ],
+            "metadata": {
+              "type": "struct",
+              "type_class": "SchemaElement"
+            }
+          }
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      },
+      {
+        "offset": 263,
+        "length": 1,
+        "name": "num_rows",
+        "value": 10,
+        "metadata": {
+          "type": "i64"
+        }
+      },
+      {
+        "offset": 265,
+        "length": 165,
+        "name": "row_groups",
+        "value": [
+          {
+            "offset": 266,
+            "length": 164,
+            "name": "element",
+            "value": [
+              {
+                "offset": 267,
+                "length": 150,
+                "name": "columns",
+                "value": [
+                  {
+                    "offset": 268,
+                    "length": 91,
+                    "name": "element",
+                    "value": [
+                      {
+                        "offset": 269,
+                        "length": 1,
+                        "name": "file_offset",
+                        "value": 4,
+                        "metadata": {
+                          "type": "i64"
+                        }
+                      },
+                      {
+                        "offset": 271,
+                        "length": 77,
+                        "name": "meta_data",
+                        "value": [
+                          {
+                            "offset": 272,
+                            "length": 1,
+                            "name": "type",
+                            "value": 2,
+                            "metadata": {
+                              "type": "i32",
+                              "enum_type": "Type",
+                              "enum_name": "INT64"
+                            }
+                          },
+                          {
+                            "offset": 274,
+                            "length": 3,
+                            "name": "encodings",
+                            "value": [
+                              4,
+                              0
+                            ],
+                            "metadata": {
+                              "type": "list",
+                              "enum_type": "Encoding",
+                              "enum_name": [
+                                "BIT_PACKED",
+                                "PLAIN"
+                              ]
+                            }
+                          },
+                          {
+                            "offset": 278,
+                            "length": 4,
+                            "name": "path_in_schema",
+                            "value": [
+                              "id"
+                            ],
+                            "metadata": {
+                              "type": "list"
+                            }
+                          },
+                          {
+                            "offset": 283,
+                            "length": 1,
+                            "name": "codec",
+                            "value": 1,
+                            "metadata": {
+                              "type": "i32",
+                              "enum_type": "CompressionCodec",
+                              "enum_name": "SNAPPY"
+                            }
+                          },
+                          {
+                            "offset": 285,
+                            "length": 1,
+                            "name": "num_values",
+                            "value": 10,
+                            "metadata": {
+                              "type": "i64"
+                            }
+                          },
+                          {
+                            "offset": 287,
+                            "length": 2,
+                            "name": "total_uncompressed_size",
+                            "value": 104,
+                            "metadata": {
+                              "type": "i64"
+                            }
+                          },
+                          {
+                            "offset": 290,
+                            "length": 2,
+                            "name": "total_compressed_size",
+                            "value": 74,
+                            "metadata": {
+                              "type": "i64"
+                            }
+                          },
+                          {
+                            "offset": 293,
+                            "length": 1,
+                            "name": "data_page_offset",
+                            "value": 4,
+                            "metadata": {
+                              "type": "i64"
+                            }
+                          },
+                          {
+                            "offset": 295,
+                            "length": 43,
+                            "name": "statistics",
+                            "value": [
+                              {
+                                "offset": 296,
+                                "length": 9,
+                                "name": "max",
+                                "value": {
+                                  "type": "binary",
+                                  "length": 8,
+                                  "value": [
+                                    9,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                  ]
+                                },
+                                "metadata": {
+                                  "type": "string"
+                                }
+                              },
+                              {
+                                "offset": 306,
+                                "length": 9,
+                                "name": "min",
+                                "value": {
+                                  "type": "binary",
+                                  "length": 8,
+                                  "value": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                  ]
+                                },
+                                "metadata": {
+                                  "type": "string"
+                                }
+                              },
+                              {
+                                "offset": 316,
+                                "length": 1,
+                                "name": "null_count",
+                                "value": 0,
+                                "metadata": {
+                                  "type": "i64"
+                                }
+                              },
+                              {
+                                "offset": 318,
+                                "length": 9,
+                                "name": "max_value",
+                                "value": {
+                                  "type": "binary",
+                                  "length": 8,
+                                  "value": [
+                                    9,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                  ]
+                                },
+                                "metadata": {
+                                  "type": "string"
+                                }
+                              },
+                              {
+                                "offset": 328,
+                                "length": 9,
+                                "name": "min_value",
+                                "value": {
+                                  "type": "binary",
+                                  "length": 8,
+                                  "value": [
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0,
+                                    0
+                                  ]
+                                },
+                                "metadata": {
+                                  "type": "string"
+                                }
+                              }
+                            ],
+                            "metadata": {
+                              "type": "struct",
+                              "type_class": "Statistics"
+                            }
+                          },
+                          {
+                            "offset": 339,
+                            "length": 8,
+                            "name": "encoding_stats",
+                            "value": [
+                              {
+                                "offset": 340,
+                                "length": 7,
+                                "name": "element",
+                                "value": [
+                                  {
+                                    "offset": 341,
+                                    "length": 1,
+                                    "name": "page_type",
+                                    "value": 0,
+                                    "metadata": {
+                                      "type": "i32",
+                                      "enum_type": "PageType",
+                                      "enum_name": "DATA_PAGE"
+                                    }
+                                  },
+                                  {
+                                    "offset": 343,
+                                    "length": 1,
+                                    "name": "encoding",
+                                    "value": 0,
+                                    "metadata": {
+                                      "type": "i32",
+                                      "enum_type": "Encoding",
+                                      "enum_name": "PLAIN"
+                                    }
+                                  },
+                                  {
+                                    "offset": 345,
+                                    "length": 1,
+                                    "name": "count",
+                                    "value": 1,
+                                    "metadata": {
+                                      "type": "i32"
+                                    }
+                                  }
+                                ],
+                                "metadata": {
+                                  "type": "struct",
+                                  "type_class": "PageEncodingStats"
+                                }
+                              }
+                            ],
+                            "metadata": {
+                              "type": "list"
+                            }
+                          }
+                        ],
+                        "metadata": {
+                          "type": "struct",
+                          "type_class": "ColumnMetaData"
+                        }
+                      },
+                      {
+                        "offset": 349,
+                        "length": 2,
+                        "name": "offset_index_offset",
+                        "value": 195,
+                        "metadata": {
+                          "type": "i64"
+                        }
+                      },
+                      {
+                        "offset": 352,
+                        "length": 1,
+                        "name": "offset_index_length",
+                        "value": 11,
+                        "metadata": {
+                          "type": "i32"
+                        }
+                      },
+                      {
+                        "offset": 354,
+                        "length": 2,
+                        "name": "column_index_offset",
+                        "value": 147,
+                        "metadata": {
+                          "type": "i64"
+                        }
+                      },
+                      {
+                        "offset": 357,
+                        "length": 1,
+                        "name": "column_index_length",
+                        "value": 31,
+                        "metadata": {
+                          "type": "i32"
+                        }
+                      }
+                    ],
+                    "metadata": {
+                      "type": "struct",
+                      "type_class": "ColumnChunk"
+                    }
+                  },
+                  {
+                    "offset": 359,
+                    "length": 58,
+                    "name": "element",
+                    "value": [
+                      {
+                        "offset": 360,
+                        "length": 2,
+                        "name": "file_offset",
+                        "value": 78,
+                        "metadata": {
+                          "type": "i64"
+                        }
+                      },
+                      {
+                        "offset": 363,
+                        "length": 43,
+                        "name": "meta_data",
+                        "value": [
+                          {
+                            "offset": 364,
+                            "length": 1,
+                            "name": "type",
+                            "value": 6,
+                            "metadata": {
+                              "type": "i32",
+                              "enum_type": "Type",
+                              "enum_name": "BYTE_ARRAY"
+                            }
+                          },
+                          {
+                            "offset": 366,
+                            "length": 3,
+                            "name": "encodings",
+                            "value": [
+                              4,
+                              0
+                            ],
+                            "metadata": {
+                              "type": "list",
+                              "enum_type": "Encoding",
+                              "enum_name": [
+                                "BIT_PACKED",
+                                "PLAIN"
+                              ]
+                            }
+                          },
+                          {
+                            "offset": 370,
+                            "length": 3,
+                            "name": "path_in_schema",
+                            "value": [
+                              "x"
+                            ],
+                            "metadata": {
+                              "type": "list"
+                            }
+                          },
+                          {
+                            "offset": 374,
+                            "length": 1,
+                            "name": "codec",
+                            "value": 1,
+                            "metadata": {
+                              "type": "i32",
+                              "enum_type": "CompressionCodec",
+                              "enum_name": "SNAPPY"
+                            }
+                          },
+                          {
+                            "offset": 376,
+                            "length": 1,
+                            "name": "num_values",
+                            "value": 10,
+                            "metadata": {
+                              "type": "i64"
+                            }
+                          },
+                          {
+                            "offset": 378,
+                            "length": 2,
+                            "name": "total_uncompressed_size",
+                            "value": 73,
+                            "metadata": {
+                              "type": "i64"
+                            }
+                          },
+                          {
+                            "offset": 381,
+                            "length": 2,
+                            "name": "total_compressed_size",
+                            "value": 69,
+                            "metadata": {
+                              "type": "i64"
+                            }
+                          },
+                          {
+                            "offset": 384,
+                            "length": 2,
+                            "name": "data_page_offset",
+                            "value": 78,
+                            "metadata": {
+                              "type": "i64"
+                            }
+                          },
+                          {
+                            "offset": 387,
+                            "length": 9,
+                            "name": "statistics",
+                            "value": [
+                              {
+                                "offset": 388,
+                                "length": 1,
+                                "name": "null_count",
+                                "value": 0,
+                                "metadata": {
+                                  "type": "i64"
+                                }
+                              },
+                              {
+                                "offset": 390,
+                                "length": 2,
+                                "name": "max_value",
+                                "value": {
+                                  "type": "binary",
+                                  "length": 1,
+                                  "value": [
+                                    57
+                                  ]
+                                },
+                                "metadata": {
+                                  "type": "string"
+                                }
+                              },
+                              {
+                                "offset": 393,
+                                "length": 2,
+                                "name": "min_value",
+                                "value": {
+                                  "type": "binary",
+                                  "length": 1,
+                                  "value": [
+                                    48
+                                  ]
+                                },
+                                "metadata": {
+                                  "type": "string"
+                                }
+                              }
+                            ],
+                            "metadata": {
+                              "type": "struct",
+                              "type_class": "Statistics"
+                            }
+                          },
+                          {
+                            "offset": 397,
+                            "length": 8,
+                            "name": "encoding_stats",
+                            "value": [
+                              {
+                                "offset": 398,
+                                "length": 7,
+                                "name": "element",
+                                "value": [
+                                  {
+                                    "offset": 399,
+                                    "length": 1,
+                                    "name": "page_type",
+                                    "value": 0,
+                                    "metadata": {
+                                      "type": "i32",
+                                      "enum_type": "PageType",
+                                      "enum_name": "DATA_PAGE"
+                                    }
+                                  },
+                                  {
+                                    "offset": 401,
+                                    "length": 1,
+                                    "name": "encoding",
+                                    "value": 0,
+                                    "metadata": {
+                                      "type": "i32",
+                                      "enum_type": "Encoding",
+                                      "enum_name": "PLAIN"
+                                    }
+                                  },
+                                  {
+                                    "offset": 403,
+                                    "length": 1,
+                                    "name": "count",
+                                    "value": 1,
+                                    "metadata": {
+                                      "type": "i32"
+                                    }
+                                  }
+                                ],
+                                "metadata": {
+                                  "type": "struct",
+                                  "type_class": "PageEncodingStats"
+                                }
+                              }
+                            ],
+                            "metadata": {
+                              "type": "list"
+                            }
+                          }
+                        ],
+                        "metadata": {
+                          "type": "struct",
+                          "type_class": "ColumnMetaData"
+                        }
+                      },
+                      {
+                        "offset": 407,
+                        "length": 2,
+                        "name": "offset_index_offset",
+                        "value": 206,
+                        "metadata": {
+                          "type": "i64"
+                        }
+                      },
+                      {
+                        "offset": 410,
+                        "length": 1,
+                        "name": "offset_index_length",
+                        "value": 12,
+                        "metadata": {
+                          "type": "i32"
+                        }
+                      },
+                      {
+                        "offset": 412,
+                        "length": 2,
+                        "name": "column_index_offset",
+                        "value": 178,
+                        "metadata": {
+                          "type": "i64"
+                        }
+                      },
+                      {
+                        "offset": 415,
+                        "length": 1,
+                        "name": "column_index_length",
+                        "value": 17,
+                        "metadata": {
+                          "type": "i32"
+                        }
+                      }
+                    ],
+                    "metadata": {
+                      "type": "struct",
+                      "type_class": "ColumnChunk"
+                    }
+                  }
+                ],
+                "metadata": {
+                  "type": "list"
+                }
+              },
+              {
+                "offset": 418,
+                "length": 2,
+                "name": "total_byte_size",
+                "value": 177,
+                "metadata": {
+                  "type": "i64"
+                }
+              },
+              {
+                "offset": 421,
+                "length": 1,
+                "name": "num_rows",
+                "value": 10,
+                "metadata": {
+                  "type": "i64"
+                }
+              },
+              {
+                "offset": 423,
+                "length": 1,
+                "name": "file_offset",
+                "value": 4,
+                "metadata": {
+                  "type": "i64"
+                }
+              },
+              {
+                "offset": 425,
+                "length": 2,
+                "name": "total_compressed_size",
+                "value": 143,
+                "metadata": {
+                  "type": "i64"
+                }
+              },
+              {
+                "offset": 428,
+                "length": 1,
+                "name": "ordinal",
+                "value": 0,
+                "metadata": {
+                  "type": "i16"
+                }
+              }
+            ],
+            "metadata": {
+              "type": "struct",
+              "type_class": "RowGroup"
+            }
+          }
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      },
+      {
+        "offset": 431,
+        "length": 229,
+        "name": "key_value_metadata",
+        "value": [
+          {
+            "offset": 432,
+            "length": 34,
+            "name": "element",
+            "value": [
+              {
+                "offset": 433,
+                "length": 25,
+                "name": "key",
+                "value": "org.apache.spark.version",
+                "metadata": {
+                  "type": "string"
+                }
+              },
+              {
+                "offset": 459,
+                "length": 6,
+                "name": "value",
+                "value": "3.5.5",
+                "metadata": {
+                  "type": "string"
+                }
+              }
+            ],
+            "metadata": {
+              "type": "struct",
+              "type_class": "KeyValue"
+            }
+          },
+          {
+            "offset": 466,
+            "length": 194,
+            "name": "element",
+            "value": [
+              {
+                "offset": 467,
+                "length": 42,
+                "name": "key",
+                "value": "org.apache.spark.sql.parquet.row.metadata",
+                "metadata": {
+                  "type": "string"
+                }
+              },
+              {
+                "offset": 510,
+                "length": 149,
+                "name": "value",
+                "value": "{\"type\":\"struct\",\"fields\":[{\"name\":\"id\",\"type\":\"long\",\"nullable\":false,\"metadata\":{}},{\"name\":\"x\",\"type\":\"string\",\"nullable\":false,\"metadata\":{}}]}",
+                "metadata": {
+                  "type": "string"
+                }
+              }
+            ],
+            "metadata": {
+              "type": "struct",
+              "type_class": "KeyValue"
+            }
+          }
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      },
+      {
+        "offset": 661,
+        "length": 75,
+        "name": "created_by",
+        "value": "parquet-mr version 1.13.1 (build db4183109d5b734ec5930d870cdae161e408ddba)",
+        "metadata": {
+          "type": "string"
+        }
+      },
+      {
+        "offset": 737,
+        "length": 7,
+        "name": "column_orders",
+        "value": [
+          {
+            "offset": 738,
+            "length": 3,
+            "name": "element",
+            "value": [
+              {
+                "offset": 739,
+                "length": 1,
+                "name": "TYPE_ORDER",
+                "value": [],
+                "metadata": {
+                  "type": "struct",
+                  "type_class": "TypeDefinedOrder"
+                }
+              }
+            ],
+            "metadata": {
+              "type": "struct",
+              "type_class": "ColumnOrder"
+            }
+          },
+          {
+            "offset": 741,
+            "length": 3,
+            "name": "element",
+            "value": [
+              {
+                "offset": 742,
+                "length": 1,
+                "name": "TYPE_ORDER",
+                "value": [],
+                "metadata": {
+                  "type": "struct",
+                  "type_class": "TypeDefinedOrder"
+                }
+              }
+            ],
+            "metadata": {
+              "type": "struct",
+              "type_class": "ColumnOrder"
+            }
+          }
+        ],
+        "metadata": {
+          "type": "list"
+        }
+      }
+    ],
+    "metadata": {
+      "type": "struct",
+      "type_class": "FileMetaData"
+    }
+  },
+  {
+    "offset": 745,
+    "length": 4,
+    "name": "footer_length",
+    "value": 527
+  },
+  {
+    "offset": 749,
+    "length": 4,
+    "name": "magic_number",
+    "value": "PAR1"
+  }
+]
