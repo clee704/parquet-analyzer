@@ -14,18 +14,19 @@ A Python tool for deep inspection and analysis of Apache Parquet files, providin
 ## Installation
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd parquet-inspector
+pip install parquet-inspector
+```
 
-# Install dependencies
-pip install -r requirements.txt
+To work from a local clone instead, install in editable mode:
+
+```bash
+pip install -e .
 ```
 
 ### Requirements
 
-- Python 3.6+
-- thrift==0.22.0
+- Python 3.8+
+- thrift>=0.16 (installed automatically)
 
 ## Usage
 
@@ -33,13 +34,16 @@ pip install -r requirements.txt
 
 ```bash
 # Analyze a Parquet file and get summary information
-python3 parquet-inspector.py example.parquet
+parquet-inspector example.parquet
 
 # Show detailed offset and Thrift structure information
-python3 parquet-inspector.py -s example.parquet
+parquet-inspector -s example.parquet
 
 # Enable debug logging
-python3 parquet-inspector.py --log-level DEBUG example.parquet
+parquet-inspector --log-level DEBUG example.parquet
+
+# Run via python -m if the console script is unavailable
+python -m parquet_inspector example.parquet
 ```
 
 ### Command Line Options
@@ -210,7 +214,7 @@ Contributions are welcome! Please feel free to submit issues, feature requests, 
 
 ## License
 
-[Add your license information here]
+Released under the [MIT License](LICENSE).
 
 ## Related Projects
 

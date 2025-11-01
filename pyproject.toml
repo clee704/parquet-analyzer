@@ -1,0 +1,62 @@
+[build-system]
+requires = ["hatchling>=1.24"]
+build-backend = "hatchling.build"
+
+[project]
+name = "parquet-inspector"
+dynamic = ["version"]
+description = "Inspect the on-disk layout and metadata of Parquet files."
+readme = "README.md"
+requires-python = ">=3.8"
+license = {file = "LICENSE"}
+authors = [
+  {name = "Chungmin Lee"}
+]
+keywords = ["parquet", "thrift", "data-engineering", "debugging"]
+dependencies = [
+  "thrift>=0.16",
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.8",
+  "Programming Language :: Python :: 3.9",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Topic :: Software Development :: Debuggers",
+  "Topic :: System :: Filesystems",
+]
+
+[project.urls]
+Homepage = "https://github.com/clee704/parquet-inspector"
+Issues = "https://github.com/clee704/parquet-inspector/issues"
+Source = "https://github.com/clee704/parquet-inspector"
+
+[project.scripts]
+"parquet-inspector" = "parquet_inspector.cli:main"
+
+[tool.hatch.version]
+path = "src/parquet_inspector/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = [
+  "src/parquet_inspector",
+  "src/parquet",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/parquet_inspector",
+  "src/parquet",
+  "README.md",
+  "LICENSE",
+  "parquet.thrift",
+  "example.json",
+  "example-segments.json",
+  "requirements.txt",
+]
