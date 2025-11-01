@@ -3,11 +3,11 @@ requires = ["hatchling>=1.24"]
 build-backend = "hatchling.build"
 
 [project]
-name = "parquet-inspector"
+name = "parquet-analyzer"
 dynamic = ["version"]
 description = "Inspect the on-disk layout and metadata of Parquet files."
 readme = "README.md"
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 license = {file = "LICENSE"}
 authors = [
   {name = "Chungmin Lee"}
@@ -32,26 +32,31 @@ classifiers = [
   "Topic :: System :: Filesystems",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "hatch"
+]
+
 [project.urls]
-Homepage = "https://github.com/clee704/parquet-inspector"
-Issues = "https://github.com/clee704/parquet-inspector/issues"
-Source = "https://github.com/clee704/parquet-inspector"
+Homepage = "https://github.com/clee704/parquet-analyzer"
+Issues = "https://github.com/clee704/parquet-analyzer/issues"
+Source = "https://github.com/clee704/parquet-analyzer"
 
 [project.scripts]
-"parquet-inspector" = "parquet_inspector.cli:main"
+"parquet-analyzer" = "parquet_analyzer.cli:main"
 
 [tool.hatch.version]
-path = "src/parquet_inspector/__init__.py"
+path = "src/parquet_analyzer/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = [
-  "src/parquet_inspector",
+  "src/parquet_analyzer",
   "src/parquet",
 ]
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "src/parquet_inspector",
+  "src/parquet_analyzer",
   "src/parquet",
   "README.md",
   "LICENSE",

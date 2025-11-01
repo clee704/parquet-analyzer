@@ -1,4 +1,4 @@
-"""Command line interface for :mod:`parquet_inspector`."""
+"""Command line interface for :mod:`parquet_analyzer`."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ from ._core import (
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="parquet-inspector")
+    parser = argparse.ArgumentParser(prog="parquet-analyzer")
     parser.add_argument("parquet_file", help="Path to the Parquet file to inspect")
     parser.add_argument(
         "-s",

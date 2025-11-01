@@ -1,4 +1,4 @@
-"""Module entry point for ``python -m parquet_inspector``."""
+"""Module entry point for ``python -m parquet_analyzer``."""
 
 from .cli import main
 

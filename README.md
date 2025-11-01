@@ -1,4 +1,4 @@
-# Parquet Inspector
+# Parquet Analyzer
 
 A Python tool for deep inspection and analysis of Apache Parquet files, providing detailed insights into file structure, metadata, and binary layout.
 
@@ -14,7 +14,7 @@ A Python tool for deep inspection and analysis of Apache Parquet files, providin
 ## Installation
 
 ```bash
-pip install parquet-inspector
+pip install parquet-analyzer
 ```
 
 To work from a local clone instead, install in editable mode:
@@ -34,16 +34,16 @@ pip install -e .
 
 ```bash
 # Analyze a Parquet file and get summary information
-parquet-inspector example.parquet
+parquet-analyzer example.parquet
 
 # Show detailed offset and Thrift structure information
-parquet-inspector -s example.parquet
+parquet-analyzer -s example.parquet
 
 # Enable debug logging
-parquet-inspector --log-level DEBUG example.parquet
+parquet-analyzer --log-level DEBUG example.parquet
 
 # Run via python -m if the console script is unavailable
-python -m parquet_inspector example.parquet
+python -m parquet_analyzer example.parquet
 ```
 
 ### Command Line Options

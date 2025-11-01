@@ -1,4 +1,4 @@
-"""Top-level package for ``parquet-inspector``."""
+"""Top-level package for ``parquet-analyzer``."""
 
 from __future__ import annotations
 
