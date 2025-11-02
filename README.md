@@ -134,6 +134,7 @@ The tool uses a custom Thrift protocol implementation (`OffsetRecordingProtocol`
 ```bash
 pip install -e .[dev]
 hatch run dev:lint
+hatch run dev:test
 ```
 
 ### Regenerating Thrift bindings
@@ -151,7 +152,7 @@ The Python modules in `src/parquet` are generated from `parquet.thrift`.
 
 3. If the compiler creates an empty `src/__init__.py`, delete it—it is not needed when using the src-layout.
 
-4. Run `hatch run dev:lint` to ensure generated code still passes the linter.
+4. Run `hatch run dev:lint` and `hatch run dev:test` to ensure generated code still passes linting and tests.
 
 ## Contributing
 
