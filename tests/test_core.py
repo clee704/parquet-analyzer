@@ -1,8 +1,16 @@
 import struct
+from types import SimpleNamespace
 
 import pytest
 
+from thrift.protocol.TProtocol import TType
+from thrift.protocol import TCompactProtocol
+from thrift.transport import TTransport
+
+import parquet_analyzer._core as core
 from parquet_analyzer._core import (
+    OffsetRecordingCompactProtocol,
+    TFileTransport,
     create_segment,
     create_segment_from_offset_info,
     fill_gaps,
@@ -12,7 +20,16 @@ from parquet_analyzer._core import (
     json_encode,
     parse_parquet_file,
     segment_to_json,
+    read_bloom_filter,
+    read_column_index,
+    read_dictionary_page,
+    read_offset_index,
+    read_pages,
 )
+from parquet.ttypes import ColumnMetaData, CompressionCodec, Encoding
+
+
+STRUCT_CLASS = type("Struct", (), {"thrift_spec": ()})
 
 
 def test_create_segment_from_offset_info_struct():
@@ -187,6 +204,349 @@ def test_get_pages_includes_offsets_with_page_details():
     assert pages[0]["column"] == ("col1",)
     assert pages[0]["row_groups"][0]["data_pages"][0]["$offset"] == 4
     assert pages[0]["row_groups"][0]["data_pages"][0]["type"] == "DATA_PAGE"
+
+
+def test_offset_recording_numeric_reads(monkeypatch):
+    proto = OffsetRecordingCompactProtocol(
+        TTransport.TMemoryBuffer(), "dummy", STRUCT_CLASS
+    )
+    proto._current = {"name": "numbers", "type": "list", "spec": None, "value": []}
+    proto._parents = []
+
+    for method, value in [
+        ("readByte", 1),
+        ("readI16", 2),
+        ("readI32", 3),
+        ("readI64", 4),
+        ("readDouble", 5.5),
+        ("readBool", True),
+        ("readString", "abc"),
+    ]:
+        monkeypatch.setattr(
+            TCompactProtocol.TCompactProtocol,
+            method,
+            lambda self, _value=value: _value,
+        )
+        result = getattr(proto, method)()
+        assert result == value
+        assert proto._current["value"][-1] == value
+
+
+def test_offset_recording_read_binary_branches(monkeypatch):
+    proto = OffsetRecordingCompactProtocol(
+        TTransport.TMemoryBuffer(), "dummy", STRUCT_CLASS
+    )
+    monkeypatch.setattr(
+        TCompactProtocol.TCompactProtocol,
+        "readBinary",
+        lambda self: b"payload",
+    )
+
+    proto._current = {"name": "bin", "type": "string", "spec": "BINARY", "value": None}
+    assert proto.readBinary() == b"payload"
+    assert proto._current["value"] == b"payload"
+
+    proto._current = {
+        "name": "list",
+        "type": "list",
+        "spec": (TType.STRING, "BINARY"),
+        "value": [],
+    }
+    proto.readBinary()
+    assert proto._current["value"] == [b"payload"]
+
+    proto._current = {"name": "skip", "type": "string", "spec": None, "value": None}
+    proto.readBinary()
+    assert proto._current["value"] is None
+
+
+def test_offset_recording_enum_annotation():
+    proto = OffsetRecordingCompactProtocol(
+        TTransport.TMemoryBuffer(), "dummy", STRUCT_CLASS
+    )
+
+    parent = {
+        "name": "parent",
+        "type": "struct",
+        "type_class": ColumnMetaData,
+        "value": [],
+    }
+    proto._parents = [parent]
+    proto._current = {
+        "name": "codec",
+        "type": "i32",
+        "type_class": None,
+        "spec": None,
+        "value": None,
+    }
+    proto._append_value(CompressionCodec.GZIP)
+    assert proto._current["enum_type"] == "CompressionCodec"
+    assert proto._current["enum_name"] == "GZIP"
+
+    proto._parents = [parent]
+    proto._current = {
+        "name": "encodings",
+        "type": "list",
+        "type_class": None,
+        "spec": None,
+        "value": [],
+    }
+    proto._append_value(Encoding.PLAIN)
+    proto._append_value(Encoding.RLE)
+    assert proto._current["enum_type"] == "Encoding"
+    assert proto._current["enum_name"] == ["PLAIN", "RLE"]
+
+
+def test_offset_recording_collection_methods(monkeypatch):
+    proto = OffsetRecordingCompactProtocol(
+        TTransport.TMemoryBuffer(), "dummy", STRUCT_CLASS
+    )
+
+    monkeypatch.setattr(
+        TCompactProtocol.TCompactProtocol, "readListBegin", lambda self: (TType.I32, 0)
+    )
+    assert proto.readListBegin() == (TType.I32, 0)
+
+    monkeypatch.setattr(TCompactProtocol.TCompactProtocol, "readListEnd", lambda self: None)
+    assert proto.readListEnd() is None
+
+    monkeypatch.setattr(
+        TCompactProtocol.TCompactProtocol,
+        "readMapBegin",
+        lambda self: (TType.I32, TType.I32, 0),
+    )
+    assert proto.readMapBegin() == (TType.I32, TType.I32, 0)
+
+    monkeypatch.setattr(TCompactProtocol.TCompactProtocol, "readMapEnd", lambda self: None)
+    assert proto.readMapEnd() is None
+
+    monkeypatch.setattr(
+        TCompactProtocol.TCompactProtocol, "readSetBegin", lambda self: (TType.I32, 0)
+    )
+    assert proto.readSetBegin() == (TType.I32, 0)
+
+    monkeypatch.setattr(TCompactProtocol.TCompactProtocol, "readSetEnd", lambda self: None)
+    assert proto.readSetEnd() is None
+
+    monkeypatch.setattr(
+        TCompactProtocol.TCompactProtocol,
+        "readMessageBegin",
+        lambda self: ("name", 1, 0),
+    )
+    assert proto.readMessageBegin() == ("name", 1, 0)
+
+    monkeypatch.setattr(TCompactProtocol.TCompactProtocol, "readMessageEnd", lambda self: None)
+    assert proto.readMessageEnd() is None
+
+
+def test_offset_recording_get_pos():
+    buf = TTransport.TMemoryBuffer()
+    buf._buffer.write(b"abcdef")
+    buf._buffer.seek(3)
+    proto = OffsetRecordingCompactProtocol(buf, "dummy", STRUCT_CLASS)
+    assert proto._get_pos() == 3
+
+    class DummyTransport:
+        pass
+
+    bad_proto = OffsetRecordingCompactProtocol(DummyTransport(), "dummy", STRUCT_CLASS)
+    with pytest.raises(RuntimeError):
+        bad_proto._get_pos()
+
+
+def test_offset_recording_child_management():
+    proto = OffsetRecordingCompactProtocol(
+        TTransport.TMemoryBuffer(), "dummy", STRUCT_CLASS
+    )
+    parent = {"name": "parent", "value": []}
+    proto._parents = []
+    proto._current = parent
+
+    child = {"name": "child", "value": []}
+    proto._new_child(child)
+    assert proto._current is child
+    assert proto._parents[-1] is parent
+
+    proto._finish_child()
+    assert proto._current is parent
+    assert parent["value"][0] is child
+
+
+def test_tfiletransport_operations(tmp_path):
+    file_path = tmp_path / "data.bin"
+    file_path.write_bytes(b"abcdef")
+
+    with file_path.open("rb") as fh:
+        transport = TFileTransport(fh)
+        assert transport.isOpen()
+        assert transport.read(2) == b"ab"
+        assert transport.tell() == 2
+
+        transport.seek(1, whence=1)
+        assert transport.tell() == 3
+
+        transport.seek(0)
+        assert transport.tell() == 0
+
+        transport.flush()
+        transport.close()
+
+        with pytest.raises(NotImplementedError):
+            transport.write(b"x")
+        with pytest.raises(NotImplementedError):
+            transport.seek(0, whence=2)
+
+
+def test_read_helpers_and_summary(monkeypatch):
+    page_entries = [
+        {
+            "header": SimpleNamespace(
+                data_page_header=SimpleNamespace(num_values=2),
+                data_page_header_v2=None,
+                compressed_page_size=2,
+            ),
+            "length": 5,
+        },
+        {
+            "header": SimpleNamespace(
+                data_page_header=None,
+                data_page_header_v2=SimpleNamespace(num_values=1),
+                compressed_page_size=3,
+            ),
+            "length": 4,
+        },
+    ]
+
+    dictionary_header = SimpleNamespace(
+        data_page_header=None,
+        data_page_header_v2=None,
+        compressed_page_size=1,
+    )
+
+    dictionary_segment = {"offset": 20, "length": 3, "name": "page"}
+    column_index_segment = {"offset": 30, "length": 2, "name": "column_index"}
+    offset_index_segment = {"offset": 40, "length": 3, "name": "offset_index"}
+    bloom_segment = {"offset": 50, "length": 2, "name": "bloom_filter"}
+
+    def fake_read_thrift(file_obj, offset, name, thrift_class):
+        if name == "page" and offset == 20:
+            return dictionary_header, dictionary_segment
+        if name == "page":
+            entry = page_entries.pop(0)
+            segment = {"offset": offset, "length": entry["length"], "name": "page"}
+            return entry["header"], segment
+        if name == "column_index":
+            return SimpleNamespace(), column_index_segment
+        if name == "offset_index":
+            return SimpleNamespace(), offset_index_segment
+        if name == "bloom_filter":
+            return SimpleNamespace(), bloom_segment
+        raise AssertionError(f"Unexpected thrift read: {name} @ {offset}")
+
+    monkeypatch.setattr(core, "read_thrift_segment", fake_read_thrift)
+
+    column_chunk = SimpleNamespace(
+        meta_data=SimpleNamespace(
+            num_values=3,
+            data_page_offset=0,
+            dictionary_page_offset=20,
+            bloom_filter_offset=50,
+        ),
+        column_index_offset=30,
+        offset_index_offset=40,
+        bloom_filter_offset=50,
+    )
+
+    segments: list[dict] = []
+    offsets = read_pages(object(), column_chunk, segments)
+    assert offsets == [0, 7]
+
+    dict_offset = read_dictionary_page(object(), column_chunk, segments)
+    assert dict_offset == 20
+
+    col_index_offset = read_column_index(object(), column_chunk, segments)
+    assert col_index_offset == 30
+
+    off_index_offset = read_offset_index(object(), column_chunk, segments)
+    assert off_index_offset == 40
+
+    bloom_offset = read_bloom_filter(object(), column_chunk, segments)
+    assert bloom_offset == 50
+
+    json_lookup = {
+        0: {
+            "type": "DATA_PAGE",
+            "uncompressed_page_size": 4,
+            "compressed_page_size": 2,
+            "data_page_header": {},
+        },
+        7: {
+            "type": "DATA_PAGE_V2",
+            "uncompressed_page_size": 5,
+            "compressed_page_size": 3,
+            "data_page_header_v2": {},
+        },
+        20: {
+            "type": "DICTIONARY_PAGE",
+            "uncompressed_page_size": 1,
+            "compressed_page_size": 1,
+        },
+        30: {"column_index": True},
+        40: {"offset_index": True},
+        50: {"bloom_filter": True},
+    }
+
+    monkeypatch.setattr(core, "segment_to_json", lambda segment: json_lookup[segment["offset"]])
+
+    column_offsets = {
+        ("col",): [
+            {
+                "data_pages": offsets,
+                "dictionary_page": dict_offset,
+                "column_index": col_index_offset,
+                "offset_index": off_index_offset,
+                "bloom_filter": bloom_offset,
+            }
+        ]
+    }
+
+    pages = get_pages(segments, column_offsets)
+    row_group = pages[0]["row_groups"][0]
+    assert row_group["dictionary_page"]["$offset"] == dict_offset
+    assert row_group["column_index"]["$offset"] == col_index_offset
+    assert row_group["offset_index"]["$offset"] == off_index_offset
+    assert row_group["bloom_filter"]["$offset"] == bloom_offset
+
+    footer_json = {
+        "num_rows": 3,
+        "row_groups": [
+            {
+                "columns": [
+                    {
+                        "meta_data": {
+                            "total_uncompressed_size": 9,
+                            "total_compressed_size": 6,
+                        },
+                        "column_index_length": 2,
+                        "offset_index_length": 3,
+                        "bloom_filter_length": 1,
+                    }
+                ]
+            }
+        ],
+    }
+
+    summary = get_summary(footer_json, segments)
+    assert summary["num_pages"] == 3
+    assert summary["num_data_pages"] == 2
+    assert summary["num_v1_data_pages"] == 1
+    assert summary["num_v2_data_pages"] == 1
+    assert summary["num_dict_pages"] == 1
+    assert summary["page_header_size"] == 12
+    assert summary["uncompressed_page_data_size"] == 10
+    assert summary["compressed_page_data_size"] == 6
+    assert summary["bloom_fitler_size"] == 1
+
 
 
 def test_create_segment_preserves_metadata():
