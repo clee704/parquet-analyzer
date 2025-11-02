@@ -307,7 +307,9 @@ def test_offset_recording_collection_methods(monkeypatch):
     )
     assert proto.readListBegin() == (TType.I32, 0)
 
-    monkeypatch.setattr(TCompactProtocol.TCompactProtocol, "readListEnd", lambda self: None)
+    monkeypatch.setattr(
+        TCompactProtocol.TCompactProtocol, "readListEnd", lambda self: None
+    )
     assert proto.readListEnd() is None
 
     monkeypatch.setattr(
@@ -317,7 +319,9 @@ def test_offset_recording_collection_methods(monkeypatch):
     )
     assert proto.readMapBegin() == (TType.I32, TType.I32, 0)
 
-    monkeypatch.setattr(TCompactProtocol.TCompactProtocol, "readMapEnd", lambda self: None)
+    monkeypatch.setattr(
+        TCompactProtocol.TCompactProtocol, "readMapEnd", lambda self: None
+    )
     assert proto.readMapEnd() is None
 
     monkeypatch.setattr(
@@ -325,7 +329,9 @@ def test_offset_recording_collection_methods(monkeypatch):
     )
     assert proto.readSetBegin() == (TType.I32, 0)
 
-    monkeypatch.setattr(TCompactProtocol.TCompactProtocol, "readSetEnd", lambda self: None)
+    monkeypatch.setattr(
+        TCompactProtocol.TCompactProtocol, "readSetEnd", lambda self: None
+    )
     assert proto.readSetEnd() is None
 
     monkeypatch.setattr(
@@ -335,7 +341,9 @@ def test_offset_recording_collection_methods(monkeypatch):
     )
     assert proto.readMessageBegin() == ("name", 1, 0)
 
-    monkeypatch.setattr(TCompactProtocol.TCompactProtocol, "readMessageEnd", lambda self: None)
+    monkeypatch.setattr(
+        TCompactProtocol.TCompactProtocol, "readMessageEnd", lambda self: None
+    )
     assert proto.readMessageEnd() is None
 
 
@@ -496,7 +504,9 @@ def test_read_helpers_and_summary(monkeypatch):
         50: {"bloom_filter": True},
     }
 
-    monkeypatch.setattr(core, "segment_to_json", lambda segment: json_lookup[segment["offset"]])
+    monkeypatch.setattr(
+        core, "segment_to_json", lambda segment: json_lookup[segment["offset"]]
+    )
 
     column_offsets = {
         ("col",): [
@@ -546,7 +556,6 @@ def test_read_helpers_and_summary(monkeypatch):
     assert summary["uncompressed_page_data_size"] == 10
     assert summary["compressed_page_data_size"] == 6
     assert summary["bloom_fitler_size"] == 1
-
 
 
 def test_create_segment_preserves_metadata():

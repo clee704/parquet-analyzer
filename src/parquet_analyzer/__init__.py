@@ -1,5 +1,3 @@
-"""Top-level package for ``parquet-analyzer``."""
-
 from __future__ import annotations
 
 from ._core import (

@@ -1,5 +1,3 @@
-"""Command line interface for :mod:`parquet_analyzer`."""
-
 from __future__ import annotations
 
 import argparse

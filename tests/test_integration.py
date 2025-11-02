@@ -35,7 +35,10 @@ def sample_parquet_with_page_index(tmp_path):
     pa = pytest.importorskip("pyarrow")
     pq = pytest.importorskip("pyarrow.parquet")
 
-    dict_array = pa.array(["alpha", "beta", "gamma", "beta", "alpha"], type=pa.dictionary(pa.int32(), pa.string()))
+    dict_array = pa.array(
+        ["alpha", "beta", "gamma", "beta", "alpha"],
+        type=pa.dictionary(pa.int32(), pa.string()),
+    )
     table = pa.table(
         {
             "dict_col": dict_array,
