@@ -136,6 +136,8 @@ pip install -e .[dev]
 hatch run dev:lint
 hatch run dev:test
 hatch run dev:test-cov
+# Or run everything at once
+hatch run dev:check
 ```
 
 The development extra pulls in tooling (`hatch`, `ruff`, `pytest`) and `pyarrow` so tests can generate Parquet fixtures on the fly.

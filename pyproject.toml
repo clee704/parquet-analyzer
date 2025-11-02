@@ -77,6 +77,11 @@ lint = "ruff check src"
 lint-fix = "ruff check --fix src"
 test = "pytest"
 test-cov = "pytest --cov=parquet_analyzer --cov-report=term-missing --cov-report=xml --cov-fail-under=80"
+check = [
+  "lint",
+  "test",
+  "test-cov",
+]
 
 [tool.ruff]
 target-version = "py311"
