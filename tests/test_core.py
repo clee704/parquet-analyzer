@@ -1,12 +1,17 @@
+import struct
+
 import pytest
 
 from parquet_analyzer._core import (
     create_segment,
     create_segment_from_offset_info,
     fill_gaps,
+    find_footer_segment,
     get_pages,
     get_summary,
     json_encode,
+    parse_parquet_file,
+    segment_to_json,
 )
 
 
@@ -182,3 +187,160 @@ def test_get_pages_includes_offsets_with_page_details():
     assert pages[0]["column"] == ("col1",)
     assert pages[0]["row_groups"][0]["data_pages"][0]["$offset"] == 4
     assert pages[0]["row_groups"][0]["data_pages"][0]["type"] == "DATA_PAGE"
+
+
+def test_create_segment_preserves_metadata():
+    segment = create_segment(0, 10, "field", value=123, metadata={"type": "i32"})
+
+    assert segment == {
+        "offset": 0,
+        "length": 10,
+        "name": "field",
+        "value": 123,
+        "metadata": {"type": "i32"},
+    }
+
+
+def test_create_segment_from_offset_info_returns_non_dict():
+    sentinel = [1, 2, 3]
+
+    assert create_segment_from_offset_info(sentinel, base_offset=5) is sentinel
+
+
+def test_create_segment_from_offset_info_handles_list_children():
+    offset_info = {
+        "name": "values",
+        "type": "list",
+        "type_class": None,
+        "spec": None,
+        "range_from": 2,
+        "range_to": 6,
+        "value": [
+            {
+                "name": "element",
+                "type": "i32",
+                "type_class": None,
+                "spec": None,
+                "range_from": 2,
+                "range_to": 4,
+                "value": 11,
+            },
+            {
+                "name": "element",
+                "type": "i32",
+                "type_class": None,
+                "spec": None,
+                "range_from": 4,
+                "range_to": 6,
+                "value": 22,
+            },
+        ],
+    }
+
+    segment = create_segment_from_offset_info(offset_info, base_offset=8)
+
+    assert segment["offset"] == 10
+    assert segment["length"] == 4
+    assert segment["metadata"]["type"] == "list"
+    assert [child["value"] for child in segment["value"]] == [11, 22]
+
+
+def test_fill_gaps_no_missing_regions():
+    segments = [
+        create_segment(0, 3, "a"),
+        create_segment(3, 6, "b"),
+    ]
+
+    assert fill_gaps(segments, file_size=6) == segments
+
+
+def test_segment_to_json_struct_and_enum():
+    segment = {
+        "name": "wrapper",
+        "offset": 0,
+        "length": 4,
+        "value": [
+            {
+                "name": "field",
+                "offset": 0,
+                "length": 4,
+                "value": 1,
+                "metadata": {"enum_type": "Example", "enum_name": "ONE"},
+            }
+        ],
+        "metadata": {"type": "struct"},
+    }
+
+    assert segment_to_json(segment) == {"field": "ONE"}
+
+
+def test_segment_to_json_list_without_enum():
+    segment = {
+        "name": "values",
+        "offset": 0,
+        "length": 4,
+        "value": [
+            {
+                "name": "element",
+                "offset": 0,
+                "length": 2,
+                "value": 7,
+            },
+            {
+                "name": "element",
+                "offset": 2,
+                "length": 2,
+                "value": 8,
+            },
+        ],
+        "metadata": {"type": "list"},
+    }
+
+    assert segment_to_json(segment) == [7, 8]
+
+
+def test_segment_to_json_enum_scalar():
+    segment = {
+        "name": "type",
+        "offset": 0,
+        "length": 1,
+        "value": 0,
+        "metadata": {"enum_type": "PageType", "enum_name": "DATA_PAGE"},
+    }
+
+    assert segment_to_json(segment) == "DATA_PAGE"
+
+
+def test_find_footer_segment_returns_none():
+    assert find_footer_segment([create_segment(0, 1, "page")]) is None
+
+
+def test_find_footer_segment_returns_match():
+    footer = create_segment(0, 1, "footer")
+
+    assert find_footer_segment([footer]) is footer
+
+
+def test_json_encode_short_binary():
+    payload = b"abc"
+
+    encoded = json_encode(payload)
+
+    assert encoded == {"type": "binary", "length": 3, "value": [97, 98, 99]}
+
+
+def test_parse_parquet_file_invalid_header(tmp_path):
+    target = tmp_path / "invalid-header.parquet"
+    target.write_bytes(b"BAD!" + b"\x00" * 12)
+
+    with pytest.raises(ValueError, match="missing PAR1 header"):
+        parse_parquet_file(str(target))
+
+
+def test_parse_parquet_file_invalid_footer(tmp_path):
+    target = tmp_path / "invalid-footer.parquet"
+    content = b"PAR1" + b"\x00" * 12 + struct.pack("<I", 0) + b"BAD!"
+    target.write_bytes(content)
+
+    with pytest.raises(ValueError, match="missing PAR1 footer"):
+        parse_parquet_file(str(target))

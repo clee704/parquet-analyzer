@@ -135,7 +135,10 @@ The tool uses a custom Thrift protocol implementation (`OffsetRecordingProtocol`
 pip install -e .[dev]
 hatch run dev:lint
 hatch run dev:test
+hatch run dev:test-cov
 ```
+
+The development extra pulls in tooling (`hatch`, `ruff`, `pytest`) and `pyarrow` so tests can generate Parquet fixtures on the fly.
 
 ### Regenerating Thrift bindings
 
@@ -152,7 +155,7 @@ The Python modules in `src/parquet` are generated from `parquet.thrift`.
 
 3. If the compiler creates an empty `src/__init__.py`, delete it—it is not needed when using the src-layout.
 
-4. Run `hatch run dev:lint` and `hatch run dev:test` to ensure generated code still passes linting and tests.
+4. Run `hatch run dev:lint`, `hatch run dev:test`, and `hatch run dev:test-cov` (fails under 80% coverage) to ensure generated code still passes linting, tests, and coverage thresholds.
 
 ## Contributing
 

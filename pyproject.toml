@@ -36,6 +36,8 @@ dev = [
   "hatch",
   "ruff",
   "pytest",
+  "pytest-cov",
+  "pyarrow",
 ]
 
 [project.urls]
@@ -74,6 +76,7 @@ features = ["dev"]
 lint = "ruff check src"
 lint-fix = "ruff check --fix src"
 test = "pytest"
+test-cov = "pytest --cov=parquet_analyzer --cov-report=term-missing --cov-report=xml --cov-fail-under=80"
 
 [tool.ruff]
 target-version = "py311"
