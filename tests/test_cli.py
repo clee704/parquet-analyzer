@@ -11,7 +11,7 @@ def test_build_argument_parser_parses_defaults():
     args = parser.parse_args(["sample.parquet"])
 
     assert args.parquet_file == "sample.parquet"
-    assert args.show_offsets_and_thrift_details is False
+    assert args.output_mode == "default"
     assert args.log_level == "INFO"
 
 
@@ -50,7 +50,7 @@ def test_cli_main_shows_segments(monkeypatch, capsys):
 
     monkeypatch.setattr(cli, "parse_parquet_file", lambda path: (segments, {}))
 
-    cli.main(["--show-offsets-and-thrift-details", "example.parquet"])
+    cli.main(["--output-mode", "segments", "example.parquet"])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)

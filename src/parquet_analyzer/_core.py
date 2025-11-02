@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import logging
 import struct
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Iterable, Optional, Tuple
 
-from thrift.protocol import TCompactProtocol, TProtocol
-from thrift.protocol.TProtocol import TType
-from thrift.transport.TTransport import TMemoryBuffer, TTransportBase
+from thrift.protocol import TCompactProtocol, TProtocol  # type: ignore
+from thrift.protocol.TProtocol import TType  # type: ignore
+from thrift.transport.TTransport import TMemoryBuffer, TTransportBase  # type: ignore
 
 from parquet.ttypes import (
     BloomFilterHeader,
@@ -70,7 +70,7 @@ class OffsetRecordingProtocol(TProtocol.TProtocolBase):
         TType.LIST: "list",
     }
 
-    enum_map = {
+    enum_map: dict = {
         ColumnMetaData: {
             "codec": CompressionCodec,
             "type": Type,
@@ -109,8 +109,8 @@ class OffsetRecordingProtocol(TProtocol.TProtocolBase):
 
     def __init__(self, trans: TTransportBase, name: str, struct_class: Any):
         super().__init__(trans)
-        self._parents: List[Dict[str, Any]] = []
-        self._current: Dict[str, Any] = {
+        self._parents: list[dict[str, Any]] = []
+        self._current: dict[str, Any] = {
             "name": name,
             "type": "struct",
             "type_class": struct_class,
@@ -120,7 +120,7 @@ class OffsetRecordingProtocol(TProtocol.TProtocolBase):
             "value": [],
         }
 
-    def get_offset_info(self) -> Dict[str, Any]:
+    def get_offset_info(self) -> dict[str, Any]:
         return self._current
 
     def readStructBegin(self):  # type: ignore[override]
@@ -184,14 +184,14 @@ class OffsetRecordingProtocol(TProtocol.TProtocolBase):
         self._finish_child()
         return ret
 
-    def readListBegin(self):  # type: ignore[override]
-        ret = super().readListBegin()
-        self.logger.debug("readListBegin: %s", ret)
+    def readlistBegin(self):  # type: ignore[override]
+        ret = super().readlistBegin()
+        self.logger.debug("readlistBegin: %s", ret)
         return ret
 
-    def readListEnd(self):  # type: ignore[override]
-        ret = super().readListEnd()
-        self.logger.debug("readListEnd: %s", ret)
+    def readlistEnd(self):  # type: ignore[override]
+        ret = super().readlistEnd()
+        self.logger.debug("readlistEnd: %s", ret)
         return ret
 
     def readMapBegin(self):  # type: ignore[override]
@@ -292,9 +292,9 @@ class OffsetRecordingProtocol(TProtocol.TProtocolBase):
         return type_id in {TType.STRUCT, TType.MAP, TType.SET, TType.LIST}
 
     def _has_parent(self, predicate: Any) -> bool:
-        return self._parents and predicate(self._parents[-1])
+        return bool(self._parents) and predicate(self._parents[-1])
 
-    def _get_parent(self) -> Dict[str, Any]:
+    def _get_parent(self) -> dict[str, Any]:
         return self._parents[-1]
 
     def _append_value(self, value: Any) -> None:
@@ -326,7 +326,7 @@ class OffsetRecordingProtocol(TProtocol.TProtocolBase):
         else:
             return (enum_class, enum_class._VALUES_TO_NAMES.get(value))
 
-    def _new_child(self, child: Dict[str, Any]) -> None:
+    def _new_child(self, child: dict[str, Any]) -> None:
         self.logger.debug("Starting child for %s", self._current["name"])
         self.logger.debug("Push: %s", child)
         self._parents.append(self._current)
@@ -393,9 +393,9 @@ def create_segment(
     range_end: int,
     name: str,
     value: Optional[Any] = None,
-    metadata: Optional[Dict[str, Any]] = None,
-) -> Dict[str, Any]:
-    segment: Dict[str, Any] = {}
+    metadata: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    segment: dict[str, Any] = {}
     segment["offset"] = range_start
     segment["length"] = range_end - range_start
     segment["name"] = name
@@ -414,7 +414,7 @@ def create_segment_from_offset_info(info: Any, base_offset: int):
             value.append(create_segment_from_offset_info(value_info, base_offset))
     else:
         value = info["value"]
-    metadata: Dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
     metadata["type"] = info["type"]
     if info["type_class"]:
         metadata["type_class"] = info["type_class"].__name__
@@ -445,10 +445,10 @@ def read_thrift_segment(f, offset: int, name: str, thrift_class):
     return obj, segment
 
 
-def read_pages(f, column_chunk, segments: List[Dict[str, Any]]):
+def read_pages(f, column_chunk, segments: list[dict[str, Any]]):
     remaining_values = column_chunk.meta_data.num_values
     offset = column_chunk.meta_data.data_page_offset
-    offsets: List[int] = []
+    offsets: list[int] = []
     while remaining_values > 0:
         page, page_segment = read_thrift_segment(f, offset, "page", PageHeader)
         page_header_end = page_segment["offset"] + page_segment["length"]
@@ -472,7 +472,7 @@ def read_pages(f, column_chunk, segments: List[Dict[str, Any]]):
     return offsets
 
 
-def read_dictionary_page(f, column_chunk, segments: List[Dict[str, Any]]):
+def read_dictionary_page(f, column_chunk, segments: list[dict[str, Any]]):
     dict_page, dict_page_segment = read_thrift_segment(
         f,
         column_chunk.meta_data.dictionary_page_offset,
@@ -492,7 +492,7 @@ def read_dictionary_page(f, column_chunk, segments: List[Dict[str, Any]]):
     return dict_page_segment["offset"]
 
 
-def read_column_index(f, column_chunk, segments: List[Dict[str, Any]]):
+def read_column_index(f, column_chunk, segments: list[dict[str, Any]]):
     _, column_index_segment = read_thrift_segment(
         f, column_chunk.column_index_offset, "column_index", ColumnIndex
     )
@@ -500,7 +500,7 @@ def read_column_index(f, column_chunk, segments: List[Dict[str, Any]]):
     return column_index_segment["offset"]
 
 
-def read_offset_index(f, column_chunk, segments: List[Dict[str, Any]]):
+def read_offset_index(f, column_chunk, segments: list[dict[str, Any]]):
     _, offset_index_segment = read_thrift_segment(
         f, column_chunk.offset_index_offset, "offset_index", OffsetIndex
     )
@@ -508,7 +508,7 @@ def read_offset_index(f, column_chunk, segments: List[Dict[str, Any]]):
     return offset_index_segment["offset"]
 
 
-def read_bloom_filter(f, column_chunk, segments: List[Dict[str, Any]]):
+def read_bloom_filter(f, column_chunk, segments: list[dict[str, Any]]):
     _, bloom_filter_segment = read_thrift_segment(
         f, column_chunk.bloom_filter_offset, "bloom_filter", BloomFilterHeader
     )
@@ -516,7 +516,7 @@ def read_bloom_filter(f, column_chunk, segments: List[Dict[str, Any]]):
     return bloom_filter_segment["offset"]
 
 
-def fill_gaps(segments: List[Dict[str, Any]], file_size: int):
+def fill_gaps(segments: list[dict[str, Any]], file_size: int):
     offset = 0
     new_segments = []
     for s in segments:
@@ -530,7 +530,7 @@ def fill_gaps(segments: List[Dict[str, Any]], file_size: int):
 
 
 def parse_parquet_file(file_path: str):
-    segments: List[Dict[str, Any]] = []
+    segments: list[dict[str, Any]] = []
 
     with open(file_path, "rb") as f:
         # Read file header
@@ -562,14 +562,14 @@ def parse_parquet_file(file_path: str):
         )
         segments.append(footer_segment)
 
-        column_chunk_data_offsets: Dict[Tuple[str, ...], List[Dict[str, Any]]] = {}
+        column_chunk_data_offsets: dict[Tuple[str, ...], list[dict[str, Any]]] = {}
 
         for row_group in footer.row_groups:
             for column_chunk in row_group.columns:
                 column_key = tuple(column_chunk.meta_data.path_in_schema)
                 offset_list = column_chunk_data_offsets.setdefault(column_key, [])
 
-                offsets: Dict[str, Any] = {}
+                offsets: dict[str, Any] = {}
                 offsets["data_pages"] = read_pages(f, column_chunk, segments)
 
                 if column_chunk.meta_data.dictionary_page_offset is not None:
@@ -615,15 +615,15 @@ def segment_to_json(segment):
     return segment
 
 
-def find_footer_segment(segments: Iterable[Dict[str, Any]]):
+def find_footer_segment(segments: Iterable[dict[str, Any]]):
     for s in segments:
         if s["name"] == "footer":
             return s
     return None
 
 
-def get_summary(footer, segments):
-    summary: Dict[str, Any] = {}
+def get_summary(footer: dict, segments: list[dict]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
     summary["num_rows"] = footer["num_rows"]
     summary["num_row_groups"] = len(footer["row_groups"])
     if footer["row_groups"]:
@@ -668,14 +668,14 @@ def get_summary(footer, segments):
     compressed_page_size = 0
     column_index_size = 0
     offset_index_size = 0
-    bloom_fitler_size = 0
+    bloom_filter_size = 0
     for row_group in footer["row_groups"]:
         for column in row_group["columns"]:
             uncompressed_page_size += column["meta_data"]["total_uncompressed_size"]
             compressed_page_size += column["meta_data"]["total_compressed_size"]
             column_index_size += column.get("column_index_length", 0)
             offset_index_size += column.get("offset_index_length", 0)
-            bloom_fitler_size += column.get("bloom_filter_length", 0)
+            bloom_filter_size += column.get("bloom_filter_length", 0)
 
     # These page sizes include header size
     summary["uncompressed_page_size"] = uncompressed_page_size
@@ -683,7 +683,7 @@ def get_summary(footer, segments):
 
     summary["column_index_size"] = column_index_size
     summary["offset_index_size"] = offset_index_size
-    summary["bloom_fitler_size"] = bloom_fitler_size
+    summary["bloom_filter_size"] = bloom_filter_size
 
     footer_segment = find_footer_segment(segments)
     if footer_segment is not None:
@@ -693,8 +693,10 @@ def get_summary(footer, segments):
     return summary
 
 
-def get_pages(segments, column_chunk_data_offsets):
-    page_offset_map: Dict[int, Any] = {}
+def get_pages(
+    segments: list[dict], column_chunk_data_offsets: dict[str, list[dict]]
+) -> list[dict]:
+    page_offset_map: dict[int, Any] = {}
     for s in segments:
         if s["name"] in ("page", "column_index", "offset_index", "bloom_filter"):
             page_offset_map[s["offset"]] = segment_to_json(s)
@@ -709,7 +711,7 @@ def get_pages(segments, column_chunk_data_offsets):
         pages = {"$index": col_idx, "column": column_path}
         row_groups = []
         for row_group_idx, offset_info in enumerate(offsets):
-            row_group = {"$index": row_group_idx}
+            row_group: dict[str, Any] = {"$index": row_group_idx}
             if offset_info.get("dictionary_page"):
                 row_group["dictionary_page"] = with_offset(
                     offset_info["dictionary_page"]

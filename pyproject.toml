@@ -15,6 +15,7 @@ authors = [
 keywords = ["parquet", "thrift", "data-engineering", "debugging"]
 dependencies = [
   "thrift>=0.16",
+  "Jinja2==3.1.6",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -38,6 +39,7 @@ dev = [
   "pytest",
   "pytest-cov",
   "pyarrow",
+  "mypy",
 ]
 
 [project.urls]
@@ -76,11 +78,13 @@ features = ["dev"]
 format = "ruff format src tests"
 lint = "ruff check src"
 lint-fix = "ruff check --fix src"
+type-check = "mypy src/parquet_analyzer"
 test = "pytest"
 test-cov = "pytest --cov=parquet_analyzer --cov-report=term-missing --cov-report=xml --cov-fail-under=80"
 check = [
   "format",
   "lint",
+  "type-check",
   "test",
   "test-cov",
 ]
@@ -97,3 +101,6 @@ extend-exclude = ["src/parquet"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
+
+[tool.setuptools.package-data]
+"parquet_analyzer" = ["templates/*.j2", "static/*"]

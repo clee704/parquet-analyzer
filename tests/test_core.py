@@ -165,7 +165,7 @@ def test_get_summary_counts_pages_and_sizes():
     assert summary["compressed_page_size"] == 128
     assert summary["column_index_size"] == 12
     assert summary["offset_index_size"] == 6
-    assert summary["bloom_fitler_size"] == 4
+    assert summary["bloom_filter_size"] == 4
     assert summary["footer_size"] == 15
     assert summary["file_size"] == 39
 
@@ -555,7 +555,7 @@ def test_read_helpers_and_summary(monkeypatch):
     assert summary["page_header_size"] == 12
     assert summary["uncompressed_page_data_size"] == 10
     assert summary["compressed_page_data_size"] == 6
-    assert summary["bloom_fitler_size"] == 1
+    assert summary["bloom_filter_size"] == 1
 
 
 def test_create_segment_preserves_metadata():

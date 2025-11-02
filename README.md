@@ -62,7 +62,7 @@ The default output provides a structured JSON view with three main sections:
     "compressed_page_size": 143,
     "column_index_size": 48,
     "offset_index_size": 23,
-    "bloom_fitler_size": 0,
+    "bloom_filter_size": 0,
     "footer_size": 527,
     "file_size": 753
   }

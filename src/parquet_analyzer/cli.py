@@ -13,16 +13,17 @@ from ._core import (
     parse_parquet_file,
     segment_to_json,
 )
+from ._html import generate_html_report
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="parquet-analyzer")
     parser.add_argument("parquet_file", help="Path to the Parquet file to inspect")
     parser.add_argument(
-        "-s",
-        "--show-offsets-and-thrift-details",
-        action="store_true",
-        help="Print the raw segment structure including Thrift offsets",
+        "--output-mode",
+        choices=["default", "segments", "html"],
+        default="default",
+        help="Set the output mode: 'default' for summary information, 'segments' for raw segment structure, 'html' for HTML report",
     )
     parser.add_argument(
         "--log-level",
@@ -43,17 +44,34 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
 
     segments, column_chunk_data_offsets = parse_parquet_file(args.parquet_file)
-    if args.show_offsets_and_thrift_details:
-        output = segments
-    else:
+    if args.output_mode == "default":
         footer = segment_to_json(find_footer_segment(segments))
-        output = {
-            "summary": get_summary(footer, segments),
-            "footer": footer,
-            "pages": get_pages(segments, column_chunk_data_offsets),
-        }
-
-    print(json.dumps(output, indent=2, default=json_encode))
+        print(
+            json.dumps(
+                {
+                    "summary": get_summary(footer, segments),
+                    "footer": footer,
+                    "pages": get_pages(segments, column_chunk_data_offsets),
+                },
+                indent=2,
+                default=json_encode,
+            )
+        )
+    elif args.output_mode == "segments":
+        print(json.dumps(segments, indent=2, default=json_encode))
+    elif args.output_mode == "html":
+        footer = segment_to_json(find_footer_segment(segments))
+        summary = get_summary(footer, segments)
+        print(
+            generate_html_report(
+                args.parquet_file,
+                summary=summary,
+                footer=footer,
+                segments=segments,
+            )
+        )
+    else:
+        raise ValueError(f"Unknown output mode: {args.output_mode}")
 
 
 if __name__ == "__main__":  # pragma: no cover
