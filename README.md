@@ -25,7 +25,7 @@ pip install -e .
 
 ### Requirements
 
-- Python 3.8+
+- Python 3.11+
 - thrift>=0.16 (installed automatically)
 
 ## Usage
