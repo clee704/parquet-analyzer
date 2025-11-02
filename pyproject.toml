@@ -82,6 +82,11 @@ check = [
   "test",
   "test-cov",
 ]
+update-thrift = [
+  "curl -fsSL https://raw.githubusercontent.com/apache/parquet-format/master/src/main/thrift/parquet.thrift -o parquet.thrift",
+  "thrift --gen py --out src parquet.thrift",
+  "rm -f src/__init__.py",
+]
 
 [tool.ruff]
 target-version = "py311"

@@ -350,10 +350,12 @@ class SizeStatistics(object):
 
     This field may be omitted if max_repetition_level is 0 without loss
     of information.
+
      - definition_level_histogram: Same as repetition_level_histogram except for definition levels.
 
     This field may be omitted if max_definition_level is 0 or 1 without
     loss of information.
+
 
     """
     thrift_spec = None
@@ -2486,10 +2488,11 @@ class DataPageHeader(object):
     If a OffsetIndex is present, a page must begin at a row
     boundary (repetition_level = 0). Otherwise, pages may begin
     within a row (repetition_level > 0).
-     - encoding: Encoding used for this data page
-     - definition_level_encoding: Encoding used for definition levels
-     - repetition_level_encoding: Encoding used for repetition levels
-     - statistics: Optional statistics for the data in this page
+
+     - encoding: Encoding used for this data page *
+     - definition_level_encoding: Encoding used for definition levels *
+     - repetition_level_encoding: Encoding used for repetition levels *
+     - statistics: Optional statistics for the data in this page *
 
     """
     thrift_spec = None
@@ -2642,10 +2645,11 @@ class DictionaryPageHeader(object):
     if it is partly or completely dictionary encoded. At most one dictionary page
     can be placed in a column chunk.
 
+
     Attributes:
-     - num_values: Number of values in the dictionary
-     - encoding: Encoding using this dictionary page
-     - is_sorted: If true, the entries in the dictionary are sorted in ascending order
+     - num_values: Number of values in the dictionary *
+     - encoding: Encoding using this dictionary page *
+     - is_sorted: If true, the entries in the dictionary are sorted in ascending order *
 
     """
     thrift_spec = None
@@ -2731,14 +2735,16 @@ class DataPageHeaderV2(object):
     Repetition and definition levels are uncompressed
     The remaining section containing the data is compressed if is_compressed is true
 
+
     Attributes:
-     - num_values: Number of values, including NULLs, in this data page.
+     - num_values: Number of values, including NULLs, in this data page. *
      - num_nulls: Number of NULL values, in this data page.
-    Number of non-null = num_values - num_nulls which is also the number of values in the data section
+    Number of non-null = num_values - num_nulls which is also the number of values in the data section *
      - num_rows: Number of rows in this data page. Every page must begin at a
     row boundary (repetition_level = 0): rows must **not** be
     split across page boundaries when using V2 data pages.
-     - encoding: Encoding used for data in this page
+
+     - encoding: Encoding used for data in this page *
      - definition_levels_byte_length: Length of the definition levels
      - repetition_levels_byte_length: Length of the repetition levels
      - is_compressed: Whether the values are compressed.
@@ -2746,7 +2752,7 @@ class DataPageHeaderV2(object):
     definition_levels_byte_length + repetition_levels_byte_length + 1 and compressed_page_size (included)
     is compressed with the compression_codec.
     If missing it is considered compressed
-     - statistics: Optional statistics for the data in this page
+     - statistics: Optional statistics for the data in this page *
 
     """
     thrift_spec = None
@@ -2887,7 +2893,7 @@ class DataPageHeaderV2(object):
 
 class SplitBlockAlgorithm(object):
     """
-    Block-based algorithm type annotation.
+    Block-based algorithm type annotation. *
 
     """
     thrift_spec = None
@@ -2933,10 +2939,10 @@ class SplitBlockAlgorithm(object):
 
 class BloomFilterAlgorithm(object):
     """
-    The algorithm used in Bloom filter.
+    The algorithm used in Bloom filter. *
 
     Attributes:
-     - BLOCK: Block-based Bloom filter.
+     - BLOCK: Block-based Bloom filter. *
 
     """
     thrift_spec = None
@@ -2998,6 +3004,7 @@ class XxHash(object):
     Hash strategy type annotation. xxHash is an extremely fast non-cryptographic hash
     algorithm. It uses 64 bits version of xxHash.
 
+
     """
     thrift_spec = None
 
@@ -3045,8 +3052,9 @@ class BloomFilterHash(object):
     The hash function used in Bloom filter. This function takes the hash of a column value
     using plain encoding.
 
+
     Attributes:
-     - XXHASH: xxHash Strategy.
+     - XXHASH: xxHash Strategy. *
 
     """
     thrift_spec = None
@@ -3106,6 +3114,7 @@ class BloomFilterHash(object):
 class Uncompressed(object):
     """
     The compression used in the Bloom filter.
+
 
     """
     thrift_spec = None
@@ -3214,11 +3223,12 @@ class BloomFilterHeader(object):
     Bloom filter header is stored at beginning of Bloom filter data of each column
     and followed by its bitset.
 
+
     Attributes:
-     - numBytes: The size of bitset in bytes
-     - algorithm: The algorithm for setting bits.
-     - hash: The hash function used for Bloom filter.
-     - compression: The compression used in the Bloom filter
+     - numBytes: The size of bitset in bytes *
+     - algorithm: The algorithm for setting bits. *
+     - hash: The hash function used for Bloom filter. *
+     - compression: The compression used in the Bloom filter *
 
     """
     thrift_spec = None
@@ -3318,9 +3328,9 @@ class BloomFilterHeader(object):
 class PageHeader(object):
     """
     Attributes:
-     - type: the type of the page: indicates which of the *_header fields is set
-     - uncompressed_page_size: Uncompressed page size in bytes (not including this header)
-     - compressed_page_size: Compressed (and potentially encrypted) page size in bytes, not including this header
+     - type: the type of the page: indicates which of the *_header fields is set *
+     - uncompressed_page_size: Uncompressed page size in bytes (not including this header) *
+     - compressed_page_size: Compressed (and potentially encrypted) page size in bytes, not including this header *
      - crc: The 32-bit CRC checksum for the page, to be be calculated as follows:
 
     - The standard CRC32 algorithm is used (with polynomial 0x04C11DB7,
@@ -3555,8 +3565,8 @@ class SortingColumn(object):
     Sort order within a RowGroup of a leaf column
 
     Attributes:
-     - column_idx: The ordinal position of the column (in this row group)
-     - descending: If true, indicates this column is sorted in descending order.
+     - column_idx: The ordinal position of the column (in this row group) *
+     - descending: If true, indicates this column is sorted in descending order. *
      - nulls_first: If true, nulls will come before non-null values, otherwise,
     nulls go at the end.
 
@@ -3645,9 +3655,9 @@ class PageEncodingStats(object):
     statistics of a given page type and encoding
 
     Attributes:
-     - page_type: the page type (data/dic/...)
-     - encoding: encoding of the page
-     - count: number of pages of this type with this encoding
+     - page_type: the page type (data/dic/...) *
+     - encoding: encoding of the page *
+     - count: number of pages of this type with this encoding *
 
     """
     thrift_spec = None
@@ -3734,24 +3744,24 @@ class ColumnMetaData(object):
     Description for column metadata
 
     Attributes:
-     - type: Type of this column
+     - type: Type of this column *
      - encodings: Set of all encodings used for this column. The purpose is to validate
-    whether we can decode those pages.
-     - path_in_schema: Path in schema
-     - codec: Compression codec
-     - num_values: Number of values in this column
-     - total_uncompressed_size: total byte size of all uncompressed pages in this column chunk (including the headers)
+    whether we can decode those pages. *
+     - path_in_schema: Path in schema *
+     - codec: Compression codec *
+     - num_values: Number of values in this column *
+     - total_uncompressed_size: total byte size of all uncompressed pages in this column chunk (including the headers) *
      - total_compressed_size: total byte size of all compressed, and potentially encrypted, pages
-    in this column chunk (including the headers)
-     - key_value_metadata: Optional key/value metadata
-     - data_page_offset: Byte offset from beginning of file to first data page
-     - index_page_offset: Byte offset from beginning of file to root index page
-     - dictionary_page_offset: Byte offset from the beginning of file to first (only) dictionary page
+    in this column chunk (including the headers) *
+     - key_value_metadata: Optional key/value metadata *
+     - data_page_offset: Byte offset from beginning of file to first data page *
+     - index_page_offset: Byte offset from beginning of file to root index page *
+     - dictionary_page_offset: Byte offset from the beginning of file to first (only) dictionary page *
      - statistics: optional statistics for this column chunk
      - encoding_stats: Set of all encodings used for pages in this column chunk.
     This information can be used to determine if all data pages are
-    dictionary encoded for example
-     - bloom_filter_offset: Byte offset from beginning of file to Bloom filter data.
+    dictionary encoded for example *
+     - bloom_filter_offset: Byte offset from beginning of file to Bloom filter data. *
      - bloom_filter_length: Size of Bloom filter data including the serialized header, in bytes.
     Added in 2.10 so readers may not read this field from old files and
     it can be obtained after the BloomFilterHeader has been deserialized.
@@ -4075,8 +4085,8 @@ class EncryptionWithFooterKey(object):
 class EncryptionWithColumnKey(object):
     """
     Attributes:
-     - path_in_schema: Column path in schema
-     - key_metadata: Retrieval metadata of column encryption key
+     - path_in_schema: Column path in schema *
+     - key_metadata: Retrieval metadata of column encryption key *
 
     """
     thrift_spec = None
@@ -4229,24 +4239,26 @@ class ColumnChunk(object):
     Attributes:
      - file_path: File where column data is stored.  If not set, assumed to be same file as
     metadata.  This path is relative to the current file.
+
      - file_offset: Deprecated: Byte offset in file_path to the ColumnMetaData
-    *
-    * Past use of this field has been inconsistent, with some implementations
-    * using it to point to the ColumnMetaData and some using it to point to
-    * the first page in the column chunk. In many cases, the ColumnMetaData at this
-    * location is wrong. This field is now deprecated and should not be used.
-    * Writers should set this field to 0 if no ColumnMetaData has been written outside
-    * the footer.
+
+    Past use of this field has been inconsistent, with some implementations
+    using it to point to the ColumnMetaData and some using it to point to
+    the first page in the column chunk. In many cases, the ColumnMetaData at this
+    location is wrong. This field is now deprecated and should not be used.
+    Writers should set this field to 0 if no ColumnMetaData has been written outside
+    the footer.
      - meta_data: Column metadata for this chunk. Some writers may also replicate this at the
     location pointed to by file_path/file_offset.
     Note: while marked as optional, this field is in fact required by most major
     Parquet implementations. As such, writers MUST populate this field.
-     - offset_index_offset: File offset of ColumnChunk's OffsetIndex
-     - offset_index_length: Size of ColumnChunk's OffsetIndex, in bytes
-     - column_index_offset: File offset of ColumnChunk's ColumnIndex
-     - column_index_length: Size of ColumnChunk's ColumnIndex, in bytes
-     - crypto_metadata: Crypto metadata of encrypted columns
-     - encrypted_column_metadata: Encrypted column metadata for this chunk
+
+     - offset_index_offset: File offset of ColumnChunk's OffsetIndex *
+     - offset_index_length: Size of ColumnChunk's OffsetIndex, in bytes *
+     - column_index_offset: File offset of ColumnChunk's ColumnIndex *
+     - column_index_length: Size of ColumnChunk's ColumnIndex, in bytes *
+     - crypto_metadata: Crypto metadata of encrypted columns *
+     - encrypted_column_metadata: Encrypted column metadata for this chunk *
 
     """
     thrift_spec = None
@@ -4391,15 +4403,16 @@ class RowGroup(object):
     Attributes:
      - columns: Metadata for each column chunk in this row group.
     This list must have the same order as the SchemaElement list in FileMetaData.
-     - total_byte_size: Total byte size of all the uncompressed column data in this row group
-     - num_rows: Number of rows in this row group
+
+     - total_byte_size: Total byte size of all the uncompressed column data in this row group *
+     - num_rows: Number of rows in this row group *
      - sorting_columns: If set, specifies a sort ordering of the rows in this RowGroup.
     The sorting columns can be a subset of all the columns.
      - file_offset: Byte offset from beginning of file to first page (data or dictionary)
-    in this row group
+    in this row group *
      - total_compressed_size: Total byte size of all compressed (and potentially encrypted) column data
-    in this row group
-     - ordinal: Row group ordinal in the file
+    in this row group *
+     - ordinal: Row group ordinal in the file *
 
     """
     thrift_spec = None
@@ -4630,11 +4643,20 @@ class ColumnOrder(object):
       BOOLEAN - false, true
       INT32 - signed comparison
       INT64 - signed comparison
-      INT96 (only used for legacy timestamps) - undefined
+      INT96 (only used for legacy timestamps) - undefined(+)
       FLOAT - signed comparison of the represented value (*)
       DOUBLE - signed comparison of the represented value (*)
       BYTE_ARRAY - unsigned byte-wise comparison
       FIXED_LEN_BYTE_ARRAY - unsigned byte-wise comparison
+
+    (+) While the INT96 type has been deprecated, at the time of writing it is
+       still used in many legacy systems. If a Parquet implementation chooses
+       to write statistics for INT96 columns, it is recommended to order them
+       according to the legacy rules:
+       - compare the last 4 bytes (days) as a little-endian 32-bit signed integer
+       - if equal last 4 bytes, compare the first 8 bytes as a little-endian
+         64-bit signed integer (nanos)
+       See https://github.com/apache/parquet-format/issues/502 for more details
 
     (*) Because the sorting order is not specified properly for floating
         point values (relations vs. total ordering) the following
@@ -4710,8 +4732,9 @@ class ColumnOrder(object):
 class PageLocation(object):
     """
     Attributes:
-     - offset: Offset of the page in the file
-     - compressed_page_size: Size of the page, including header. Sum of compressed_page_size and header length
+     - offset: Offset of the page in the file *
+     - compressed_page_size: Size of the page, including header. Sum of compressed_page_size and header
+    length
      - first_row_index: Index within the RowGroup of the first row of the page. When an
     OffsetIndex is present, pages must begin on row boundaries
     (repetition_level = 0).
@@ -4943,7 +4966,9 @@ class ColumnIndex(object):
     Element 0 is the first element of the histogram for the first page.
     Element (max_repetition_level + 1) is the first element of the histogram
     for the second page.
+
      - definition_level_histograms: Same as repetition_level_histograms except for definitions levels.
+
 
     """
     thrift_spec = None
@@ -5118,10 +5143,10 @@ class ColumnIndex(object):
 class AesGcmV1(object):
     """
     Attributes:
-     - aad_prefix: AAD prefix
-     - aad_file_unique: Unique file identifier part of AAD suffix
+     - aad_prefix: AAD prefix *
+     - aad_file_unique: Unique file identifier part of AAD suffix *
      - supply_aad_prefix: In files encrypted with AAD prefix without storing it,
-    readers must supply the prefix
+    readers must supply the prefix *
 
     """
     thrift_spec = None
@@ -5200,10 +5225,10 @@ class AesGcmV1(object):
 class AesGcmCtrV1(object):
     """
     Attributes:
-     - aad_prefix: AAD prefix
-     - aad_file_unique: Unique file identifier part of AAD suffix
+     - aad_prefix: AAD prefix *
+     - aad_file_unique: Unique file identifier part of AAD suffix *
      - supply_aad_prefix: In files encrypted with AAD prefix without storing it,
-    readers must supply the prefix
+    readers must supply the prefix *
 
     """
     thrift_spec = None
@@ -5356,19 +5381,20 @@ class FileMetaData(object):
     Description for file metadata
 
     Attributes:
-     - version: Version of this file
+     - version: Version of this file *
      - schema: Parquet schema for this file.  This schema contains metadata for all the columns.
     The schema is represented as a tree with a single root.  The nodes of the tree
     are flattened to a list by doing a depth-first traversal.
     The column metadata contains the path in the schema for that column which can be
     used to map columns to nodes in the schema.
-    The first element is the root
-     - num_rows: Number of rows in this file
-     - row_groups: Row groups in this file
-     - key_value_metadata: Optional key/value metadata
+    The first element is the root *
+     - num_rows: Number of rows in this file *
+     - row_groups: Row groups in this file *
+     - key_value_metadata: Optional key/value metadata *
      - created_by: String for application that wrote this file.  This should be in the format
     <Application> version <App Version> (build <App Build Hash>).
     e.g. impala version 1.0 (build 6cf94d29b2b7115df4de2c06e2ab4326d721eb55)
+
      - column_orders: Sort order used for the min_value and max_value fields in the Statistics
     objects and the min_values and max_values fields in the ColumnIndex
     objects of each column in this file. Sort orders are listed in the order
@@ -5570,14 +5596,14 @@ class FileMetaData(object):
 
 class FileCryptoMetaData(object):
     """
-    Crypto metadata for files with encrypted footer
+    Crypto metadata for files with encrypted footer *
 
     Attributes:
      - encryption_algorithm: Encryption algorithm. This field is only used for files
     with encrypted footer. Files with plaintext footer store algorithm id
     inside footer (FileMetaData structure).
      - key_metadata: Retrieval metadata of key used for encryption of footer,
-    and (possibly) columns
+    and (possibly) columns *
 
     """
     thrift_spec = None

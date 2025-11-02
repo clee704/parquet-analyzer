@@ -33,7 +33,7 @@ enum Type {
   BOOLEAN = 0;
   INT32 = 1;
   INT64 = 2;
-  INT96 = 3; // deprecated, only used by legacy implementations.
+  INT96 = 3;  // deprecated, new Parquet writers should not write data in INT96
   FLOAT = 4;
   DOUBLE = 5;
   BYTE_ARRAY = 6;
@@ -226,14 +226,14 @@ struct SizeStatistics {
     *
     * This field may be omitted if max_repetition_level is 0 without loss
     * of information.
-    */
+    **/
    2: optional list<i64> repetition_level_histogram;
    /**
     * Same as repetition_level_histogram except for definition levels.
     *
     * This field may be omitted if max_definition_level is 0 or 1 without
     * loss of information.
-    */
+    **/
    3: optional list<i64> definition_level_histogram;
 }
 
@@ -287,7 +287,7 @@ struct Statistics {
     * or the column is not nullable.
     * Readers MUST distinguish between null_count not being present and null_count == 0.
     * If null_count is not present, readers MUST NOT assume null_count == 0.
-   */
+    */
    3: optional i64 null_count;
    /** count of distinct values occurring */
    4: optional i64 distinct_count;
@@ -312,12 +312,12 @@ struct Statistics {
 }
 
 /** Empty structs to use as logical type annotations */
-struct StringType {} // allowed for BYTE_ARRAY, must be encoded with UTF-8
-struct UUIDType {} // allowed for FIXED[16], must be encoded as raw UUID bytes
-struct MapType {} // see LogicalTypes.md
-struct ListType {} // see LogicalTypes.md
-struct EnumType {} // allowed for BYTE_ARRAY, must be encoded with UTF-8
-struct DateType {} // allowed for INT32
+struct StringType {}  // allowed for BYTE_ARRAY, must be encoded with UTF-8
+struct UUIDType {}    // allowed for FIXED[16], must be encoded as raw UUID bytes
+struct MapType {}     // see LogicalTypes.md
+struct ListType {}    // see LogicalTypes.md
+struct EnumType {}    // allowed for BYTE_ARRAY, must be encoded with UTF-8
+struct DateType {}    // allowed for INT32
 struct Float16Type {} // allowed for FIXED[2], must be encoded as raw FLOAT16 bytes (see LogicalTypes.md)
 
 /**
@@ -327,7 +327,7 @@ struct Float16Type {} // allowed for FIXED[2], must be encoded as raw FLOAT16 by
  * null and the physical type can't be determined. This annotation signals
  * the case where the physical type was guessed from all null values.
  */
-struct NullType {} // allowed for any physical type, only null values stored
+struct NullType {}    // allowed for any physical type, only null values stored
 
 /**
  * Decimal logical type annotation
@@ -392,14 +392,16 @@ struct IntType {
  *
  * Allowed for physical types: BYTE_ARRAY
  */
-struct JsonType {}
+struct JsonType {
+}
 
 /**
  * Embedded BSON logical type annotation
  *
  * Allowed for physical types: BYTE_ARRAY
  */
-struct BsonType {}
+struct BsonType {
+}
 
 /**
  * Embedded Variant logical type annotation
@@ -467,12 +469,12 @@ struct GeographyType {
  * from the following table.
  */
 union LogicalType {
-  1:  StringType STRING // use ConvertedType UTF8
-  2:  MapType MAP // use ConvertedType MAP
-  3:  ListType LIST // use ConvertedType LIST
-  4:  EnumType ENUM // use ConvertedType ENUM
-  5:  DecimalType DECIMAL // use ConvertedType DECIMAL + SchemaElement.{scale, precision}
-  6:  DateType DATE // use ConvertedType DATE
+  1:  StringType STRING       // use ConvertedType UTF8
+  2:  MapType MAP             // use ConvertedType MAP
+  3:  ListType LIST           // use ConvertedType LIST
+  4:  EnumType ENUM           // use ConvertedType ENUM
+  5:  DecimalType DECIMAL     // use ConvertedType DECIMAL + SchemaElement.{scale, precision}
+  6:  DateType DATE           // use ConvertedType DATE
 
   // use ConvertedType TIME_MICROS for TIME(isAdjustedToUTC = *, unit = MICROS)
   // use ConvertedType TIME_MILLIS for TIME(isAdjustedToUTC = *, unit = MILLIS)
@@ -483,14 +485,14 @@ union LogicalType {
   8:  TimestampType TIMESTAMP
 
   // 9: reserved for INTERVAL
-  10: IntType INTEGER // use ConvertedType INT_* or UINT_*
-  11: NullType UNKNOWN // no compatible ConvertedType
-  12: JsonType JSON // use ConvertedType JSON
-  13: BsonType BSON // use ConvertedType BSON
-  14: UUIDType UUID // no compatible ConvertedType
-  15: Float16Type FLOAT16 // no compatible ConvertedType
-  16: VariantType VARIANT // no compatible ConvertedType
-  17: GeometryType GEOMETRY // no compatible ConvertedType
+  10: IntType INTEGER         // use ConvertedType INT_* or UINT_*
+  11: NullType UNKNOWN        // no compatible ConvertedType
+  12: JsonType JSON           // use ConvertedType JSON
+  13: BsonType BSON           // use ConvertedType BSON
+  14: UUIDType UUID           // no compatible ConvertedType
+  15: Float16Type FLOAT16     // no compatible ConvertedType
+  16: VariantType VARIANT     // no compatible ConvertedType
+  17: GeometryType GEOMETRY   // no compatible ConvertedType
   18: GeographyType GEOGRAPHY // no compatible ConvertedType
 }
 
@@ -624,7 +626,7 @@ enum Encoding {
 
       Added in 2.8 for FLOAT and DOUBLE.
       Support for INT32, INT64 and FIXED_LEN_BYTE_ARRAY added in 2.11.
-  */
+   */
   BYTE_STREAM_SPLIT = 9;
 }
 
@@ -642,9 +644,9 @@ enum CompressionCodec {
   SNAPPY = 1;
   GZIP = 2;
   LZO = 3;
-  BROTLI = 4; // Added in 2.4
-  LZ4 = 5; // DEPRECATED (Added in 2.4)
-  ZSTD = 6; // Added in 2.4
+  BROTLI = 4;  // Added in 2.4
+  LZ4 = 5;     // DEPRECATED (Added in 2.4)
+  ZSTD = 6;    // Added in 2.4
   LZ4_RAW = 7; // Added in 2.9
 }
 
@@ -673,19 +675,19 @@ struct DataPageHeader {
    * If a OffsetIndex is present, a page must begin at a row
    * boundary (repetition_level = 0). Otherwise, pages may begin
    * within a row (repetition_level > 0).
-   */
+   **/
   1: required i32 num_values
 
-  /** Encoding used for this data page */
+  /** Encoding used for this data page **/
   2: required Encoding encoding
 
-  /** Encoding used for definition levels */
+  /** Encoding used for definition levels **/
   3: required Encoding definition_level_encoding;
 
-  /** Encoding used for repetition levels */
+  /** Encoding used for repetition levels **/
   4: required Encoding repetition_level_encoding;
 
-  /** Optional statistics for the data in this page */
+  /** Optional statistics for the data in this page **/
   5: optional Statistics statistics;
 }
 
@@ -697,15 +699,15 @@ struct IndexPageHeader {
  * The dictionary page must be placed at the first position of the column chunk
  * if it is partly or completely dictionary encoded. At most one dictionary page
  * can be placed in a column chunk.
- */
+ **/
 struct DictionaryPageHeader {
-  /** Number of values in the dictionary */
+  /** Number of values in the dictionary **/
   1: required i32 num_values;
 
-  /** Encoding using this dictionary page */
+  /** Encoding using this dictionary page **/
   2: required Encoding encoding
 
-  /** If true, the entries in the dictionary are sorted in ascending order */
+  /** If true, the entries in the dictionary are sorted in ascending order **/
   3: optional bool is_sorted;
 }
 
@@ -713,20 +715,20 @@ struct DictionaryPageHeader {
  * New page format allowing reading levels without decompressing the data
  * Repetition and definition levels are uncompressed
  * The remaining section containing the data is compressed if is_compressed is true
- */
+ **/
 struct DataPageHeaderV2 {
-  /** Number of values, including NULLs, in this data page. */
+  /** Number of values, including NULLs, in this data page. **/
   1: required i32 num_values
   /** Number of NULL values, in this data page.
-      Number of non-null = num_values - num_nulls which is also the number of values in the data section */
+      Number of non-null = num_values - num_nulls which is also the number of values in the data section **/
   2: required i32 num_nulls
   /**
    * Number of rows in this data page. Every page must begin at a
    * row boundary (repetition_level = 0): rows must **not** be
    * split across page boundaries when using V2 data pages.
-   */
+   **/
   3: required i32 num_rows
-  /** Encoding used for data in this page */
+  /** Encoding used for data in this page **/
   4: required Encoding encoding
 
   // repetition levels and definition levels are always using RLE (without size in it)
@@ -743,35 +745,35 @@ struct DataPageHeaderV2 {
   If missing it is considered compressed */
   7: optional bool is_compressed = true;
 
-  /** Optional statistics for the data in this page */
+  /** Optional statistics for the data in this page **/
   8: optional Statistics statistics;
 }
 
-/** Block-based algorithm type annotation. */
+/** Block-based algorithm type annotation. **/
 struct SplitBlockAlgorithm {}
-/** The algorithm used in Bloom filter. */
+/** The algorithm used in Bloom filter. **/
 union BloomFilterAlgorithm {
-  /** Block-based Bloom filter. */
+  /** Block-based Bloom filter. **/
   1: SplitBlockAlgorithm BLOCK;
 }
 
 /** Hash strategy type annotation. xxHash is an extremely fast non-cryptographic hash
  * algorithm. It uses 64 bits version of xxHash.
- */
+ **/
 struct XxHash {}
 
 /**
  * The hash function used in Bloom filter. This function takes the hash of a column value
  * using plain encoding.
- */
+ **/
 union BloomFilterHash {
-  /** xxHash Strategy. */
+  /** xxHash Strategy. **/
   1: XxHash XXHASH;
 }
 
 /**
  * The compression used in the Bloom filter.
- */
+ **/
 struct Uncompressed {}
 union BloomFilterCompression {
   1: Uncompressed UNCOMPRESSED;
@@ -780,26 +782,26 @@ union BloomFilterCompression {
 /**
   * Bloom filter header is stored at beginning of Bloom filter data of each column
   * and followed by its bitset.
-  */
+  **/
 struct BloomFilterHeader {
-  /** The size of bitset in bytes */
+  /** The size of bitset in bytes **/
   1: required i32 numBytes;
-  /** The algorithm for setting bits. */
+  /** The algorithm for setting bits. **/
   2: required BloomFilterAlgorithm algorithm;
-  /** The hash function used for Bloom filter. */
+  /** The hash function used for Bloom filter. **/
   3: required BloomFilterHash hash;
-  /** The compression used in the Bloom filter */
+  /** The compression used in the Bloom filter **/
   4: required BloomFilterCompression compression;
 }
 
 struct PageHeader {
-  /** the type of the page: indicates which of the *_header fields is set */
+  /** the type of the page: indicates which of the *_header fields is set **/
   1: required PageType type
 
-  /** Uncompressed page size in bytes (not including this header) */
+  /** Uncompressed page size in bytes (not including this header) **/
   2: required i32 uncompressed_page_size
 
-  /** Compressed (and potentially encrypted) page size in bytes, not including this header */
+  /** Compressed (and potentially encrypted) page size in bytes, not including this header **/
   3: required i32 compressed_page_size
 
   /** The 32-bit CRC checksum for the page, to be be calculated as follows:
@@ -831,7 +833,7 @@ struct PageHeader {
 /**
  * Wrapper struct to store key values
  */
-struct KeyValue {
+ struct KeyValue {
   1: required string key
   2: optional string value
 }
@@ -840,10 +842,10 @@ struct KeyValue {
  * Sort order within a RowGroup of a leaf column
  */
 struct SortingColumn {
-  /** The ordinal position of the column (in this row group) */
+  /** The ordinal position of the column (in this row group) **/
   1: required i32 column_idx
 
-  /** If true, indicates this column is sorted in descending order. */
+  /** If true, indicates this column is sorted in descending order. **/
   2: required bool descending
 
   /** If true, nulls will come before non-null values, otherwise,
@@ -855,52 +857,55 @@ struct SortingColumn {
  * statistics of a given page type and encoding
  */
 struct PageEncodingStats {
-  /** the page type (data/dic/...) */
+
+  /** the page type (data/dic/...) **/
   1: required PageType page_type;
 
-  /** encoding of the page */
+  /** encoding of the page **/
   2: required Encoding encoding;
 
-  /** number of pages of this type with this encoding */
+  /** number of pages of this type with this encoding **/
   3: required i32 count;
+
 }
 
 /**
  * Description for column metadata
  */
 struct ColumnMetaData {
-  /** Type of this column */
+  /** Type of this column **/
   1: required Type type
+
   /** Set of all encodings used for this column. The purpose is to validate
-   * whether we can decode those pages. */
+   * whether we can decode those pages. **/
   2: required list<Encoding> encodings
 
-  /** Path in schema */
+  /** Path in schema **/
   3: required list<string> path_in_schema
 
-  /** Compression codec */
+  /** Compression codec **/
   4: required CompressionCodec codec
 
-  /** Number of values in this column */
+  /** Number of values in this column **/
   5: required i64 num_values
 
-  /** total byte size of all uncompressed pages in this column chunk (including the headers) */
+  /** total byte size of all uncompressed pages in this column chunk (including the headers) **/
   6: required i64 total_uncompressed_size
 
   /** total byte size of all compressed, and potentially encrypted, pages 
-   *  in this column chunk (including the headers) */
+   *  in this column chunk (including the headers) **/
   7: required i64 total_compressed_size
 
-  /** Optional key/value metadata */
+  /** Optional key/value metadata **/
   8: optional list<KeyValue> key_value_metadata
 
-  /** Byte offset from beginning of file to first data page */
+  /** Byte offset from beginning of file to first data page **/
   9: required i64 data_page_offset
 
-  /** Byte offset from beginning of file to root index page */
+  /** Byte offset from beginning of file to root index page **/
   10: optional i64 index_page_offset
 
-  /** Byte offset from the beginning of file to first (only) dictionary page */
+  /** Byte offset from the beginning of file to first (only) dictionary page **/
   11: optional i64 dictionary_page_offset
 
   /** optional statistics for this column chunk */
@@ -908,10 +913,10 @@ struct ColumnMetaData {
 
   /** Set of all encodings used for pages in this column chunk.
    * This information can be used to determine if all data pages are
-   * dictionary encoded for example */
+   * dictionary encoded for example **/
   13: optional list<PageEncodingStats> encoding_stats;
 
-  /** Byte offset from beginning of file to Bloom filter data. */
+  /** Byte offset from beginning of file to Bloom filter data. **/
   14: optional i64 bloom_filter_offset;
 
   /** Size of Bloom filter data including the serialized header, in bytes.
@@ -934,13 +939,14 @@ struct ColumnMetaData {
   17: optional GeospatialStatistics geospatial_statistics;
 }
 
-struct EncryptionWithFooterKey {}
+struct EncryptionWithFooterKey {
+}
 
 struct EncryptionWithColumnKey {
-  /** Column path in schema */
+  /** Column path in schema **/
   1: required list<string> path_in_schema
 
-  /** Retrieval metadata of column encryption key */
+  /** Retrieval metadata of column encryption key **/
   2: optional binary key_metadata
 }
 
@@ -952,11 +958,10 @@ union ColumnCryptoMetaData {
 struct ColumnChunk {
   /** File where column data is stored.  If not set, assumed to be same file as
     * metadata.  This path is relative to the current file.
-    */
+    **/
   1: optional string file_path
 
-  /**
-   Deprecated: Byte offset in file_path to the ColumnMetaData
+  /** Deprecated: Byte offset in file_path to the ColumnMetaData
    *
    * Past use of this field has been inconsistent, with some implementations
    * using it to point to the ColumnMetaData and some using it to point to
@@ -971,53 +976,54 @@ struct ColumnChunk {
    * location pointed to by file_path/file_offset.
    * Note: while marked as optional, this field is in fact required by most major
    * Parquet implementations. As such, writers MUST populate this field.
-   */
+   **/
   3: optional ColumnMetaData meta_data
 
-  /** File offset of ColumnChunk's OffsetIndex */
+  /** File offset of ColumnChunk's OffsetIndex **/
   4: optional i64 offset_index_offset
 
-  /** Size of ColumnChunk's OffsetIndex, in bytes */
+  /** Size of ColumnChunk's OffsetIndex, in bytes **/
   5: optional i32 offset_index_length
 
-  /** File offset of ColumnChunk's ColumnIndex */
+  /** File offset of ColumnChunk's ColumnIndex **/
   6: optional i64 column_index_offset
 
-  /** Size of ColumnChunk's ColumnIndex, in bytes */
+  /** Size of ColumnChunk's ColumnIndex, in bytes **/
   7: optional i32 column_index_length
 
-  /** Crypto metadata of encrypted columns */
+  /** Crypto metadata of encrypted columns **/
   8: optional ColumnCryptoMetaData crypto_metadata
 
-  /** Encrypted column metadata for this chunk */
+  /** Encrypted column metadata for this chunk **/
   9: optional binary encrypted_column_metadata
 }
 
 struct RowGroup {
   /** Metadata for each column chunk in this row group.
    * This list must have the same order as the SchemaElement list in FileMetaData.
-   */
+   **/
   1: required list<ColumnChunk> columns
 
-  /** Total byte size of all the uncompressed column data in this row group */
+  /** Total byte size of all the uncompressed column data in this row group **/
   2: required i64 total_byte_size
 
-  /** Number of rows in this row group */
+  /** Number of rows in this row group **/
   3: required i64 num_rows
+
   /** If set, specifies a sort ordering of the rows in this RowGroup.
    * The sorting columns can be a subset of all the columns.
    */
   4: optional list<SortingColumn> sorting_columns
 
   /** Byte offset from beginning of file to first page (data or dictionary)
-   * in this row group */
+   * in this row group **/
   5: optional i64 file_offset
 
   /** Total byte size of all compressed (and potentially encrypted) column data 
-   *  in this row group */
+   *  in this row group **/
   6: optional i64 total_compressed_size
   
-  /** Row group ordinal in the file */
+  /** Row group ordinal in the file **/
   7: optional i16 ordinal
 }
 
@@ -1037,6 +1043,7 @@ struct TypeDefinedOrder {}
  * for this column should be ignored.
  */
 union ColumnOrder {
+
   /**
    * The sort orders for logical types are:
    *   UTF8 - unsigned byte-wise comparison
@@ -1069,11 +1076,20 @@ union ColumnOrder {
    *   BOOLEAN - false, true
    *   INT32 - signed comparison
    *   INT64 - signed comparison
-   *   INT96 (only used for legacy timestamps) - undefined
+   *   INT96 (only used for legacy timestamps) - undefined(+)
    *   FLOAT - signed comparison of the represented value (*)
    *   DOUBLE - signed comparison of the represented value (*)
    *   BYTE_ARRAY - unsigned byte-wise comparison
    *   FIXED_LEN_BYTE_ARRAY - unsigned byte-wise comparison
+   *
+   * (+) While the INT96 type has been deprecated, at the time of writing it is
+   *    still used in many legacy systems. If a Parquet implementation chooses
+   *    to write statistics for INT96 columns, it is recommended to order them
+   *    according to the legacy rules:
+   *    - compare the last 4 bytes (days) as a little-endian 32-bit signed integer
+   *    - if equal last 4 bytes, compare the first 8 bytes as a little-endian
+   *      64-bit signed integer (nanos)
+   *    See https://github.com/apache/parquet-format/issues/502 for more details
    *
    * (*) Because the sorting order is not specified properly for floating
    *     point values (relations vs. total ordering) the following
@@ -1083,7 +1099,7 @@ union ColumnOrder {
    *     - If the min is +0, the row group may contain -0 values as well.
    *     - If the max is -0, the row group may contain +0 values as well.
    *     - When looking for NaN values, min and max should be ignored.
-   *
+   * 
    *     When writing statistics the following rules should be followed:
    *     - NaNs should not be written to min or max statistics fields.
    *     - If the computed max value is zero (whether negative or positive),
@@ -1095,11 +1111,12 @@ union ColumnOrder {
 }
 
 struct PageLocation {
-  /** Offset of the page in the file */
+  /** Offset of the page in the file **/
   1: required i64 offset
 
   /**
-   * Size of the page, including header. Sum of compressed_page_size and header length
+   * Size of the page, including header. Sum of compressed_page_size and header
+   * length
    */
   2: required i32 compressed_page_size
 
@@ -1197,35 +1214,35 @@ struct ColumnIndex {
    * Element 0 is the first element of the histogram for the first page.
    * Element (max_repetition_level + 1) is the first element of the histogram
    * for the second page.
-   */
+   **/
    6: optional list<i64> repetition_level_histograms;
    /**
     * Same as repetition_level_histograms except for definitions levels.
-    */
+    **/
    7: optional list<i64> definition_level_histograms;
 }
 
 struct AesGcmV1 {
-  /** AAD prefix */
+  /** AAD prefix **/
   1: optional binary aad_prefix
 
-  /** Unique file identifier part of AAD suffix */
+  /** Unique file identifier part of AAD suffix **/
   2: optional binary aad_file_unique
 
   /** In files encrypted with AAD prefix without storing it,
-   * readers must supply the prefix */
+   * readers must supply the prefix **/
   3: optional bool supply_aad_prefix
 }
 
 struct AesGcmCtrV1 {
-  /** AAD prefix */
+  /** AAD prefix **/
   1: optional binary aad_prefix
 
-  /** Unique file identifier part of AAD suffix */
+  /** Unique file identifier part of AAD suffix **/
   2: optional binary aad_file_unique
 
   /** In files encrypted with AAD prefix without storing it,
-   * readers must supply the prefix */
+   * readers must supply the prefix **/
   3: optional bool supply_aad_prefix
 }
 
@@ -1238,7 +1255,7 @@ union EncryptionAlgorithm {
  * Description for file metadata
  */
 struct FileMetaData {
-  /** Version of this file */
+  /** Version of this file **/
   1: required i32 version
 
   /** Parquet schema for this file.  This schema contains metadata for all the columns.
@@ -1246,22 +1263,22 @@ struct FileMetaData {
    * are flattened to a list by doing a depth-first traversal.
    * The column metadata contains the path in the schema for that column which can be
    * used to map columns to nodes in the schema.
-   * The first element is the root */
+   * The first element is the root **/
   2: required list<SchemaElement> schema;
 
-  /** Number of rows in this file */
+  /** Number of rows in this file **/
   3: required i64 num_rows
 
-  /** Row groups in this file */
+  /** Row groups in this file **/
   4: required list<RowGroup> row_groups
 
-  /** Optional key/value metadata */
+  /** Optional key/value metadata **/
   5: optional list<KeyValue> key_value_metadata
 
   /** String for application that wrote this file.  This should be in the format
    * <Application> version <App Version> (build <App Build Hash>).
    * e.g. impala version 1.0 (build 6cf94d29b2b7115df4de2c06e2ab4326d721eb55)
-   */
+   **/
   6: optional string created_by
 
   /**
@@ -1296,7 +1313,7 @@ struct FileMetaData {
   9: optional binary footer_signing_key_metadata
 }
 
-/** Crypto metadata for files with encrypted footer */
+/** Crypto metadata for files with encrypted footer **/
 struct FileCryptoMetaData {
   /** 
    * Encryption algorithm. This field is only used for files
@@ -1304,8 +1321,8 @@ struct FileCryptoMetaData {
    * inside footer (FileMetaData structure).
    */
   1: required EncryptionAlgorithm encryption_algorithm
-
+    
   /** Retrieval metadata of key used for encryption of footer, 
-   *  and (possibly) columns */
+   *  and (possibly) columns **/
   2: optional binary key_metadata
 }

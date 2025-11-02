@@ -147,17 +147,13 @@ The development extra pulls in tooling (`hatch`, `ruff`, `pytest`) and `pyarrow`
 The Python modules in `src/parquet` are generated from `parquet.thrift`.
 
 1. Install the Apache Thrift compiler (`brew install thrift` on macOS, or download a release from the [Apache Thrift](https://thrift.apache.org/) project).
-2. From the repository root, regenerate the Python bindings:
+2. From the repository root, regenerate everything in one step:
 
    ```bash
-   thrift --gen py --out src/parquet parquet.thrift
+   hatch run dev:update-thrift
    ```
 
-   This overwrites `src/parquet/ttypes.py` and `src/parquet/constants.py` with the latest definitions.
-
-3. If the compiler creates an empty `src/__init__.py`, delete it—it is not needed when using the src-layout.
-
-4. Run `hatch run dev:lint`, `hatch run dev:test`, and `hatch run dev:test-cov` (fails under 80% coverage) to ensure generated code still passes linting, tests, and coverage thresholds.
+   This refreshes `parquet.thrift`, runs the compiler, and removes any stray `src/__init__.py` the compiler may create.
 
 ## Contributing
 
