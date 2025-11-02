@@ -208,6 +208,32 @@ The tool uses a custom Thrift protocol implementation (`OffsetRecordingProtocol`
 - Analyze row group sizing
 - Optimize column ordering
 
+## Development
+
+### Environment setup
+
+```bash
+pip install -e .[dev]
+hatch run dev:lint
+```
+
+### Regenerating Thrift bindings
+
+The Python modules in `src/parquet` are generated from `parquet.thrift`.
+
+1. Install the Apache Thrift compiler (`brew install thrift` on macOS, or download a release from the [Apache Thrift](https://thrift.apache.org/) project).
+2. From the repository root, regenerate the Python bindings:
+
+   ```bash
+   thrift --gen py --out src/parquet parquet.thrift
+   ```
+
+   This overwrites `src/parquet/ttypes.py` and `src/parquet/constants.py` with the latest definitions.
+
+3. If the compiler creates an empty `src/__init__.py`, delete it—it is not needed when using the src-layout.
+
+4. Run `hatch run dev:lint` to ensure generated code still passes the linter.
+
 ## Contributing
 
 Contributions are welcome! Please feel free to submit issues, feature requests, or pull requests.
