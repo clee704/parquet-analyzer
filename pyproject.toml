@@ -33,7 +33,8 @@ classifiers = [
 
 [project.optional-dependencies]
 dev = [
-  "hatch"
+  "hatch",
+  "ruff",
 ]
 
 [project.urls]
@@ -64,3 +65,14 @@ include = [
   "example-segments.json",
   "requirements.txt",
 ]
+
+[tool.hatch.envs.dev]
+features = ["dev"]
+
+[tool.hatch.envs.dev.scripts]
+lint = "ruff check src"
+lint-fix = "ruff check --fix src"
+
+[tool.ruff]
+target-version = "py311"
+extend-exclude = ["src/parquet"]
