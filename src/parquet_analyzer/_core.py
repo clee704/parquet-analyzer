@@ -465,6 +465,9 @@ def read_pages(f, column_chunk, segments: list[dict[str, Any]]):
             num_values = page.data_page_header.num_values
         elif page.data_page_header_v2 is not None:
             num_values = page.data_page_header_v2.num_values
+        # Some writers write dictionary page at data_page_offset
+        elif page.dictionary_page_header is not None:
+            num_values = page.dictionary_page_header.num_values
         else:
             break
         remaining_values -= num_values

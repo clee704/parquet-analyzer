@@ -1,0 +1,120 @@
+<section class="section section--summary">
+	<div class="section__header toggle-header">
+		<span class="toggle-indicator">-</span>
+		<h2 class="section__title">Summary</h2>
+	</div>
+	<div class="section__content toggle-content is-open">
+		<ul class="summary">
+			<li class="summary__item">
+				<span class="summary__key">File name</span>
+				<span class="summary__value">{{ filename }}</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">File path</span>
+				<span class="summary__value">{{ file_path }}</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">File size</span>
+				<span class="summary__value toggle-bytes" title="{{ format_bytes(summary.file_size) }}">{{ "{:,}".format(summary.file_size) }} bytes</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Footer size</span>
+				<span class="summary__value toggle-bytes" title="{{ format_bytes(summary.footer_size) }}">{{ "{:,}".format(summary.footer_size) }} bytes</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Total page header size</span>
+				<span class="summary__value toggle-bytes" title="{{ format_bytes(summary.page_header_size) }}">{{ "{:,}".format(summary.page_header_size) }} bytes</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Total compressed page data size</span>
+				<span class="summary__value toggle-bytes" title="{{ format_bytes(summary.compressed_page_data_size) }}">{{ "{:,}".format(summary.compressed_page_data_size) }} bytes</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Total uncompressed page data size</span>
+				<span class="summary__value toggle-bytes" title="{{ format_bytes(summary.uncompressed_page_data_size) }}">{{ "{:,}".format(summary.uncompressed_page_data_size) }} bytes</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Compression ratio</span>
+				{% if summary.compressed_page_data_size > 0 %}
+					<span class="summary__value">{{ "%.2f" | format(summary.uncompressed_page_data_size / summary.compressed_page_data_size) }}x</span>
+				{% else %}
+					<span class="summary__value">N/A</span>
+				{% endif %}
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Total column index size</span>
+				<span class="summary__value toggle-bytes" title="{{ format_bytes(summary.column_index_size) }}">{{ "{:,}".format(summary.column_index_size) }} bytes</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Total offset index size</span>
+				<span class="summary__value toggle-bytes" title="{{ format_bytes(summary.offset_index_size) }}">{{ "{:,}".format(summary.offset_index_size) }} bytes</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Total bloom filter size</span>
+				<span class="summary__value toggle-bytes" title="{{ format_bytes(summary.bloom_filter_size) }}">{{ "{:,}".format(summary.bloom_filter_size) }} bytes</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Rows</span>
+				<span class="summary__value">{{ "{:,}".format(summary.num_rows) }}</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Columns</span>
+				<span class="summary__value">
+					{% if summary.num_columns is defined %}
+						{{ "{:,}".format(summary.num_columns) }}
+					{% else %}
+						undefined
+					{% endif %}
+				</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Row groups</span>
+				<span class="summary__value">{{ "{:,}".format(summary.num_row_groups) }}</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Pages</span>
+				<span class="summary__value">{{ "{:,}".format(summary.num_pages) }}</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Dictionary pages</span>
+				<span class="summary__value">{{ "{:,}".format(summary.num_dict_pages) }}</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Data pages (V1)</span>
+				<span class="summary__value">{{ "{:,}".format(summary.num_v1_data_pages) }}</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Data pages (V2)</span>
+				<span class="summary__value">{{ "{:,}".format(summary.num_v2_data_pages) }}</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Encoding(s)</span>
+				<span class="summary__value">
+					{% for encoding in encodings %}
+						<code class="enum">{{ encoding }}</code>{% if not loop.last %}, {% endif %}
+					{% else %}
+						-
+					{% endfor %}
+				</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Compression codec(s)</span>
+				<span class="summary__value">
+					{% for codec in codecs %}
+						<code class="enum">{{ codec }}</code>{% if not loop.last %}, {% endif %}
+					{% else %}
+						-
+					{% endfor %}
+				</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Version</span>
+				<span class="summary__value">{{ footer.version }}</span>
+			</li>
+			<li class="summary__item">
+				<span class="summary__key">Created by</span>
+				<span class="summary__value">{{ footer.created_by }}</span>
+			</li>
+		</ul>
+	</div>
+</section>

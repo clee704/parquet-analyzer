@@ -204,21 +204,23 @@ def test_build_page_offset_to_column_chunk_mapping():
             "offset": 300,
             "length": 10,
             "value": [
+                {"name": "compressed_page_size", "value": 5},
                 {
                     "name": "data_page_header",
                     "value": [{"name": "num_values", "value": 2}],
-                }
+                },
             ],
         },
         {
             "name": "page",
-            "offset": 310,
+            "offset": 315,
             "length": 8,
             "value": [
+                {"name": "compressed_page_size", "value": 0},
                 {
                     "name": "data_page_header_v2",
                     "value": [{"name": "num_values", "value": 3}],
-                }
+                },
             ],
         },
     ]
@@ -244,7 +246,7 @@ def test_build_page_offset_to_column_chunk_mapping():
 
     assert mapping[200] == (0, 0)
     assert mapping[300] == (0, 0)
-    assert mapping[310] == (0, 0)
+    assert mapping[315] == (0, 0)
 
 
 def test_group_segments_combines_related_segments():
@@ -254,25 +256,27 @@ def test_group_segments_combines_related_segments():
             "offset": 300,
             "length": 10,
             "value": [
+                {"name": "compressed_page_size", "value": 5},
                 {
                     "name": "data_page_header",
                     "value": [{"name": "num_values", "value": 2}],
-                }
+                },
             ],
         },
-        {"name": "page_data", "offset": 305, "length": 5, "value": []},
+        {"name": "page_data", "offset": 310, "length": 5, "value": []},
         {
             "name": "page",
-            "offset": 310,
+            "offset": 315,
             "length": 10,
             "value": [
+                {"name": "compressed_page_size", "value": 5},
                 {
                     "name": "data_page_header_v2",
                     "value": [{"name": "num_values", "value": 3}],
-                }
+                },
             ],
         },
-        {"name": "page_data", "offset": 320, "length": 5, "value": []},
+        {"name": "page_data", "offset": 325, "length": 5, "value": []},
         {"name": "column_index", "offset": 400, "length": 2, "value": []},
         {"name": "column_index", "offset": 402, "length": 2, "value": []},
         {"name": "offset_index", "offset": 500, "length": 1, "value": []},

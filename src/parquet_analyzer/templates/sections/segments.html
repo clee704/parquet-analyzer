@@ -1,0 +1,78 @@
+<section class="section section--segments">
+	<div class="section__header toggle-header">
+		<span class="toggle-indicator">-</span>
+		<h2 class="section__title">Segments</h2>
+	</div>
+	<div class="section__content toggle-content is-open">
+		<ul class="segments">
+			{% set ns = namespace(segment_id=0) %}
+			{% for segment in grouped_segments recursive %}
+				{% set ns.segment_id = ns.segment_id + 1 %}
+				<li class="segment {{ segment_class_mapping.get(segment.name, "") }} {{ "segment--value" if not is_nested_segment(segment) and segment_class_mapping.get(segment.name, "") == "" }}" data-segment-offset="{{ segment.offset }}" id="segment-{{ ns.segment_id }}">
+					<div class="segment__top {{ "toggle-header" if is_nested_segment(segment) }}">
+						<div class="segment__left">
+							<div class="segment__header">
+								{% if is_nested_segment(segment) %}
+									<span class="toggle-indicator">+</span>
+								{% endif %}
+								<span class="segment__name">{{ segment.name }}</span>
+							</div>
+							<div class="segment__value {{ "segment__value--column-chunk-pages" if segment.name == ":column_chunk_pages" }}">
+								{% if segment.name == ":column_chunk_pages" %}
+									{{ segment.num_pages }} {{ "pages" if segment.num_pages != 1 else "page" }}
+									for
+									row group {{ segment.row_group_index }} column {{ segment.column_index }}
+								{% endif %}
+								{% if not is_nested_segment(segment) %}
+									{% if segment.value_truncated is defined %}
+										<code class="value">{{ segment.value_truncated.value }}</code> (truncated, original length {{ segment.value_truncated.original_length }})
+									{% elif segment.value is not none %}
+										<code class="value">{{ segment.value }}</code>
+									{% endif %}
+								{% endif %}
+								{% if segment.metadata is defined %}
+									{% if segment.metadata.enum_name is defined %}
+										(<span class="segment__meta segment__meta--enum-name">
+											{%- if segment.metadata.enum_name is sequence and segment.metadata.enum_name is not string -%}
+												{%- for name in segment.metadata.enum_name -%}
+													<code class="enum">{{ name }}</code>{%- if not loop.last -%}, {% endif -%}
+												{%- endfor -%}
+											{%- else -%}
+												<code class="enum">{{ segment.metadata.enum_name }}</code>
+											{%- endif -%}
+										</span>)
+									{% endif %}
+									{% if segment.metadata.type is defined %}
+										<span class="segment__meta segment__meta--type">
+											{% if not is_nested_segment(segment) and segment.value is not none %}
+												of type
+											{% endif %}
+											<code class="enum">{{ segment.metadata.type }}</code>
+										</span>
+									{% endif %}
+									{% if segment.metadata.type_class is defined %}
+										(<span class="segment__meta segment__meta--type-class"><code class="enum">{{ segment.metadata.type_class }}</code></span>)
+									{% endif %}
+									{% if segment.metadata.enum_type is defined %}
+										(<span class="segment__meta segment__meta--enum-type"><code class="enum">{{ segment.metadata.enum_type }}</code></span>)
+									{% endif %}
+								{% endif %}
+							</div>
+						</div>
+						<div class="segment__right">
+							<div class="segment__offset">offset {{ segment.offset }}</div>
+							<div class="segment__length">size {{ segment.length }}</div>
+						</div>
+					</div>
+					{% if is_nested_segment(segment) %}
+						<div class="segment__bottom toggle-content">
+							<ul class="segments">
+								{{ loop(segment.value) }}
+							</ul>
+						</div>
+					{% endif %}
+				</li>
+			{% endfor %}
+		</ul>
+	</div>
+</section>

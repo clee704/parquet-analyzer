@@ -1,0 +1,83 @@
+<section class="section section--columns">
+	<div class="section__header toggle-header">
+		<span class="toggle-indicator">-</span>
+		<h2 class="section__title">Columns</h2>
+	</div>
+	<div class="section__content toggle-content is-open">
+		<div>
+			Aggregated column statistics across {{ footer.row_groups | length }} row {{ "group" if footer.row_groups | length == 1 else "groups" }}.
+		</div>
+		<ul class="columns">
+            {% include "toggle-all.html" %}
+			{% for column in columns %}
+				<li class="columns__item">
+					<div class="toggle-header">
+						<span class="toggle-indicator">+</span>
+						Column {{ loop.index0 }}: <code class="column-name">{{ column.path_in_schema | join(".") }}</code>
+					</div>
+					<ul class="columns__props toggle-content">
+						<li>Type: <code class="enum">{{ column.type }}</code></li>
+						<li>Values: {{ "{:,}".format(column.num_values) }}</li>
+						<li>Total compressed size: {{ "{:,}".format(column.total_compressed_size) }} bytes</li>
+						<li>Total uncompressed size: {{ "{:,}".format(column.total_uncompressed_size) }} bytes</li>
+						{% if column.statistics is defined %}
+							<li>Statistics:
+								<ul>
+									{% if column.statistics.null_count is defined %}
+										<li>Null count: {{ "{:,}".format(column.statistics.null_count) }}</li>
+									{% endif %}
+									{% if column.statistics.distinct_counts is defined %}
+										<li>Distinct counts:
+											<ul>
+												{% for distinct_count in column.statistics.distinct_counts %}
+													<li>{{ "{:,}".format(distinct_count) }}</li>
+												{% endfor %}
+											</ul>
+										</li>
+									{% endif %}
+									{% if column.statistics.min_value is defined %}
+										<li>Min value: <code class="value">{{ format_stats_value(column.statistics.min_value, column.type, logical_type_mapping[column.path_in_schema]) }}</code></li>
+									{% endif %}
+									{% if column.statistics.max_value is defined %}
+										<li>Max value: <code class="value">{{ format_stats_value(column.statistics.max_value, column.type, logical_type_mapping[column.path_in_schema]) }}</code></li>
+									{% endif %}
+									{% if column.statistics.is_min_value_exact is defined %}
+										<li>Is min value exact: {{ column.statistics.is_min_value_exact }}</li>
+									{% endif %}
+									{% if column.statistics.is_max_value_exact is defined %}
+										<li>Is max value exact: {{ column.statistics.is_max_value_exact }}</li>
+									{% endif %}
+								</ul>
+							</li>
+						{% endif %}
+						<li>
+							Encodings:
+							{% for encoding in column.encodings %}
+								<code class="enum">{{ encoding }}</code>{% if not loop.last %}, {% endif %}
+							{% endfor %}
+						</li>
+						<li>Encoding stats:
+							<ul>
+								{% for item in column.encoding_stats.values() %}
+									<li>
+										<code class="enum">{{ item.page_type }}</code>
+										/
+										<code class="enum">{{ item.encoding }}</code>: {{ "{:,}".format(item.count) }}
+									</li>
+								{% endfor %}
+							</ul>
+						</li>
+						<li>
+							Compression codec(s):
+							{% for codec in column.codecs %}
+								<code class="enum">{{ codec }}</code>{% if not loop.last %}, {% endif %}
+							{% endfor %}
+						</li>
+					</ul>
+				</li>
+			{% else %}
+				<li class="columns__item">No columns found.</li>
+			{% endfor %}
+		</ul>
+	</div>
+</section>

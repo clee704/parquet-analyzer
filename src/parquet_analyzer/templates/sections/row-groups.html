@@ -1,0 +1,179 @@
+<section class="section section--rowgroups">
+	<div class="section__header toggle-header">
+		<span class="toggle-indicator">-</span>
+		<h2 class="section__title">Row groups</h2>
+	</div>
+	<div class="section__content toggle-content is-open">
+		<ul class="row-group">
+            {% include "toggle-all.html" %}
+			{% for item in footer.row_groups %}
+				<li class="row-group__item">
+					<div class="toggle-header">
+						<span class="toggle-indicator">+</span> Row group {{ loop.index0 }}
+					</div>
+					<ul class="row-group__props toggle-content">
+						{% if item.file_offset is defined %}
+							<li class="row-group__prop--file-offset">
+								File offset: <a class="segment-link" data-segment-offset="{{ item.file_offset }}">{{ item.file_offset }}</a>
+							</li>
+						{% endif %}
+						<li class="row-group__prop--num-rows">Rows: {{ "{:,}".format(item.num_rows) }}</li>
+						{% if item.total_compressed_size is defined %}
+							<li class="row-group__prop--total-compressed-size">Total compressed size: {{ "{:,}".format(item.total_compressed_size) }} bytes</li>
+						{% endif %}
+						<li class="row-group__prop--total-byte-size">Total byte size: {{ "{:,}".format(item.total_byte_size) }} bytes</li>
+						<li class="row-group__prop--columns">
+							<ul class="row-group__columns">
+                                {% include "toggle-all.html" %}
+								{% for column in item.columns %}
+									<li class="row-group__columns__item">
+										<div class="toggle-header">
+											<span class="toggle-indicator">+</span>
+											Column {{ loop.index0 }}: <code class="column-name">{{ column.meta_data.path_in_schema | join(".") }}</code>
+										</div>
+										<ul class="row-group__columns__props toggle-content">
+											<li class="row-group__columns__prop--type">Type: <code class="enum">{{ column.meta_data.type }}</code></li>
+											{% if column.meta_data.dictionary_page_offset is defined %}
+												<li class="row-group__columns__prop--dictionary-page-offset">
+													Dictionary page offset:
+													<a class="segment-link" data-segment-offset="{{ column.meta_data.dictionary_page_offset }}">{{ column.meta_data.dictionary_page_offset }}</a>
+												</li>
+											{% endif %}
+											<li class="row-group__columns__prop--data-page-offset">
+												Data page offset:
+												<a class="segment-link" data-segment-offset="{{ column.meta_data.data_page_offset }}">{{ column.meta_data.data_page_offset }}</a>
+											</li>
+											{% if column.column_index_offset is defined %}
+												<li class="row-group__columns__prop--column-index-offset">
+													Column index offset:
+													<a class="segment-link" data-segment-offset="{{ column.column_index_offset }}">{{ column.column_index_offset }}</a>
+											</li>
+											{% endif %}
+											{% if column.column_index_length is defined %}
+												<li class="row-group__columns__prop--column-index-length">Column index length: {{ column.column_index_length }}</li>
+											{% endif %}
+											{% if column.offset_index_offset is defined %}
+												<li class="row-group__columns__prop--offset-index-offset">
+													Offset index offset:
+													<a class="segment-link" data-segment-offset="{{ column.offset_index_offset }}">{{ column.offset_index_offset }}</a>
+												</li>
+											{% endif %}
+											{% if column.offset_index_length is defined %}
+												<li class="row-group__columns__prop--offset-index-length">Offset index length: {{ column.offset_index_length }}</li>
+											{% endif %}
+											{% if column.meta_data.bloom_filter_offset is defined %}
+												<li class="row-group__columns__prop--bloom-filter-offset">
+													Bloom filter offset:
+													<a class="segment-link" data-segment-offset="{{ column.meta_data.bloom_filter_offset }}">{{ column.meta_data.bloom_filter_offset }}</a>
+												</li>
+											{% endif %}
+											{% if column.meta_data.bloom_filter_length is defined %}
+												<li class="row-group__columns__prop--bloom-filter-length">Bloom filter length: {{ column.meta_data.bloom_filter_length }} bytes</li>
+											{% endif %}
+											<li class="row-group__columns__prop--num-values">Values: {{ "{:,}".format(column.meta_data.num_values) }}</li>
+											<li class="row-group__columns__prop--total-compressed-size">Total compressed size: {{ "{:,}".format(column.meta_data.total_compressed_size) }} bytes</li>
+											<li class="row-group__columns__prop--total-uncompressed-size">Total uncompressed size: {{ "{:,}".format(column.meta_data.total_uncompressed_size) }} bytes</li>
+											{% if column.meta_data.statistics is defined %}
+												<li class="row-group__columns__prop--statistics">
+													Statistics:
+													<ul>
+														{% if column.meta_data.statistics.null_count is defined %}
+															<li>Null count: {{ "{:,}".format(column.meta_data.statistics.null_count) }}</li>
+														{% endif %}
+														{% if column.meta_data.statistics.distinct_count is defined %}
+															<li>Distinct count: {{ "{:,}".format(column.meta_data.statistics.distinct_count) }}</li>
+														{% endif %}
+														{% if column.meta_data.statistics.min_value is defined %}
+															<li>Min value: <code class="value">{{ format_stats_value(column.meta_data.statistics.min_value, column.meta_data.type, logical_type_mapping[column.meta_data.path_in_schema | tuple]) }}</code></li>
+														{% endif %}
+														{% if column.meta_data.statistics.max_value is defined %}
+															<li>Max value: <code class="value">{{ format_stats_value(column.meta_data.statistics.max_value, column.meta_data.type, logical_type_mapping[column.meta_data.path_in_schema | tuple]) }}</code></li>
+														{% endif %}
+														{% if column.meta_data.statistics.is_min_value_exact is defined %}
+															<li>Is min value exact: {{ column.meta_data.statistics.is_min_value_exact }}</li>
+														{% endif %}
+														{% if column.meta_data.statistics.is_max_value_exact is defined %}
+															<li>Is max value exact: {{ column.meta_data.statistics.is_max_value_exact }}</li>
+														{% endif %}
+													</ul>
+												</li>
+											{% endif %}
+											{% if column.meta_data.size_statistics is defined %}
+												<li class="row-group__columns__prop--size-statistics">
+													Size statistics:
+													<ul>
+														{% if column.meta_data.size_statistics.unencoded_byte_array_data_bytes is defined %}
+															<li>Unencoded byte array data size: {{ "{:,}".format(column.meta_data.size_statistics.unencoded_byte_array_data_bytes) }} bytes</li>
+														{% endif %}
+														{% if column.meta_data.size_statistics.repetition_level_histogram is defined and column.meta_data.size_statistics.repetition_level_histogram | length > 0 %}
+															<li>Repetition level histogram:
+																<ul>
+																	{% for count in column.meta_data.size_statistics.repetition_level_histogram %}
+																		<li>Level {{ loop.index0 }}: {{ "{:,}".format(count) }}</li>
+																	{% endfor %}
+																</ul>
+															</li>
+														{% endif %}
+														{% if column.meta_data.size_statistics.definition_level_histogram is defined and column.meta_data.size_statistics.definition_level_histogram | length > 0 %}
+															<li>Definition level histogram:
+																<ul>
+																	{% for count in column.meta_data.size_statistics.definition_level_histogram %}
+																		<li>Level {{ loop.index0 }}: {{ "{:,}".format(count) }}</li>
+																	{% endfor %}
+																</ul>
+															</li>
+														{% endif %}
+													</ul>
+												</li>
+											{% endif %}
+											<li class="row-group__columns__prop--encodings">
+												Encodings:
+												{% for encoding in column.meta_data.encodings %}
+													<code class="enum">{{ encoding }}</code>{% if not loop.last %}, {% endif %}
+												{% endfor %}
+											</li>
+											{% if column.meta_data.encoding_stats is defined %}
+												<li class="row-group__columns__prop--encoding-stats">
+													Encoding stats:
+													<ul>
+														{% for item in column.meta_data.encoding_stats %}
+															<li>
+																<code class="enum">{{ item.page_type }}</code>
+																/
+																<code class="enum">{{ item.encoding }}</code>: {{ "{:,}".format(item.count) }}
+															</li>
+														{% endfor %}
+													</ul>
+												</li>
+											{% endif %}
+											<li class="row-group__columns__prop--codec">Compression codec: <code class="enum">{{ column.meta_data.codec }}</code></li>
+											{% if column.meta_data.key_value_metadata is defined %}
+												<li class="row-group__columns__prop--key-value-metadata">
+													Key-value metadata:
+													<ul>
+														{% for kv in column.meta_data.key_value_metadata %}
+															<li>
+																<code class="value">{{ kv.key }}</code>:
+																{% if kv.value is defined %}
+																	<code class="value">{{ kv.value }}</code>
+																{% else %}
+																	no value
+																{% endif %}
+															</li>
+														{% endfor %}
+													</ul>
+												</li>
+											{% endif %}
+										</ul>
+									</li>
+								{% endfor %}
+							</ul>
+						</li>
+					</ul>
+				</li>
+			{% else %}
+				<li class="row-group__item">No row groups found.</li>
+			{% endfor %}
+		</ul>
+	</div>
+</section>

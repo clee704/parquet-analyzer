@@ -1,0 +1,29 @@
+<section class="section section--key-value-metadata">
+	<div class="section__header toggle-header">
+		<span class="toggle-indicator">-</span>
+		<h2 class="section__title">Key-value metadata</h2>
+	</div>
+	<div class="section__content toggle-content is-open">
+		<div>
+			The footer has {{ footer.key_value_metadata | length }} key-value {{ "pair" if footer.key_value_metadata | length == 1 else "pairs" }}.
+		</div>
+		{% if footer.key_value_metadata %}
+			<table class="key-value-metadata">
+				<thead>
+					<tr>
+						<th class="key-value-metadata--key">Key</th>
+						<th class="key-value-metadata--value">Value</th>
+					</tr>
+				</thead>
+				<tbody>
+					{% for item in footer.key_value_metadata %}
+						<tr>
+							<td class="key-value-metadata--key">{{ item.key }}</td>
+							<td class="key-value-metadata--value">{{ item.value }}</td>
+						</tr>
+					{% endfor %}
+				</tbody>
+			</table>
+		{% endif %}
+	</div>
+</section>

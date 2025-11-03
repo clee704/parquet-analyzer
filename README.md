@@ -24,13 +24,16 @@ pip install -e .
 ### Basic usage
 
 ```bash
-# Analyze a Parquet file and get summary information
+# Analyze a Parquet file and emit the JSON summary/footer/pages bundle
 parquet-analyzer example.parquet
 
-# Divide the file into segments and show detailed offset and Thrift structure information for each segment
-parquet-analyzer -s example.parquet
+# Show raw segment structures (offsets, lengths, thrift payloads)
+parquet-analyzer --output-mode segments example.parquet
 
-# Enable debug logging
+# Generate an interactive HTML report and save it to disk
+parquet-analyzer --output-mode html -o report.html example.parquet
+
+# Enable debug logging while running any mode
 parquet-analyzer --log-level DEBUG example.parquet
 
 # Run via python -m if the console script is unavailable
@@ -39,9 +42,9 @@ python -m parquet_analyzer example.parquet
 
 ## Output Formats
 
-### Standard output (default)
+### Standard output (`--output-mode default`)
 
-The default output provides a structured JSON view with three main sections:
+The default output provides a structured JSON payload with three main sections:
 
 #### Summary statistics
 ```json
@@ -84,9 +87,9 @@ Detailed breakdown of all pages organized by column:
 - Offset indexes
 - Bloom filters
 
-### Detailed output (`-s` flag)
+### Detailed segments (`--output-mode segments`)
 
-When using the `-s` flag, the tool outputs a detailed segment-by-segment breakdown showing:
+When using `--output-mode segments`, the tool outputs a detailed segment-by-segment breakdown showing:
 
 ```json
 [
@@ -122,6 +125,17 @@ This mode is useful for:
 - Understanding exact binary layout
 - Analyzing file format compliance
 - Optimizing file structure
+
+### HTML report (`--output-mode html`)
+
+Emits a standalone HTML document with collapsible sections for summary statistics, schema, key-value metadata, row groups, aggregated column statistics, segments, and (optionally) the raw footer. Use the `--html-sections` flag to control which sections are rendered:
+
+```bash
+parquet-analyzer --output-mode html \
+  --html-sections summary schema columns \
+  -o report.html \
+  example.parquet
+```
 
 ## Technical details
 

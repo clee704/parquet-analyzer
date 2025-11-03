@@ -1,0 +1,64 @@
+<section class="section section--schema">
+	<div class="section__header toggle-header">
+		<span class="toggle-indicator">-</span>
+		<h2 class="section__title">Schema</h2>
+	</div>
+	<div class="section__content toggle-content is-open">
+		<div>
+			The schema has {{ footer.schema | length }} <code>SchemaElement</code> {{ "object" if footer.schema | length == 1 else "objects" }}.
+		</div>
+		<ul class="schema">
+			{% for item in schema_tree recursive %}
+				<li class="schema__item">
+					<div class="schema__name">
+						{% if item.repetition_type %}
+							<span class="schema__prop schema__prop--repetition-type"><code class="enum">{{ item.repetition_type }}</code></span>
+						{% endif %}
+						<span class="schema__prop schema__prop--name">
+							{% if item.name %}
+								<code class="column-name">{{ item.name }}</code>
+							{% else %}
+								[no name]
+							{% endif %}
+						</span>
+						{% if item.field_id %}
+							<div class="schema__prop schema__prop--field-id">(Field ID: {{ item.field_id }})</div>
+						{% endif %}
+						{% if item.type %}
+							<code class="data-type">
+								{%- if item.logical_type -%}
+									<span class="schema__prop schema__prop--logical-type">{{ format_logical_type(item.logical_type) }}</span>
+									/
+									<span class="schema__prop schema__prop--type">{{ item.type }}</span>
+								{%- elif item.converted_type -%}
+									<span class="schema__prop schema__prop--converted-type">{{ item.converted_type }}</span>
+									{%- if item.precision or item.scale -%}
+										(<span class="schema__prop schema__prop--precision" title="Precision">{{ item.precision }}</span>,
+										<span class="schema__prop schema__prop--scale" title="Scale">{{ item.scale }}</span>)
+									{%- endif -%}
+								{%- else -%}
+									<span class="schema__prop schema__prop--type">{{ item.type }}</span>
+								{%- endif -%}
+								{%- if item.type_length -%}
+									(<span class="schema__prop schema__prop--type-length" title="Type length">{{ item.type_length }}</span>)
+								{% endif %}
+							</code>
+						{% endif %}
+						{% if item.num_children and item.num_children > 1 %}
+							<span class="schema__prop schema__prop--num-children">({{ item.num_children }} children)</span>
+						{% endif %}
+					</div>
+					<div class="schema__props">
+						<div class="schema__prop schema__prop--children">
+							{% if item.children %}
+								<ul class="schema">
+									{{ loop(item.children) }}
+								</ul>
+							{% endif %}
+						</div>
+					</div>
+				</li>
+			{% endfor %}
+		</ul>
+	</div>
+</section>

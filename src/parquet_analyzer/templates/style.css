@@ -1,0 +1,375 @@
+:root {
+	--main-bg: #f9f9f9;
+	--section-bg: #fff;
+	--border-color: #eee;
+	--code-bg: #e0e0e0c0;
+	--column-bg: #f0f0f0;
+	--text-color: #333;
+	--muted-text-color: #999;
+	--font-family: sans-serif;
+
+	--segment-color: #f8ffd0e0;
+	--segment-border-color: #e3ebb6e0;
+	--segment-color-magic: #f19ff8e0;
+	--segment-color-value: #dcf8fde0;
+	--segment-color-column-chunk-pages: #a6d4ffe0;
+	--segment-color-page: #d8caffe0;
+	--segment-color-group: #d7ffcde0;
+
+	--segment-link-color: #378ddd;
+	--segment-target-color: #fffd70;
+}
+
+body {
+	margin: 0;
+	padding: 0;
+	display: flex;
+	justify-content: center;
+	font-family: var(--font-family);
+	font-size: 14px;
+	color: var(--text-color);
+	background-color: var(--main-bg);
+}
+
+code {
+	background-color: var(--code-bg);
+	border-radius: 0.25rem;
+	padding: 0.15rem 0.3rem;
+	font-family: monospace;
+	font-size: 0.8rem;
+}
+
+a {
+	color: inherit;
+	text-decoration: none;
+}
+
+textarea {
+	background-color: var(--code-bg);
+	border: 1px solid var(--border-color);
+	border-radius: 0.5rem;
+	padding: 1rem;
+	margin: 0.6rem 0;
+	overflow-x: auto;
+	width: 100%;
+	height: 30rem;
+	font-family: monospace;
+	font-size: 0.8rem;
+	box-sizing: border-box;
+}
+
+.container {
+	width: 100%;
+	max-width: 800px;
+	padding: 1rem;
+}
+
+.title {
+	margin-bottom: 1rem;
+	font-size: 1.5rem;
+	font-weight: 600;
+}
+
+.column-name {
+	background: transparent;
+	border: 0;
+	padding: 0;
+	font-size: 0.9rem;
+}
+
+.section {
+	margin: 1rem 0;
+	padding: 0;
+	background-color: var(--section-bg);
+	border: 1px solid var(--border-color);
+	border-radius: 0.5rem;
+}
+
+.section__header {
+	margin: 0;
+	padding: 0.75rem 1rem;
+	font-size: 1.2rem;
+	font-weight: 500;
+	border-bottom: 1px solid var(--border-color);
+}
+
+.section__title {
+	margin: 0;
+	display: inline-block;
+	font-size: 1.2rem;
+	font-weight: 500;
+}
+
+.section__content {
+	padding: 0 1rem;
+}
+
+.section__content.is-open {
+	padding: 0.75rem 1rem;
+}
+
+.summary {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.summary__item {
+	padding: 0.6rem 0;
+	display: flex;
+	justify-content: space-between;
+	flex-wrap: wrap;
+	column-gap: 0.25rem;
+	row-gap: 0.6rem;
+	border-bottom: 1px solid var(--border-color);
+}
+
+.summary__value {
+	overflow-wrap: break-word;
+	word-break: break-word;
+}
+
+.summary__item:first-child {
+	padding-top: 0;
+}
+
+.summary__item:last-child {
+	padding-bottom: 0;
+	border-bottom: none;
+}
+
+.schema {
+	margin-top: 0.6rem;
+	padding: 0;
+	list-style: none;
+}
+
+.schema .schema {
+	padding-left: 1rem;
+	border-left: 1px solid var(--border-color);
+}
+
+.schema__item {
+	margin: 1rem 0;
+}
+
+.schema__prop--num-children {
+	font-size: 0.8rem;
+	color: var(--muted-text-color);
+}
+
+.key-value-metadata {
+	margin-top: 0.6rem;
+	width: 100%;
+	border-collapse: collapse;
+}
+
+.key-value-metadata th {
+	background-color: var(--code-bg);
+}
+
+.key-value-metadata th,
+.key-value-metadata td {
+	border: 1px solid var(--border-color);
+	padding: 0.5rem;
+	text-align: left;
+	overflow-x: auto;
+	white-space: nowrap;
+}
+
+.columns {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.columns__item {
+	margin: 0.4rem 0;
+	padding: 0.6rem 0.8rem;
+	border: 1px solid var(--column-bg);
+	border-radius: 0.5rem;
+	background-color: var(--column-bg);
+}
+
+.columns__props {
+	margin: 0;
+	padding: 0;
+	padding-left: 1rem;
+	list-style: none;
+	border-left: 1px solid var(--border-color);
+}
+
+.columns__props.is-open {
+	margin-top: 0.6rem;
+}
+
+.columns__props ul {
+	margin: 0;
+	padding: 0;
+	padding-left: 1rem;
+	list-style: none;
+}
+
+.columns__props li {
+	margin: 0.4rem 0;
+}
+
+.row-group {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.row-group li {
+	margin: 0.4rem 0;
+}
+
+.row-group__props {
+	margin: 0;
+	padding: 0;
+	padding-left: 1rem;
+	list-style: none;
+	border-left: 1px solid var(--border-color);
+}
+
+.row-group__props.is-open {
+	margin: 0.6rem 0;
+}
+
+.row-group__columns {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.row-group__columns ul {
+	margin: 0;
+	padding: 0;
+	padding-left: 1rem;
+	list-style: none;
+}
+
+.row-group__columns ul.is-open {
+	margin-top: 0.6rem;
+}
+
+.row-group__columns__item {
+	padding: 0.6rem 0.8rem;
+	border: 1px solid var(--column-bg);
+	border-radius: 0.5rem;
+	background-color: var(--column-bg);
+}
+
+.segments {
+	margin: 0;
+	padding: 0;
+	list-style: none;
+}
+
+.segments .segments {
+	margin-left: 1rem;
+}
+
+.segment {
+	margin: 0.3rem 0;
+	display: flex;
+	flex-direction: column;
+	border-radius: 0.5rem;
+	background-color: var(--segment-color);
+	border: 1px solid var(--segment-border-color);
+}
+
+.segment:target {
+	outline: 2px solid var(--segment-target-color);
+}
+
+.segment__top {
+	padding: 0.5rem 0.8rem;
+	display: flex;
+	flex-direction: row;
+	justify-content: space-between;
+	gap: 0.4rem;
+}
+
+.segment__right {
+	text-align: right;
+	font-size: 0.75rem;
+	opacity: 0.75;
+	white-space: nowrap;
+}
+
+.segment__name {
+	font-family: monospace;
+}
+
+.segment__value {
+	margin-top: 0.4rem;
+	font-size: 0.9rem;
+}
+
+.segment__value--column-chunk-pages {
+	opacity: 0.9;
+}
+
+.segment--magic {
+	background-color: var(--segment-color-magic);
+	border: none;
+}
+
+.segment--value {
+	background-color: var(--segment-color-value);
+	border: none;
+}
+
+.segment--column-chunk-pages {
+	background-color: var(--segment-color-column-chunk-pages);
+	border: none;
+}
+
+.segment--page {
+	background-color: var(--segment-color-page);
+	border: none;
+}
+
+.segment--group {
+	background-color: var(--segment-color-group);
+	border: none;
+}
+
+.segment-link {
+	color: var(--segment-link-color);
+	cursor: pointer;
+}
+
+.toggle-bytes {
+	cursor: pointer;
+}
+
+.toggle-all {
+	font-size: 0.8rem;
+	opacity: 0.6;
+	text-align: right;
+}
+
+.toggle-header {
+	cursor: pointer;
+}
+
+.toggle-indicator {
+	margin-right: 0.25rem;
+	display: inline-block;
+	transition: transform 0.3s ease;
+}
+
+.toggle-content {
+	display: none;
+}
+
+.toggle-content.is-open {
+	display: block;
+}
+
+.toggle-expand-all,
+.toggle-collapse-all {
+	cursor: pointer;
+}
