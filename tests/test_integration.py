@@ -1,5 +1,6 @@
 import importlib
 import json
+from pathlib import Path
 
 import pytest
 
@@ -78,7 +79,7 @@ def test_parse_parquet_file_smoke(sample_parquet):
     first_column = pages[0]
     assert first_column["row_groups"], "Row group data should be present"
     first_row_group = first_column["row_groups"][0]
-    assert first_row_group["data_pages"], "Data pages should be listed"
+    assert first_row_group["pages"], "Data pages should be listed"
 
 
 def test_parse_parquet_file_with_page_indexes(sample_parquet_with_page_index):
@@ -87,13 +88,11 @@ def test_parse_parquet_file_with_page_indexes(sample_parquet_with_page_index):
 
     # Expect dictionary pages and indexes to be captured for at least one column
     column = next(iter(column_offset_map.values()))[0]
-    assert "dictionary_page" in column
     assert "column_index" in column
     assert "offset_index" in column
 
     pages = get_pages(segments, column_offset_map)
     row_group = pages[0]["row_groups"][0]
-    assert "dictionary_page" in row_group
     assert "column_index" in row_group
     assert "offset_index" in row_group
 
@@ -102,6 +101,36 @@ def test_parse_parquet_file_with_page_indexes(sample_parquet_with_page_index):
     assert summary["num_dict_pages"] >= 1
     assert summary["column_index_size"] > 0
     assert summary["offset_index_size"] > 0
+
+
+def test_parse_parquet_file_duckdb_fixture():
+    file_path = Path(__file__).parent / "data" / "titanic.parquet"
+    segments, column_offset_map = parse_parquet_file(str(file_path))
+
+    footer_segment = find_footer_segment(segments)
+    assert footer_segment is not None
+
+    footer_json = segment_to_json(footer_segment)
+    summary = get_summary(footer_json, segments)
+
+    assert summary["num_rows"] == 891
+    assert summary["num_columns"] == 12
+    assert summary["num_dict_pages"] == 2
+    assert summary["num_data_pages"] == 12
+
+    pages = get_pages(segments, column_offset_map)
+    sex_column = next(col for col in pages if col["column"] == ("Sex",))
+    sex_pages = sex_column["row_groups"][0]["pages"]
+    assert sex_pages[0]["type"] == "DICTIONARY_PAGE"
+    assert sex_pages[1]["type"] == "DATA_PAGE"
+    assert sex_pages[0]["$offset"] == column_offset_map[("Sex",)][0]["pages"][0]
+
+    embarked_column = next(col for col in pages if col["column"] == ("Embarked",))
+    embarked_pages = embarked_column["row_groups"][0]["pages"]
+    assert embarked_pages[0]["type"] == "DICTIONARY_PAGE"
+    assert (
+        embarked_pages[0]["$offset"] == column_offset_map[("Embarked",)][0]["pages"][0]
+    )
 
 
 def test_cli_with_real_file(sample_parquet, capsys):

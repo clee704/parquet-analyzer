@@ -307,12 +307,51 @@ def get_next_page_offset(current_offset: int, page: dict) -> int | None:
     return None
 
 
+# Fix DuckDB data_page_offset if dictionary_page_offset exists
+# https://github.com/duckdb/duckdb/issues/10829
+def fix_duckdb_data_page_offset(
+    data_page_offset: int,
+    dict_page_offset: int | None,
+    page_mapping: dict[int, dict],
+) -> int:
+    if dict_page_offset is None:
+        return data_page_offset
+    dict_page = page_mapping.get(dict_page_offset)
+    if dict_page is None:
+        return data_page_offset
+    dict_page_header_length = dict_page.get("length")
+    if not isinstance(dict_page_header_length, int):
+        return data_page_offset
+    dict_page_size = 0
+    for field in dict_page.get("value", []):
+        if isinstance(field, dict) and field.get("name") == "compressed_page_size":
+            compressed_page_size = field.get("value")
+            if not isinstance(compressed_page_size, int):
+                return data_page_offset
+            dict_page_size = compressed_page_size
+            break
+    if dict_page_size == 0:
+        return data_page_offset
+    expected_data_page_offset = (
+        dict_page_offset + dict_page_header_length + dict_page_size
+    )
+    if data_page_offset < expected_data_page_offset:
+        logger.warning(
+            "Fixing DuckDB data_page_offset from %d to %d",
+            data_page_offset,
+            expected_data_page_offset,
+        )
+        return expected_data_page_offset
+    return data_page_offset
+
+
 def build_page_offset_to_column_chunk_mapping(
     footer: dict, page_mapping: dict[int, dict]
 ) -> dict[int, Tuple[int, int]]:
     page_offsets = {}
     for row_group_index, row_group in enumerate(footer.get("row_groups", [])):
         for column_index, column_chunk in enumerate(row_group.get("columns", [])):
+            dict_page_offset = None
             if (
                 column_chunk.get("meta_data", {}).get("dictionary_page_offset")
                 is not None
@@ -320,7 +359,11 @@ def build_page_offset_to_column_chunk_mapping(
                 dict_page_offset = column_chunk["meta_data"]["dictionary_page_offset"]
                 page_offsets[dict_page_offset] = (row_group_index, column_index)
             if column_chunk.get("meta_data", {}).get("data_page_offset") is not None:
-                data_page_offset = column_chunk["meta_data"]["data_page_offset"]
+                data_page_offset = fix_duckdb_data_page_offset(
+                    column_chunk["meta_data"]["data_page_offset"],
+                    dict_page_offset,
+                    page_mapping,
+                )
                 page_offsets[data_page_offset] = (row_group_index, column_index)
                 remaining_values = column_chunk.get("meta_data", {}).get(
                     "num_values", 0

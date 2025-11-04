@@ -22,7 +22,6 @@ from parquet_analyzer._core import (
     segment_to_json,
     read_bloom_filter,
     read_column_index,
-    read_dictionary_page,
     read_offset_index,
     read_pages,
 )
@@ -194,7 +193,7 @@ def test_get_pages_includes_offsets_with_page_details():
     column_chunk_data_offsets = {
         ("col1",): [
             {
-                "data_pages": [4],
+                "pages": [4],
             }
         ]
     }
@@ -202,8 +201,8 @@ def test_get_pages_includes_offsets_with_page_details():
     pages = get_pages(segments, column_chunk_data_offsets)
 
     assert pages[0]["column"] == ("col1",)
-    assert pages[0]["row_groups"][0]["data_pages"][0]["$offset"] == 4
-    assert pages[0]["row_groups"][0]["data_pages"][0]["type"] == "DATA_PAGE"
+    assert pages[0]["row_groups"][0]["pages"][0]["$offset"] == 4
+    assert pages[0]["row_groups"][0]["pages"][0]["type"] == "DATA_PAGE"
 
 
 def test_offset_recording_numeric_reads(monkeypatch):
@@ -428,16 +427,22 @@ def test_read_helpers_and_summary(monkeypatch):
     dictionary_header = SimpleNamespace(
         data_page_header=None,
         data_page_header_v2=None,
-        compressed_page_size=1,
+        dictionary_page_header=SimpleNamespace(num_values=1),
+        compressed_page_size=13,
     )
 
-    dictionary_segment = {"offset": 20, "length": 3, "name": "page"}
+    dictionary_segment = {
+        "offset": 4,
+        "length": 3,
+        "name": "page",
+        "compressed_page_size": 13,
+    }
     column_index_segment = {"offset": 30, "length": 2, "name": "column_index"}
     offset_index_segment = {"offset": 40, "length": 3, "name": "offset_index"}
     bloom_segment = {"offset": 50, "length": 2, "name": "bloom_filter"}
 
     def fake_read_thrift(file_obj, offset, name, thrift_class):
-        if name == "page" and offset == 20:
+        if name == "page" and offset == 4:
             return dictionary_header, dictionary_segment
         if name == "page":
             entry = page_entries.pop(0)
@@ -456,8 +461,8 @@ def test_read_helpers_and_summary(monkeypatch):
     column_chunk = SimpleNamespace(
         meta_data=SimpleNamespace(
             num_values=3,
-            data_page_offset=0,
-            dictionary_page_offset=20,
+            dictionary_page_offset=4,
+            data_page_offset=20,
             bloom_filter_offset=50,
         ),
         column_index_offset=30,
@@ -467,10 +472,8 @@ def test_read_helpers_and_summary(monkeypatch):
 
     segments: list[dict] = []
     offsets = read_pages(object(), column_chunk, segments)
-    assert offsets == [0, 7]
-
-    dict_offset = read_dictionary_page(object(), column_chunk, segments)
-    assert dict_offset == 20
+    assert offsets == [4, 20, 27]
+    dict_offset = 4
 
     col_index_offset = read_column_index(object(), column_chunk, segments)
     assert col_index_offset == 30
@@ -482,22 +485,22 @@ def test_read_helpers_and_summary(monkeypatch):
     assert bloom_offset == 50
 
     json_lookup = {
-        0: {
+        4: {
+            "type": "DICTIONARY_PAGE",
+            "uncompressed_page_size": 1,
+            "compressed_page_size": 1,
+        },
+        20: {
             "type": "DATA_PAGE",
             "uncompressed_page_size": 4,
             "compressed_page_size": 2,
             "data_page_header": {},
         },
-        7: {
+        27: {
             "type": "DATA_PAGE_V2",
             "uncompressed_page_size": 5,
             "compressed_page_size": 3,
             "data_page_header_v2": {},
-        },
-        20: {
-            "type": "DICTIONARY_PAGE",
-            "uncompressed_page_size": 1,
-            "compressed_page_size": 1,
         },
         30: {"column_index": True},
         40: {"offset_index": True},

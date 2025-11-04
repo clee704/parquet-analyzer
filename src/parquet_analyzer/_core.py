@@ -45,12 +45,13 @@ __all__ = [
     "parse_parquet_file",
     "read_bloom_filter",
     "read_column_index",
-    "read_dictionary_page",
     "read_offset_index",
     "read_pages",
     "read_thrift_segment",
     "segment_to_json",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 class OffsetRecordingProtocol(TProtocol.TProtocolBase):
@@ -445,9 +446,15 @@ def read_thrift_segment(f, offset: int, name: str, thrift_class):
     return obj, segment
 
 
-def read_pages(f, column_chunk, segments: list[dict[str, Any]]):
+def read_pages(f, column_chunk, segments: list[dict[str, Any]]) -> list[int]:
     remaining_values = column_chunk.meta_data.num_values
-    offset = column_chunk.meta_data.data_page_offset
+    # If dictionary page exists, start reading from there
+    # DuckDB writes incorrect data_page_offset when dictionary page exists
+    # https://github.com/duckdb/duckdb/issues/10829
+    if column_chunk.meta_data.dictionary_page_offset:
+        offset = column_chunk.meta_data.dictionary_page_offset
+    else:
+        offset = column_chunk.meta_data.data_page_offset
     offsets: list[int] = []
     while remaining_values > 0:
         page, page_segment = read_thrift_segment(f, offset, "page", PageHeader)
@@ -462,37 +469,18 @@ def read_pages(f, column_chunk, segments: list[dict[str, Any]]):
             )
         )
         if page.data_page_header is not None:
-            num_values = page.data_page_header.num_values
+            num_values_read = page.data_page_header.num_values
         elif page.data_page_header_v2 is not None:
-            num_values = page.data_page_header_v2.num_values
+            num_values_read = page.data_page_header_v2.num_values
         # Some writers write dictionary page at data_page_offset
         elif page.dictionary_page_header is not None:
-            num_values = page.dictionary_page_header.num_values
+            # Dictionary page does not consume data values
+            num_values_read = 0
         else:
             break
-        remaining_values -= num_values
+        remaining_values -= num_values_read
         offset = page_header_end + page.compressed_page_size
     return offsets
-
-
-def read_dictionary_page(f, column_chunk, segments: list[dict[str, Any]]):
-    dict_page, dict_page_segment = read_thrift_segment(
-        f,
-        column_chunk.meta_data.dictionary_page_offset,
-        "page",
-        PageHeader,
-    )
-    segments.append(dict_page_segment)
-    segments.append(
-        create_segment(
-            dict_page_segment["offset"] + dict_page_segment["length"],
-            dict_page_segment["offset"]
-            + dict_page_segment["length"]
-            + dict_page.compressed_page_size,
-            "page_data",
-        )
-    )
-    return dict_page_segment["offset"]
 
 
 def read_column_index(f, column_chunk, segments: list[dict[str, Any]]):
@@ -573,12 +561,7 @@ def parse_parquet_file(file_path: str):
                 offset_list = column_chunk_data_offsets.setdefault(column_key, [])
 
                 offsets: dict[str, Any] = {}
-                offsets["data_pages"] = read_pages(f, column_chunk, segments)
-
-                if column_chunk.meta_data.dictionary_page_offset is not None:
-                    offsets["dictionary_page"] = read_dictionary_page(
-                        f, column_chunk, segments
-                    )
+                offsets["pages"] = read_pages(f, column_chunk, segments)
 
                 if column_chunk.column_index_offset is not None:
                     offsets["column_index"] = read_column_index(
@@ -719,11 +702,11 @@ def get_pages(
                 row_group["dictionary_page"] = with_offset(
                     offset_info["dictionary_page"]
                 )
-            if offset_info.get("data_pages"):
-                data_pages = []
-                for offset in offset_info["data_pages"]:
-                    data_pages.append(with_offset(offset))
-                row_group["data_pages"] = data_pages
+            if offset_info.get("pages"):
+                ps = []
+                for offset in offset_info["pages"]:
+                    ps.append(with_offset(offset))
+                row_group["pages"] = ps
             if offset_info.get("column_index"):
                 row_group["column_index"] = with_offset(offset_info["column_index"])
             if offset_info.get("offset_index"):
