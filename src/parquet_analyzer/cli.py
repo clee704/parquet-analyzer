@@ -19,28 +19,38 @@ from ._html import generate_html_report
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="parquet-analyzer")
-    parser.add_argument("parquet_file", help="Path to the Parquet file to inspect")
+    parser.add_argument("parquet_file", help="path to the Parquet file to analyze")
     parser.add_argument(
         "--output-mode",
         choices=["default", "segments", "html"],
         default="default",
-        help="Set the output mode: 'default' for summary information, 'segments' for raw segment structure, 'html' for HTML report",
+        help="set the output mode: 'default' for summary information, 'segments' for raw segment structure, 'html' for HTML report",
     )
     parser.add_argument(
         "-o",
         "--output",
-        help="Write output to the given file path instead of stdout",
+        help="write output to the given file path instead of stdout",
     )
     parser.add_argument(
         "--html-sections",
         nargs="*",
         default=["summary", "schema", "key-value-metadata", "row-groups", "columns"],
-        help="Sections to include in the HTML report (only relevant if --output-mode=html). Options: summary, schema, key-value-metadata, row-groups, columns, raw-footer",
+        choices=[
+            "summary",
+            "schema",
+            "key-value-metadata",
+            "row-groups",
+            "columns",
+            "segments",
+            "raw-footer",
+        ],
+        help="sections to include in the HTML report (only relevant if --output-mode=html)",
     )
     parser.add_argument(
         "--log-level",
         default="INFO",
-        help="Standard logging level (e.g. DEBUG, INFO, WARNING)",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"],
+        help="set logging level",
     )
     return parser
 
