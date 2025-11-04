@@ -177,4 +177,6 @@ Contributions are welcome! Please feel free to submit issues, feature requests, 
 
 ## License
 
-Released under the [MIT License](LICENSE).
+This project was previously released under the MIT License. As of November 2025, it is now licensed under the [Apache License 2.0](LICENSE).
+
+© 2025 Chungmin Lee
