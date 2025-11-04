@@ -128,14 +128,16 @@ This mode is useful for:
 
 ### HTML report (`--output-mode html`)
 
-Emits a standalone HTML document with collapsible sections for summary statistics, schema, key-value metadata, row groups, aggregated column statistics, segments, and (optionally) the raw footer. Use the `--html-sections` flag to control which sections are rendered:
+Emits a standalone HTML document with collapsible sections for summary statistics, schema, key-value metadata, row groups, aggregated column statistics, segments, and the raw footer. Use the `--html-sections` flag to control which sections are rendered:
 
 ```bash
 parquet-analyzer --output-mode html \
-  --html-sections summary schema columns \
+  --html-sections summary schema key-value-metadata row-groups columns segments \
   -o report.html \
   example.parquet
 ```
+
+Example: https://clee704.github.io/parquet-analyzer/examples/example.html
 
 ## Technical details
 
