@@ -307,10 +307,6 @@ textarea {
 	font-size: 0.9rem;
 }
 
-.segment__value--column-chunk-pages {
-	opacity: 0.9;
-}
-
 .segment--magic {
 	background-color: var(--segment-color-magic);
 	border: none;

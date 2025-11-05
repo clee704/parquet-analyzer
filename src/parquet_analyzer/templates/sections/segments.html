@@ -17,7 +17,7 @@
 								{% endif %}
 								<span class="segment__name">{{ segment.name }}</span>
 							</div>
-							<div class="segment__value {{ "segment__value--column-chunk-pages" if segment.name == ":column_chunk_pages" }}">
+							<div class="segment__value">
 								{% if segment.name == ":column_chunk_pages" %}
 									{{ segment.num_pages }} {{ "pages" if segment.num_pages != 1 else "page" }}
 									for
@@ -51,10 +51,15 @@
 										</span>
 									{% endif %}
 									{% if segment.metadata.type_class is defined %}
-										(<span class="segment__meta segment__meta--type-class"><code class="enum">{{ segment.metadata.type_class }}</code></span>)
+										of <span class="segment__meta segment__meta--type-class"><code class="enum">{{ segment.metadata.type_class }}</code></span>
 									{% endif %}
 									{% if segment.metadata.enum_type is defined %}
 										(<span class="segment__meta segment__meta--enum-type"><code class="enum">{{ segment.metadata.enum_type }}</code></span>)
+									{% endif %}
+								{% endif %}
+								{% if is_nested_segment(segment) %}
+									{% if segment.value is sequence and segment.value | length > 1 %}
+										<span class="segment__meta segment__meta--length">({{ segment.value | length }} {{ "fields" if segment.metadata is defined and segment.metadata.type is defined and segment.metadata.type == "struct" else "elements" }})</span>
 									{% endif %}
 								{% endif %}
 							</div>
