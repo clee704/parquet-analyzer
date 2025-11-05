@@ -10,7 +10,7 @@ fi
 echo "Running pre-release checks..."
 hatch run dev:check
 
-current_version=$(grep -E '^__version__ = "' src/parquet_analyzer/__init__.py | head -n 1 | sed -E 's/^__version__ = "([^"]+)".*/\1/')
+current_version=$(hatch version)
 echo "Current version: $current_version"
 echo -n "Enter new version: "
 read -r new_version
