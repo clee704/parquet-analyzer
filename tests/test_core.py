@@ -99,7 +99,7 @@ def test_get_summary_counts_pages_and_sizes():
     page_segment = create_segment(
         4,
         14,
-        "page",
+        ":page_header",
         value=[
             create_segment(
                 4,
@@ -122,10 +122,10 @@ def test_get_summary_counts_pages_and_sizes():
     )
 
     segments = [
-        create_segment(0, 4, "magic_number", "PAR1"),
+        create_segment(0, 4, ":magic_number", "PAR1"),
         page_segment,
-        create_segment(20, 35, "footer", value=None),
-        create_segment(35, 39, "magic_number", "PAR1"),
+        create_segment(20, 35, ":footer", value=None),
+        create_segment(35, 39, ":magic_number", "PAR1"),
     ]
 
     footer_json = {
@@ -173,7 +173,7 @@ def test_get_pages_includes_offsets_with_page_details():
     page_segment = create_segment(
         4,
         14,
-        "page",
+        ":page_header",
         value=[
             create_segment(
                 4,
@@ -434,25 +434,29 @@ def test_read_helpers_and_summary(monkeypatch):
     dictionary_segment = {
         "offset": 4,
         "length": 3,
-        "name": "page",
+        "name": ":page_header",
         "compressed_page_size": 13,
     }
-    column_index_segment = {"offset": 30, "length": 2, "name": "column_index"}
-    offset_index_segment = {"offset": 40, "length": 3, "name": "offset_index"}
-    bloom_segment = {"offset": 50, "length": 2, "name": "bloom_filter"}
+    column_index_segment = {"offset": 30, "length": 2, "name": ":column_index"}
+    offset_index_segment = {"offset": 40, "length": 3, "name": ":offset_index"}
+    bloom_segment = {"offset": 50, "length": 2, "name": ":bloom_filter"}
 
     def fake_read_thrift(file_obj, offset, name, thrift_class):
-        if name == "page" and offset == 4:
+        if name == ":page_header" and offset == 4:
             return dictionary_header, dictionary_segment
-        if name == "page":
+        if name == ":page_header":
             entry = page_entries.pop(0)
-            segment = {"offset": offset, "length": entry["length"], "name": "page"}
+            segment = {
+                "offset": offset,
+                "length": entry["length"],
+                "name": ":page_header",
+            }
             return entry["header"], segment
-        if name == "column_index":
+        if name == ":column_index":
             return SimpleNamespace(), column_index_segment
-        if name == "offset_index":
+        if name == ":offset_index":
             return SimpleNamespace(), offset_index_segment
-        if name == "bloom_filter":
+        if name == ":bloom_filter":
             return SimpleNamespace(), bloom_segment
         raise AssertionError(f"Unexpected thrift read: {name} @ {offset}")
 
@@ -684,11 +688,11 @@ def test_segment_to_json_enum_scalar():
 
 
 def test_find_footer_segment_returns_none():
-    assert find_footer_segment([create_segment(0, 1, "page")]) is None
+    assert find_footer_segment([create_segment(0, 1, ":page_header")]) is None
 
 
 def test_find_footer_segment_returns_match():
-    footer = create_segment(0, 1, "footer")
+    footer = create_segment(0, 1, ":footer")
 
     assert find_footer_segment([footer]) is footer
 

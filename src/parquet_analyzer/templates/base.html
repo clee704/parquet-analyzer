@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+	<meta charset="utf-8">
+	<title>Parquet Analyzer</title>
+	<style>
+		{% include "style.css" %}
+		{% block extra_style %}{% endblock %}
+	</style>
+</head>
+<body>
+	<div class="container {% block container_class %}{% endblock %}" id="app">
+		{% block content %}{% endblock %}
+	</div>
+	<div class="spinner-overlay">
+		<span class="spinner"></span>
+	</div>
+	<script>
+		{% include "script.js" %}
+	</script>
+</body>
+</html>

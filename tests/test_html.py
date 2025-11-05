@@ -162,45 +162,22 @@ def test_aggregate_column_chunks_aggregates_stats():
 
 def test_group_segments_by_page():
     segments = [
-        {"name": "page", "offset": 0, "length": 2, "value": []},
-        {"name": "page_data", "offset": 2, "length": 3, "value": []},
+        {"name": ":page_header", "offset": 0, "length": 2, "value": []},
+        {"name": ":page_data", "offset": 2, "length": 3, "value": []},
         {"name": "other", "offset": 5, "length": 1, "value": []},
     ]
 
-    grouped = _html.group_segments_by_page(segments)
+    grouped = _html.group_page_header_and_data(segments)
 
-    assert grouped[0]["name"] == _html.page_header_and_data_name
+    assert grouped[0]["name"] == _html.page_segment_name
     assert grouped[0]["length"] == 5
     assert grouped[1]["name"] == "other"
-
-
-def test_get_num_values_supports_headers():
-    page_v1 = {
-        "value": [
-            {
-                "name": "data_page_header",
-                "value": [{"name": "num_values", "value": 7}],
-            }
-        ]
-    }
-    page_v2 = {
-        "value": [
-            {
-                "name": "data_page_header_v2",
-                "value": [{"name": "num_values", "value": 9}],
-            }
-        ]
-    }
-
-    assert _html.get_num_values(page_v1) == 7
-    assert _html.get_num_values(page_v2) == 9
-    assert _html.get_num_values({"value": []}) is None
 
 
 def test_build_page_offset_to_column_chunk_mapping():
     page_segments = [
         {
-            "name": "page",
+            "name": ":page_header",
             "offset": 300,
             "length": 10,
             "value": [
@@ -212,7 +189,7 @@ def test_build_page_offset_to_column_chunk_mapping():
             ],
         },
         {
-            "name": "page",
+            "name": ":page_header",
             "offset": 315,
             "length": 8,
             "value": [
@@ -242,7 +219,8 @@ def test_build_page_offset_to_column_chunk_mapping():
         ]
     }
 
-    mapping = _html.build_page_offset_to_column_chunk_mapping(footer, page_mapping)
+    mapping = {}
+    _html.build_page_offset_to_column_chunk_mapping(footer, page_mapping, mapping)
 
     assert mapping[200] == (0, 0)
     assert mapping[300] == (0, 0)
@@ -252,7 +230,7 @@ def test_build_page_offset_to_column_chunk_mapping():
 def test_group_segments_combines_related_segments():
     segments = [
         {
-            "name": "page",
+            "name": ":page_header",
             "offset": 300,
             "length": 10,
             "value": [
@@ -263,9 +241,9 @@ def test_group_segments_combines_related_segments():
                 },
             ],
         },
-        {"name": "page_data", "offset": 310, "length": 5, "value": []},
+        {"name": ":page_data", "offset": 310, "length": 5, "value": []},
         {
-            "name": "page",
+            "name": ":page_header",
             "offset": 315,
             "length": 10,
             "value": [
@@ -276,13 +254,13 @@ def test_group_segments_combines_related_segments():
                 },
             ],
         },
-        {"name": "page_data", "offset": 325, "length": 5, "value": []},
-        {"name": "column_index", "offset": 400, "length": 2, "value": []},
-        {"name": "column_index", "offset": 402, "length": 2, "value": []},
-        {"name": "offset_index", "offset": 500, "length": 1, "value": []},
-        {"name": "offset_index", "offset": 501, "length": 1, "value": []},
-        {"name": "bloom_filter", "offset": 600, "length": 1, "value": []},
-        {"name": "bloom_filter", "offset": 601, "length": 1, "value": []},
+        {"name": ":page_data", "offset": 325, "length": 5, "value": []},
+        {"name": ":column_index", "offset": 400, "length": 2, "value": []},
+        {"name": ":column_index", "offset": 402, "length": 2, "value": []},
+        {"name": ":offset_index", "offset": 500, "length": 1, "value": []},
+        {"name": ":offset_index", "offset": 501, "length": 1, "value": []},
+        {"name": ":bloom_filter", "offset": 600, "length": 1, "value": []},
+        {"name": ":bloom_filter", "offset": 601, "length": 1, "value": []},
         {"name": "other", "offset": 700, "length": 1, "value": []},
     ]
     footer = {
@@ -304,17 +282,25 @@ def test_group_segments_combines_related_segments():
     grouped = _html.group_segments(segments, footer)
 
     grouped_names = [segment["name"] for segment in grouped]
-    assert _html.page_group_name in grouped_names
-    assert _html.column_index_group_name in grouped_names
-    assert _html.offset_index_group_name in grouped_names
-    assert _html.bloom_filter_group_name in grouped_names
+    assert _html.pages_segment_name in grouped_names
+    assert _html.column_indexes_segment_name in grouped_names
+    assert _html.offset_indexes_segment_name in grouped_names
+    assert _html.bloom_filters_segment_name in grouped_names
 
     pages_segment = next(
-        item for item in grouped if item["name"] == _html.page_group_name
+        item for item in grouped if item["name"] == _html.pages_segment_name
     )
+    import pdb
+
+    # Pages by row group
     assert pages_segment["value"][0]["num_pages"] == 2
     assert pages_segment["value"][0]["row_group_index"] == 0
-    assert pages_segment["value"][0]["column_index"] == 0
+    assert "column_index" not in pages_segment["value"][0]
+
+    # Pages by column chunk
+    assert pages_segment["value"][0]["value"][0]["num_pages"] == 2
+    assert pages_segment["value"][0]["value"][0]["row_group_index"] == 0
+    assert pages_segment["value"][0]["value"][0]["column_index"] == 0
 
 
 def test_format_helpers():
@@ -358,7 +344,7 @@ def test_to_nice_json_and_is_nested_segment():
     assert json.loads(pretty) == payload
 
     segment_plain = {"name": "value", "value": 1}
-    segment_group = {"name": ":group", "value": []}
+    segment_group = {"name": ":page", "value": []}
     segment_type_class = {"name": "field", "metadata": {"type_class": object}}
     segment_list = {
         "name": "list",

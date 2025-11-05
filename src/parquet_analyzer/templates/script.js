@@ -1,3 +1,21 @@
+(() => {
+
+function on(root, event, selector, handler) {
+  root.addEventListener(event, (e) => {
+    const target = e.target.closest(selector);
+    if (target && root.contains(target)) handler(e, target);
+  });
+}
+
+document.addEventListener('htmx:afterSwap', (e) => {
+	const toggle = e.detail.elt.querySelector(".toggle-header");
+	if (toggle) {
+		toggle.click();
+	}
+});
+
+const app = document.getElementById('app');
+
 const byteToggles = Array.from(document.querySelectorAll('.toggle-bytes'));
 
 const swapByteDisplays = () => {
@@ -15,22 +33,20 @@ byteToggles.forEach(el => {
 	el.addEventListener('click', swapByteDisplays);
 });
 
-document.querySelectorAll('.toggle-header').forEach(header => {
+on(app, 'click', '.toggle-header', (e, header) => {
 	const toggle = header.querySelector('.toggle-indicator');
 	const content = header.nextElementSibling;
-
 	const syncState = () => {
-		const isOpen = content.classList.contains('is-open');
-		toggle.textContent = isOpen ? '−' : '+';
-		toggle.classList.toggle('is-open', isOpen);
+		if (content) {
+			const isOpen = content.classList.contains('is-open');
+			toggle.textContent = isOpen ? '−' : '+';
+			toggle.classList.toggle('is-open', isOpen);
+		}
 	};
-
-	syncState();
-
-	header.addEventListener('click', () => {
+	if (content) {
 		content.classList.toggle('is-open');
-		syncState();
-	});
+	}
+	syncState();
 });
 
 document.querySelectorAll('.toggle-all').forEach(toggleAll => {
@@ -56,8 +72,8 @@ document.querySelectorAll('.toggle-all').forEach(toggleAll => {
 	});
 });
 
-document.querySelectorAll('.segment-link').forEach(link => {
-	link.addEventListener('click', event => {
+on(app, 'click', '.segment-link', (e, link) => {
+	const findAndSetHash = () => {
 		const offset = link.dataset.segmentOffset;
 		const targets = document.querySelectorAll('.segment[data-segment-offset="' + offset + '"]');
 		if (targets.length === 0) return;
@@ -65,13 +81,24 @@ document.querySelectorAll('.segment-link').forEach(link => {
 		const segmentId = target.id;
 		location.hash = '#' + segmentId;
 		onHashChange();
-		event.preventDefault();
-	});
+	};
+	if (!document.querySelector('.section--segments .segments')) {
+		const toggle = document.querySelector('.section--segments > .toggle-header');
+		document.body.addEventListener('htmx:afterSwap', function handler(e) {
+			if (e.target.classList.contains('section--segments')) {
+				findAndSetHash();
+				document.body.removeEventListener('htmx:afterSwap', handler);
+			}
+		});
+		toggle.click();
+	} else {
+		findAndSetHash();
+	}
+	e.preventDefault();
 });
 
 function onHashChange() {
 	const hash = location.hash;
-	console.log("Hash changed to:", hash);
 	if (!hash.startsWith('#segment-')) return;
 	const segmentId = hash.substring(1);
 	const target = document.getElementById(segmentId);
@@ -95,4 +122,45 @@ function onHashChange() {
 }
 
 window.addEventListener('hashchange', onHashChange);
-onHashChange();
+
+if (document.querySelector(".file-droppable")) {
+	let dragCounter = 0;
+	document.addEventListener('dragover', e => e.preventDefault());
+	document.addEventListener('dragenter', e => {
+		e.preventDefault();
+		dragCounter++;
+		document.body.classList.add("dragover");
+	});
+	document.addEventListener('dragleave', e => {
+		e.preventDefault();
+		dragCounter--;
+		if (dragCounter === 0) {
+			document.body.classList.remove("dragover");
+		}
+	});
+	document.addEventListener("drop", e => handleDrop(e));
+	async function handleDrop(e) {
+		e.preventDefault();
+		const file = e.dataTransfer?.files?.[0];
+		uploadFile(file);
+	}
+}
+
+})();
+
+async function uploadFile(file) {
+	document.body.classList.add("loading");
+	try {
+		const res = await fetch(`/upload?name=${encodeURIComponent(file.name)}`, {
+			method: 'PUT',
+			headers: {'Content-Type': 'application/octet-stream'},
+			body: file
+		});
+		const html = await res.text();
+		document.open();
+		document.write(html);
+		document.close();
+	} finally {
+		document.body.classList.remove("loading");
+	}
+}

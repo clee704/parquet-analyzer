@@ -4,6 +4,7 @@ import pathlib
 import struct
 from dataclasses import dataclass
 from decimal import Decimal
+from itertools import groupby, islice, takewhile
 from typing import Any, Tuple
 
 from jinja2 import Environment, PackageLoader, select_autoescape
@@ -17,13 +18,29 @@ env = Environment(
     lstrip_blocks=True,
 )
 
-column_chunk_pages_name = ":column_chunk_pages"
-page_header_and_data_name = ":page_header_and_data"
+page_segment_name = ":page"
+column_chunk_pages_group_name = ":column_chunk_pages"
+row_group_pages_group_name = ":row_group_pages"
+row_group_column_indexes_group_name = ":row_group_column_indexes"
+row_group_offset_indexes_group_name = ":row_group_offset_indexes"
+row_group_bloom_filters_group_name = ":row_group_bloom_filters"
+pages_segment_name = ":pages"
+column_indexes_segment_name = ":column_indexes"
+offset_indexes_segment_name = ":offset_indexes"
+bloom_filters_segment_name = ":bloom_filters"
 
-page_group_name = ":pages"
-column_index_group_name = ":column_indexes"
-offset_index_group_name = ":offset_indexes"
-bloom_filter_group_name = ":bloom_filters"
+group_segment_names = [
+    page_segment_name,
+    column_chunk_pages_group_name,
+    row_group_pages_group_name,
+    row_group_column_indexes_group_name,
+    row_group_offset_indexes_group_name,
+    row_group_bloom_filters_group_name,
+    pages_segment_name,
+    column_indexes_segment_name,
+    offset_indexes_segment_name,
+    bloom_filters_segment_name,
+]
 
 
 @dataclass
@@ -109,8 +126,8 @@ def build_logical_type_mapping(
 
 def get_codecs(footer: dict) -> list[str]:
     codecs = []
-    for row_group in footer.get("row_groups", []):
-        for column_chunk in row_group.get("columns", []):
+    for row_group in footer["row_groups"]:
+        for column_chunk in row_group["columns"]:
             codec = column_chunk.get("meta_data", {}).get("codec")
             if codec and codec not in codecs:
                 codecs.append(codec)
@@ -119,8 +136,8 @@ def get_codecs(footer: dict) -> list[str]:
 
 def get_encodings(footer: dict) -> list[str]:
     encodings = []
-    for row_group in footer.get("row_groups", []):
-        for column_chunk in row_group.get("columns", []):
+    for row_group in footer["row_groups"]:
+        for column_chunk in row_group["columns"]:
             for page in column_chunk.get("meta_data", {}).get("encodings", []):
                 if page and page not in encodings:
                     encodings.append(page)
@@ -131,8 +148,8 @@ def aggregate_column_chunks(
     footer: dict, logical_type_mapping: dict[tuple[str, ...], dict]
 ) -> list[dict]:
     columns = {}
-    for row_group in footer.get("row_groups", []):
-        for column_chunk in row_group.get("columns", []):
+    for row_group in footer["row_groups"]:
+        for column_chunk in row_group["columns"]:
             if "path_in_schema" not in column_chunk.get("meta_data", {}):
                 continue
             path_in_schema = tuple(column_chunk["meta_data"]["path_in_schema"])
@@ -232,16 +249,43 @@ def aggregate_column_chunks(
     return list(columns.values())
 
 
-def group_segments_by_page(segments: list[dict]) -> list[dict]:
+def truncate_segments(segments: list[dict]) -> list[dict]:
+    def truncate_segment(segment: dict, max_length: int):
+        if "value" in segment:
+            if isinstance(segment["value"], (bytes, str)):
+                original_value = segment["value"]
+                n = len(original_value)
+                if n > max_length:
+                    del segment["value"]
+                    segment["value_truncated"] = {
+                        "value": original_value[:max_length],
+                        "original_length": n,
+                        "remaining_length": n - max_length,
+                    }
+            elif isinstance(segment["value"], list):
+                for item in segment["value"]:
+                    if isinstance(item, dict):
+                        truncate_segment(item, max_length)
+
+    max_length = 256
+    for segment in segments:
+        truncate_segment(segment, max_length)
+    return segments
+
+
+def group_page_header_and_data(segments: list[dict]) -> list[dict]:
     grouped = []
     index = 0
     while index < len(segments):
         segment = segments[index]
-        if segment["name"] == "page":
-            if index + 1 < len(segments) and segments[index + 1]["name"] == "page_data":
+        if segment["name"] == ":page_header":
+            if (
+                index + 1 < len(segments)
+                and segments[index + 1]["name"] == ":page_data"
+            ):
                 grouped.append(
                     {
-                        "name": page_header_and_data_name,
+                        "name": page_segment_name,
                         "value": [segment, segments[index + 1]],
                         "offset": segment["offset"],
                         "length": segment["length"] + segments[index + 1]["length"],
@@ -264,267 +308,270 @@ def group_segments_by_page(segments: list[dict]) -> list[dict]:
 def get_page_mapping(segments: list[dict]) -> dict[int, dict]:
     mapping = {}
     for segment in segments:
-        if segment["name"] == "page":
+        if segment["name"] == ":page_header":
             offset = segment["offset"]
             mapping[offset] = segment
     return mapping
 
 
-def get_num_values(page: dict) -> int | None:
-    for item in page.get("value", []):
-        if item.get("name") == "data_page_header":
-            for item2 in item.get("value", []):
-                if item2.get("name") == "num_values":
-                    return item2.get("value")
-        elif item.get("name") == "data_page_header_v2":
-            for item2 in item.get("value", []):
-                if item2.get("name") == "num_values":
-                    return item2.get("value")
-        elif item.get("name") == "dictionary_page_header":
-            for item2 in item.get("value", []):
-                if item2.get("name") == "num_values":
-                    return item2.get("value")
-    offset = page.get("offset")
-    if offset is None:
-        logger.warning("Could not find num_values in page with unknown offset")
-    else:
-        logger.warning("Could not find num_values in page at offset %d", offset)
-    return None
-
-
-def get_next_page_offset(current_offset: int, page: dict) -> int | None:
-    if "length" not in page or "value" not in page:
-        return None
-    length = page["length"]
-    if not isinstance(length, int):
-        return None
-    for item in page["value"]:
-        if item["name"] == "compressed_page_size":
-            compressed_page_size = item["value"]
-            if not isinstance(compressed_page_size, int):
-                return None
-            return current_offset + length + compressed_page_size
-    return None
-
-
-# Fix DuckDB data_page_offset if dictionary_page_offset exists
-# https://github.com/duckdb/duckdb/issues/10829
-def fix_duckdb_data_page_offset(
-    data_page_offset: int,
-    dict_page_offset: int | None,
-    page_mapping: dict[int, dict],
-) -> int:
-    if dict_page_offset is None:
-        return data_page_offset
-    dict_page = page_mapping.get(dict_page_offset)
-    if dict_page is None:
-        return data_page_offset
-    dict_page_header_length = dict_page.get("length")
-    if not isinstance(dict_page_header_length, int):
-        return data_page_offset
-    dict_page_size = 0
-    for field in dict_page.get("value", []):
-        if isinstance(field, dict) and field.get("name") == "compressed_page_size":
-            compressed_page_size = field.get("value")
-            if not isinstance(compressed_page_size, int):
-                return data_page_offset
-            dict_page_size = compressed_page_size
-            break
-    if dict_page_size == 0:
-        return data_page_offset
-    expected_data_page_offset = (
-        dict_page_offset + dict_page_header_length + dict_page_size
-    )
-    if data_page_offset < expected_data_page_offset:
-        logger.warning(
-            "Fixing DuckDB data_page_offset from %d to %d",
-            data_page_offset,
-            expected_data_page_offset,
-        )
-        return expected_data_page_offset
-    return data_page_offset
-
-
 def build_page_offset_to_column_chunk_mapping(
-    footer: dict, page_mapping: dict[int, dict]
-) -> dict[int, Tuple[int, int]]:
-    page_offsets = {}
-    for row_group_index, row_group in enumerate(footer.get("row_groups", [])):
-        for column_index, column_chunk in enumerate(row_group.get("columns", [])):
-            dict_page_offset = None
-            if (
-                column_chunk.get("meta_data", {}).get("dictionary_page_offset")
-                is not None
-            ):
-                dict_page_offset = column_chunk["meta_data"]["dictionary_page_offset"]
-                page_offsets[dict_page_offset] = (row_group_index, column_index)
-            if column_chunk.get("meta_data", {}).get("data_page_offset") is not None:
+    footer: dict,
+    page_mapping: dict[int, dict],
+    offset_mapping: dict[int, Tuple[int, int]],
+):
+    # Fix DuckDB data_page_offset if dictionary_page_offset exists
+    # https://github.com/duckdb/duckdb/issues/10829
+    def fix_duckdb_data_page_offset(
+        data_page_offset: int,
+        dict_page_offset: int,
+    ) -> int:
+        dict_page = page_mapping.get(dict_page_offset)
+        if dict_page is None:
+            return data_page_offset
+        dict_page_header_length = dict_page["length"]
+        dict_page_size = 0
+        for field in dict_page["value"]:
+            if field["name"] == "compressed_page_size":
+                compressed_page_size = field["value"]
+                dict_page_size = compressed_page_size
+                break
+        if dict_page_size == 0:
+            return data_page_offset
+        expected_data_page_offset = (
+            dict_page_offset + dict_page_header_length + dict_page_size
+        )
+        if data_page_offset < expected_data_page_offset:
+            logger.warning(
+                "Fixing DuckDB data_page_offset from %d to %d",
+                data_page_offset,
+                expected_data_page_offset,
+            )
+            return expected_data_page_offset
+        return data_page_offset
+
+    def get_num_values(page: dict) -> int:
+        for item in page["value"]:
+            if item["name"] in ("data_page_header", "data_page_header_v2"):
+                for item2 in item["value"]:
+                    if item2["name"] == "num_values":
+                        return item2["value"]
+        return 0
+
+    def get_next_page_offset(current_offset: int, page: dict) -> int | None:
+        length = page["length"]
+        for item in page["value"]:
+            if item["name"] == "compressed_page_size":
+                compressed_page_size = item["value"]
+                return current_offset + length + compressed_page_size
+        return None
+
+    for row_group_index, row_group in enumerate(footer["row_groups"]):
+        for column_index, column_chunk in enumerate(row_group["columns"]):
+            if "meta_data" not in column_chunk:
+                logger.warning(
+                    "Column chunk at row group %d, column %d has no meta_data",
+                    row_group_index,
+                    column_index,
+                )
+                continue
+            metadata = column_chunk["meta_data"]
+
+            data_page_offset = metadata["data_page_offset"]
+
+            # Record dictionary page offset and fix data page offset if needed
+            dict_page_offset = metadata.get("dictionary_page_offset")
+            if dict_page_offset is not None:
+                offset_mapping[dict_page_offset] = (row_group_index, column_index)
                 data_page_offset = fix_duckdb_data_page_offset(
                     column_chunk["meta_data"]["data_page_offset"],
                     dict_page_offset,
-                    page_mapping,
                 )
-                page_offsets[data_page_offset] = (row_group_index, column_index)
-                remaining_values = column_chunk.get("meta_data", {}).get(
-                    "num_values", 0
-                )
+
+            remaining_values = metadata["num_values"]
+            while remaining_values > 0 and data_page_offset is not None:
                 page = page_mapping.get(data_page_offset)
-                if page is not None:
-                    num_values = get_num_values(page)
-                    if num_values is not None and num_values < remaining_values:
-                        remaining_values -= num_values
-                        next_page_offset = get_next_page_offset(data_page_offset, page)
-                        while (
-                            next_page_offset is not None
-                            and remaining_values > 0
-                            and next_page_offset in page_mapping
-                        ):
-                            next_page = page_mapping[next_page_offset]
-                            next_num_values = get_num_values(next_page)
-                            if next_num_values is None:
-                                break
-                            page_offsets[next_page_offset] = (
-                                row_group_index,
-                                column_index,
-                            )
-                            remaining_values -= next_num_values
-                            next_page_offset = get_next_page_offset(
-                                next_page_offset, next_page
-                            )
-                        if remaining_values > 0:
-                            logger.warning(
-                                "Could not map all pages for column chunk at row group %d, column %d",
-                                row_group_index,
-                                column_index,
-                            )
-    return page_offsets
+                if page is None:
+                    logger.warning(
+                        "Data page at offset %d not found in page mapping",
+                        data_page_offset,
+                    )
+                    break
+                offset_mapping[data_page_offset] = (row_group_index, column_index)
+                num_values = get_num_values(page)
+                remaining_values -= num_values
+                data_page_offset = get_next_page_offset(data_page_offset, page)
 
-
-def sanitize_segments(segments: list[dict]) -> list[dict]:
-    max_length = 256
-    for segment in segments:
-        sanitize_segment(segment, max_length)
-    return segments
-
-
-def sanitize_segment(segment: dict, max_length: int):
-    if "value" in segment:
-        if isinstance(segment["value"], (bytes, str)):
-            original_value = segment["value"]
-            n = len(original_value)
-            if n > max_length:
-                del segment["value"]
-                segment["value_truncated"] = {
-                    "value": original_value[:max_length],
-                    "original_length": n,
-                    "remaining_length": n - max_length,
-                }
-        elif isinstance(segment["value"], list):
-            for item in segment["value"]:
-                if isinstance(item, dict):
-                    sanitize_segment(item, max_length)
-
-
-def group_segments(segments: list[dict], footer: dict) -> list[dict]:
-    grouped_segments = group_segments_by_page(segments)
-    page_mapping = get_page_mapping(segments)
-    page_offset_to_column_chunk = build_page_offset_to_column_chunk_mapping(
-        footer, page_mapping
-    )
-    final_grouped = []
-    current_row_group_index = None
-    current_column_index = None
-    current_group: list[dict] = []
-    num_total_pages = 0
-
-    def close_current_group():
-        nonlocal \
-            current_row_group_index, \
-            current_column_index, \
-            current_group, \
-            num_total_pages
-        if current_group:
-            final_grouped.append(
-                {
-                    "name": column_chunk_pages_name,
-                    "value": [item for seg in current_group for item in seg["value"]],
-                    "offset": current_group[0]["offset"],
-                    "length": sum(seg["length"] for seg in current_group),
-                    "row_group_index": current_row_group_index,
-                    "column_index": current_column_index,
-                    "num_pages": len(current_group),
-                }
-            )
-            current_row_group_index = None
-            current_column_index = None
-            num_total_pages += len(current_group)
-            current_group = []
-
-    for group in grouped_segments:
-        if group["name"] == page_header_and_data_name:
-            page_offset = group["value"][0]["offset"]
-            column_chunk_info = page_offset_to_column_chunk.get(page_offset)
-            if column_chunk_info:
-                row_group_index, column_index = column_chunk_info
-                if (
-                    current_row_group_index is None
-                    or current_row_group_index == row_group_index
-                    and current_column_index == column_index
-                ):
-                    current_row_group_index = row_group_index
-                    current_column_index = column_index
-                    current_group.append(group)
-                    continue
-                else:
-                    close_current_group()
-                    current_row_group_index = row_group_index
-                    current_column_index = column_index
-                    current_group = [group]
-                    continue
-            else:
+            if remaining_values > 0:
                 logger.warning(
-                    "Page at offset %d not mapped to any column chunk", page_offset
+                    "Could not map all pages for column chunk at row group %d, column %d",
+                    row_group_index,
+                    column_index,
                 )
-                close_current_group()
-                final_grouped.append(group)
-                num_total_pages += 1
-        else:
-            close_current_group()
-            final_grouped.append(group)
 
-    def make_groups(items: list[dict], group_names: dict[str, str]) -> list[dict]:
-        result = []
-        index = 0
-        while index < len(items):
-            item = items[index]
-            if item["name"] in group_names:
-                group_name = group_names[item["name"]]
-                group_items = []
-                while index < len(items) and items[index]["name"] == item["name"]:
-                    group_items.append(items[index])
-                    index += 1
+
+def build_offset_to_column_chunk_mapping(
+    footer: dict, offset_mapping: dict[int, Tuple[int, int]]
+):
+    for row_group_index, row_group in enumerate(footer["row_groups"]):
+        for column_index, column_chunk in enumerate(row_group["columns"]):
+            column_index_offset = column_chunk.get("column_index_offset")
+            if column_index_offset is not None:
+                offset_mapping[column_index_offset] = (row_group_index, column_index)
+            offset_index_offset = column_chunk.get("offset_index_offset")
+            if offset_index_offset is not None:
+                offset_mapping[offset_index_offset] = (row_group_index, column_index)
+            if "meta_data" not in column_chunk:
+                logger.warning(
+                    "Column chunk at row group %d, column %d has no meta_data",
+                    row_group_index,
+                    column_index,
+                )
+                continue
+            metadata = column_chunk["meta_data"]
+            bloom_filter_offset = metadata.get("bloom_filter_offset")
+            if bloom_filter_offset is not None:
+                offset_mapping[bloom_filter_offset] = (row_group_index, column_index)
+
+
+def group_by_column_chunk(
+    segments: list[dict], offset_mapping: dict[int, Tuple[int, int]]
+) -> list[dict]:
+    result = []
+    index = 0
+    while index < len(segments):
+        segment = segments[index]
+        if segment["name"] == page_segment_name:
+            group_name = column_chunk_pages_group_name
+            run = takewhile(
+                lambda s: s["name"] == segment["name"], islice(segments, index, None)
+            )
+            grouped = groupby(
+                run, key=lambda s: offset_mapping.get(s["offset"], (-1, -1))
+            )
+            for (row_group_index, column_index), group in grouped:
+                items = list(group)
                 result.append(
                     {
                         "name": group_name,
-                        "value": group_items,
-                        "offset": group_items[0]["offset"],
-                        "length": sum(seg["length"] for seg in group_items),
+                        "value": items,
+                        "offset": items[0]["offset"],
+                        "length": sum(p["length"] for p in items),
+                        "row_group_index": row_group_index,
+                        "column_index": column_index,
+                        "num_pages": len(items),
                     }
                 )
-            else:
-                result.append(item)
-                index += 1
-        return result
+                index += len(items)
+        else:
+            result.append(segment)
+            index += 1
+    return result
 
-    return make_groups(
-        final_grouped,
-        {
-            column_chunk_pages_name: ":pages",
-            "column_index": ":column_indexes",
-            "offset_index": ":offset_indexes",
-            "bloom_filter": ":bloom_filters",
-        },
-    )
+
+def group_by_row_group(
+    segments: list[dict], offset_mapping: dict[int, Tuple[int, int]]
+) -> list[dict]:
+    result = []
+    index = 0
+    while index < len(segments):
+        segment = segments[index]
+        if segment["name"] in (
+            column_chunk_pages_group_name,
+            ":column_index",
+            ":offset_index",
+            ":bloom_filter",
+        ):
+            group_name_mapping = {
+                column_chunk_pages_group_name: row_group_pages_group_name,
+                ":column_index": row_group_column_indexes_group_name,
+                ":offset_index": row_group_offset_indexes_group_name,
+                ":bloom_filter": row_group_bloom_filters_group_name,
+            }
+            group_name = group_name_mapping[segment["name"]]
+            run = takewhile(
+                lambda s: s["name"] == segment["name"], islice(segments, index, None)
+            )
+            grouped = groupby(
+                run, key=lambda s: offset_mapping.get(s["offset"], (-1, -1))[0]
+            )
+            for row_group_index, group in grouped:
+                items = list(group)
+                grouped_segment = {
+                    "name": group_name,
+                    "value": items,
+                    "offset": items[0]["offset"],
+                    "length": sum(p["length"] for p in items),
+                    "row_group_index": row_group_index,
+                }
+                if segment["name"] == column_chunk_pages_group_name:
+                    grouped_segment["num_pages"] = sum(
+                        item["num_pages"] for item in items
+                    )
+                result.append(grouped_segment)
+                index += len(items)
+        else:
+            result.append(segment)
+            index += 1
+    return result
+
+
+def group_by_type(segments: list[dict]) -> list[dict]:
+    result = []
+    index = 0
+    while index < len(segments):
+        segment = segments[index]
+        if segment["name"] in (
+            row_group_pages_group_name,
+            row_group_column_indexes_group_name,
+            row_group_offset_indexes_group_name,
+            row_group_bloom_filters_group_name,
+        ):
+            group_name_mapping = {
+                row_group_pages_group_name: pages_segment_name,
+                row_group_column_indexes_group_name: column_indexes_segment_name,
+                row_group_offset_indexes_group_name: offset_indexes_segment_name,
+                row_group_bloom_filters_group_name: bloom_filters_segment_name,
+            }
+            group_name = group_name_mapping[segment["name"]]
+            run = takewhile(
+                lambda s: s["name"] == segment["name"], islice(segments, index, None)
+            )
+            items = list(run)
+            grouped_segment = {
+                "name": group_name,
+                "value": items,
+                "offset": items[0]["offset"],
+                "length": sum(p["length"] for p in items),
+            }
+            if segment["name"] == row_group_pages_group_name:
+                grouped_segment["num_pages"] = sum(item["num_pages"] for item in items)
+            result.append(grouped_segment)
+            index += len(items)
+        else:
+            result.append(segment)
+            index += 1
+    return result
+
+
+def group_segments(segments: list[dict], footer: dict) -> list[dict]:
+    page_mapping = get_page_mapping(segments)
+    segments = group_page_header_and_data(segments)
+    offset_mapping: dict[int, Tuple[int, int]] = {}
+    build_page_offset_to_column_chunk_mapping(footer, page_mapping, offset_mapping)
+    build_offset_to_column_chunk_mapping(footer, offset_mapping)
+
+    # Group :page into :column_chunk_pages
+    segments = group_by_column_chunk(segments, offset_mapping)
+
+    # Group :column_chunk_pages into :row_group_pages
+    # and group :column_index, :offset_index, :bloom_filter segments into
+    # :row_group_column_indexes, :row_group_offset_indexes, :row_group_bloom_filters
+    segments = group_by_row_group(segments, offset_mapping)
+
+    # Group :row_group_xxx into :xxx
+    segments = group_by_type(segments)
+
+    return segments
 
 
 def format_bytes(size):
@@ -668,7 +715,7 @@ def to_nice_json(value):
 def is_nested_segment(segment: Any) -> bool:
     if not isinstance(segment, dict):
         return False
-    if segment["name"].startswith(":"):
+    if segment["name"] in group_segment_names:
         return True
     if "metadata" in segment:
         metadata = segment["metadata"]
@@ -687,14 +734,19 @@ env.globals["is_nested_segment"] = is_nested_segment
 env.filters["tuple"] = lambda value: tuple(value)
 
 
-def generate_html_report(
-    file_path,
-    summary,
-    footer,
-    segments,
-    sections=[],
-) -> str:
-    template = env.get_template("report.html")
+@dataclass
+class ReportElements:
+    footer: dict
+    summary: dict
+    codecs: list[str]
+    encodings: list[str]
+    logical_type_mapping: dict[tuple[str, ...], dict]
+    schema_tree: list[SchemaElement]
+    columns: list[dict]
+    grouped_segments: list[dict]
+
+
+def make_report_elements(summary, footer, segments) -> ReportElements:
     codecs = get_codecs(footer)
     encodings = get_encodings(footer)
     schema_tree = build_schema_tree(
@@ -702,35 +754,61 @@ def generate_html_report(
     )
     logical_type_mapping = build_logical_type_mapping(schema_tree)
     columns = aggregate_column_chunks(footer, logical_type_mapping)
-    if "segments" in sections:
-        segments = sanitize_segments(segments)
-        grouped_segments = group_segments(segments, footer)
-        segment_class_mapping = {
-            "magic_number": "segment--magic",
-            "footer_length": "segment--value",
-            column_chunk_pages_name: "segment--column-chunk-pages",
-            "page": "segment--page",
-            "page_data": "segment--page",
-            page_group_name: "segment--group",
-            column_index_group_name: "segment--group",
-            offset_index_group_name: "segment--group",
-            bloom_filter_group_name: "segment--group",
-        }
-    else:
-        grouped_segments = None
-        segment_class_mapping = None
+    grouped_segments = group_segments(segments, footer)
+    return ReportElements(
+        footer=footer,
+        summary=summary,
+        codecs=codecs,
+        encodings=encodings,
+        logical_type_mapping=logical_type_mapping,
+        schema_tree=schema_tree,
+        columns=columns,
+        grouped_segments=grouped_segments,
+    )
+
+
+segment_class_mapping = {
+    ":magic_number": "segment--magic",
+    ":footer_length": "segment--value",
+    ":page_header": "segment--page-header",
+    ":page_data": "segment--page-data",
+    ":column_index": "segment--column-index",
+    ":offset_index": "segment--offset-index",
+    ":bloom_filter": "segment--bloom-filter",
+    page_segment_name: "segment--page",
+    column_chunk_pages_group_name: "segment--column-chunk-pages",
+    row_group_pages_group_name: "segment--row-group-pages",
+    row_group_column_indexes_group_name: "segment--row-group-column-index",
+    row_group_offset_indexes_group_name: "segment--row-group-offset-index",
+    row_group_bloom_filters_group_name: "segment--row-group-bloom-filter",
+    pages_segment_name: "segment--pages",
+    column_indexes_segment_name: "segment--column-indexes",
+    offset_indexes_segment_name: "segment--offset-indexes",
+    bloom_filters_segment_name: "segment--bloom-filters",
+}
+
+
+def generate_html_report(
+    file_path,
+    elements: ReportElements,
+    sections=[],
+    template_name="report.html",
+    **kwargs,
+) -> str:
+    template = env.get_template(template_name)
     html = template.render(
         filename=pathlib.Path(file_path).name,
         file_path=file_path,
-        summary=summary,
-        footer=footer,
-        schema_tree=schema_tree,
-        codecs=codecs,
-        encodings=encodings,
-        columns=columns,
-        logical_type_mapping=logical_type_mapping,
-        grouped_segments=grouped_segments,
+        summary=elements.summary,
+        footer=elements.footer,
+        schema_tree=elements.schema_tree,
+        codecs=elements.codecs,
+        encodings=elements.encodings,
+        columns=elements.columns,
+        logical_type_mapping=elements.logical_type_mapping,
+        grouped_segments=elements.grouped_segments,
         segment_class_mapping=segment_class_mapping,
         sections=sections,
+        **kwargs,
     )
     return html

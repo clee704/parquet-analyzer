@@ -457,7 +457,7 @@ def read_pages(f, column_chunk, segments: list[dict[str, Any]]) -> list[int]:
         offset = column_chunk.meta_data.data_page_offset
     offsets: list[int] = []
     while remaining_values > 0:
-        page, page_segment = read_thrift_segment(f, offset, "page", PageHeader)
+        page, page_segment = read_thrift_segment(f, offset, ":page_header", PageHeader)
         page_header_end = page_segment["offset"] + page_segment["length"]
         offsets.append(page_segment["offset"])
         segments.append(page_segment)
@@ -465,7 +465,7 @@ def read_pages(f, column_chunk, segments: list[dict[str, Any]]) -> list[int]:
             create_segment(
                 page_header_end,
                 page_header_end + page.compressed_page_size,
-                "page_data",
+                ":page_data",
             )
         )
         if page.data_page_header is not None:
@@ -485,7 +485,7 @@ def read_pages(f, column_chunk, segments: list[dict[str, Any]]) -> list[int]:
 
 def read_column_index(f, column_chunk, segments: list[dict[str, Any]]):
     _, column_index_segment = read_thrift_segment(
-        f, column_chunk.column_index_offset, "column_index", ColumnIndex
+        f, column_chunk.column_index_offset, ":column_index", ColumnIndex
     )
     segments.append(column_index_segment)
     return column_index_segment["offset"]
@@ -493,7 +493,7 @@ def read_column_index(f, column_chunk, segments: list[dict[str, Any]]):
 
 def read_offset_index(f, column_chunk, segments: list[dict[str, Any]]):
     _, offset_index_segment = read_thrift_segment(
-        f, column_chunk.offset_index_offset, "offset_index", OffsetIndex
+        f, column_chunk.offset_index_offset, ":offset_index", OffsetIndex
     )
     segments.append(offset_index_segment)
     return offset_index_segment["offset"]
@@ -501,7 +501,7 @@ def read_offset_index(f, column_chunk, segments: list[dict[str, Any]]):
 
 def read_bloom_filter(f, column_chunk, segments: list[dict[str, Any]]):
     _, bloom_filter_segment = read_thrift_segment(
-        f, column_chunk.bloom_filter_offset, "bloom_filter", BloomFilterHeader
+        f, column_chunk.bloom_filter_offset, ":bloom_filter", BloomFilterHeader
     )
     segments.append(bloom_filter_segment)
     return bloom_filter_segment["offset"]
@@ -529,7 +529,7 @@ def parse_parquet_file(file_path: str):
         header = f.read(4)
         if header != b"PAR1":
             raise ValueError("Not a valid Parquet file - missing PAR1 header")
-        segments.append(create_segment(0, 4, "magic_number", "PAR1"))
+        segments.append(create_segment(0, 4, ":magic_number", "PAR1"))
 
         # Read footer length (last 8 bytes)
         f.seek(-8, 2)
@@ -540,16 +540,16 @@ def parse_parquet_file(file_path: str):
             raise ValueError("Not a valid Parquet file - missing PAR1 footer")
         footer_size = struct.unpack("<I", footer_size)[0]
         segments.append(
-            create_segment(file_size - 4, file_size, "magic_number", "PAR1")
+            create_segment(file_size - 4, file_size, ":magic_number", "PAR1")
         )
         segments.append(
-            create_segment(file_size - 8, file_size - 4, "footer_length", footer_size)
+            create_segment(file_size - 8, file_size - 4, ":footer_length", footer_size)
         )
 
         # Parse footer with offset recording
         footer_offset = file_size - 8 - footer_size
         footer, footer_segment = read_thrift_segment(
-            f, footer_offset, "footer", FileMetaData
+            f, footer_offset, ":footer", FileMetaData
         )
         segments.append(footer_segment)
 
@@ -603,7 +603,7 @@ def segment_to_json(segment):
 
 def find_footer_segment(segments: Iterable[dict[str, Any]]):
     for s in segments:
-        if s["name"] == "footer":
+        if s["name"] == ":footer":
             return s
     return None
 
@@ -624,7 +624,7 @@ def get_summary(footer: dict, segments: list[dict]) -> dict[str, Any]:
     uncompressed_page_data_size = 0
     compressed_page_data_size = 0
     for s in segments:
-        if s["name"] == "page":
+        if s["name"] == ":page_header":
             num_pages += 1
             page_header_size += s["length"]
             page_json = segment_to_json(s)
@@ -684,7 +684,12 @@ def get_pages(
 ) -> list[dict]:
     page_offset_map: dict[int, Any] = {}
     for s in segments:
-        if s["name"] in ("page", "column_index", "offset_index", "bloom_filter"):
+        if s["name"] in (
+            ":page_header",
+            ":column_index",
+            ":offset_index",
+            ":bloom_filter",
+        ):
             page_offset_map[s["offset"]] = segment_to_json(s)
     column_pages = []
 

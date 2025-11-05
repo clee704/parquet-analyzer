@@ -14,7 +14,7 @@ from ._core import (
     parse_parquet_file,
     segment_to_json,
 )
-from ._html import generate_html_report
+from ._html import generate_html_report, make_report_elements
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -82,11 +82,10 @@ def main(argv: Sequence[str] | None = None) -> None:
     elif args.output_mode == "html":
         footer = segment_to_json(find_footer_segment(segments))
         summary = get_summary(footer, segments)
+        elements = make_report_elements(summary, footer, segments)
         output = generate_html_report(
             args.parquet_file,
-            summary=summary,
-            footer=footer,
-            segments=segments,
+            elements,
             sections=args.html_sections,
         )
     else:

@@ -1,39 +1,26 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-	<meta charset="utf-8">
-	<title>Parquet Analyzer</title>
-	<style>
-    {% include "style.css" %}
-	</style>
-</head>
-<body>
-	<div class="container">
-    {% include "toggle-all.html" %}
-    {% if "summary" in sections %}
-      {% include "sections/summary.html" %}
-    {% endif %}
-    {% if "schema" in sections %}
-      {% include "sections/schema.html" %}
-    {% endif %}
-    {% if "key-value-metadata" in sections %}
-      {% include "sections/key-value-metadata.html" %}
-    {% endif %}
-    {% if "row-groups" in sections %}
-      {% include "sections/row-groups.html" %}
-    {% endif %}
-    {% if "columns" in sections %}
-      {% include "sections/columns.html" %}
-    {% endif %}
-    {% if "segments" in sections %}
-      {% include "sections/segments.html" %}
-    {% endif %}
-    {% if "raw-footer" in sections %}
-      {% include "sections/raw-footer.html" %}
-    {% endif %}
-	</div>
-	<script>
-    {% include "script.js" %}
-	</script>
-</body>
-</html>
+{% extends "base.html" %}
+
+{% block content %}
+	{% include "toggle-all.html" %}
+	{% if "summary" in sections %}
+		{% include "sections/summary.html" %}
+	{% endif %}
+	{% if "schema" in sections %}
+		{% include "sections/schema.html" %}
+	{% endif %}
+	{% if "key-value-metadata" in sections %}
+		{% include "sections/key-value-metadata.html" %}
+	{% endif %}
+	{% if "row-groups" in sections %}
+		{% include "sections/row-groups.html" %}
+	{% endif %}
+	{% if "columns" in sections and summary.num_row_groups > 1 %}
+		{% include "sections/columns.html" %}
+	{% endif %}
+	{% if "segments" in sections %}
+		{% include "sections/segments.html" %}
+	{% endif %}
+	{% if "raw-footer" in sections %}
+		{% include "sections/raw-footer.html" %}
+	{% endif %}
+{% endblock %}

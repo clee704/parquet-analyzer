@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+
+{% block container_class %}file-droppable{% endblock %}
+{% block content %}
+    <a href="/">&larr; Back to file selection</a>
+	{% include "toggle-all.html" %}
+	{% include "sections/summary.html" %}
+	{% for data in section_data %}
+		<section class="section section--{{ data.id }}">
+			<div class="section__header toggle-header section__header-with-spinner"
+					hx-get="/sections/{{ data.id }}?file={{ file_path  | urlencode }}"
+					hx-target=".section--{{ data.id }}"
+					hx-swap="outerHTML"
+					hx-indicator="#spinner--{{ data.id }}">
+				<span>
+					<span class="toggle-indicator">+</span>
+					<h2 class="section__title">{{ data.title }}</h2>
+				</span>
+				<span class="htmx-indicator" id="spinner--{{data.id}}">
+					<span class="spinner"></span>
+				</span>
+			</div>
+		</section>
+	{% endfor %}
+    <script src="https://cdn.jsdelivr.net/npm/htmx.org@2.0.8/dist/htmx.min.js"></script>
+{% endblock %}

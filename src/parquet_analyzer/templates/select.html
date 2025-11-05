@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+
+{% block extra_style %}
+	html, body {
+		height: 100%;
+		width: 100%;
+	}
+{% endblock %}
+{% block container_class %}container--select-file file-droppable{% endblock %}
+{% block content %}
+	<div class="select-file">
+		<h1>Select a Parquet file</h1>
+		<form action="/upload" method="post" enctype="multipart/form-data">
+			<div class="select-file__dropzone" onclick="fileInput.click()">
+				Drop file here or click to choose
+				<input id="fileInput" type="file" name="file" accept=".parquet" hidden>
+			</div>
+		</form>
+	</div>
+	<script>
+		(() => {
+			const fi = document.getElementById('fileInput');
+			fi.addEventListener('change', async (e) => {
+				e.preventDefault();
+				const file = e.target.files[0];
+				uploadFile(file);
+			});
+		})();
+	</script>
+{% endblock %}
