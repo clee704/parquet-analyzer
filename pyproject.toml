@@ -16,6 +16,7 @@ keywords = ["parquet", "thrift", "data-engineering", "debugging"]
 dependencies = [
   "thrift>=0.16",
   "Jinja2==3.1.6",
+  "Flask==3.1.2",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
@@ -39,6 +40,7 @@ dev = [
   "pytest",
   "pytest-cov",
   "pyarrow",
+  "numpy",
   "mypy",
 ]
 
@@ -65,10 +67,6 @@ include = [
   "src/parquet",
   "README.md",
   "LICENSE",
-  "parquet.thrift",
-  "example.json",
-  "example-segments.json",
-  "requirements.txt",
 ]
 
 [tool.hatch.envs.dev]
@@ -101,6 +99,3 @@ extend-exclude = ["src/parquet"]
 [tool.pytest.ini_options]
 addopts = "-q"
 testpaths = ["tests"]
-
-[tool.setuptools.package-data]
-"parquet_analyzer" = ["templates/*.j2", "static/*"]
