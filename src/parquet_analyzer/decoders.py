@@ -17,16 +17,23 @@ Encoding-level gotchas worth knowing
   ``definition_levels_byte_length`` / ``repetition_levels_byte_length`` in the
   page header and store the streams unprefixed. :func:`decode_v1_level_block`
   handles the V1 prefix; callers reading V2 pages should slice using the
-  header-supplied lengths and call :func:`decode_levels` directly.
+  header-supplied lengths (see "V2 page body layout" below) and call
+  :func:`decode_levels` directly.
 
 * **Required columns have no level block.** When ``max_def_level == 0`` (a
   required field), the file contains no def-level bytes at all. Same for
   repetition: rep-levels exist only for repeated columns.
   :func:`decode_levels` returns ``[0] * num_values`` in that case.
 
-* **V2 level streams are uncompressed.** Only the values section of a V2 page
-  may be compressed (and only when ``is_compressed`` is true). Do not pass an
-  entire V2 page body to :func:`decompress` as one block.
+* **V2 page body layout is** ``[rep_levels][def_levels][values]``. Levels are
+  stored uncompressed regardless of ``is_compressed``; only the values
+  section is (optionally) compressed. Concretely, V2 callers should slice
+  ``raw[:rep_len]``, ``raw[rep_len : rep_len + def_len]``, and
+  ``raw[rep_len + def_len:]`` using ``repetition_levels_byte_length`` and
+  ``definition_levels_byte_length`` from the page header, call
+  :func:`decode_levels` directly on the level slices, and pass the values
+  slice to :func:`decompress` only when ``is_compressed`` is true. Do not
+  pass an entire V2 page body to :func:`decompress` as one block.
 
 * **Per-page dictionary-index bit-width byte.** Dictionary-encoded data pages
   start their indices block with a 1-byte ``bit_width`` value chosen by the

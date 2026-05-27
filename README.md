@@ -231,10 +231,10 @@ values = [dict_values[next(it)] if d == 1 else None for d in def_levels]
 
 Gotchas worth knowing:
 
-* **V1 vs V2 level layout.** V1 prefixes each level block with a 4-byte LE length. V2 stores the byte length in the page header instead. Use `decode_v1_level_block` for V1; for V2 slice the bytes yourself and call `decode_levels`.
+* **V1 vs V2 level layout.** V1 prefixes each level block with a 4-byte LE length. V2 stores the byte length in the page header instead (see the next bullet for V2's body layout). Use `decode_v1_level_block` for V1; for V2 slice the bytes yourself and call `decode_levels`.
+* **V2 page body layout is `[rep_levels][def_levels][values]`.** Levels are stored uncompressed regardless of `is_compressed`; only the values section is (optionally) compressed. Concretely, V2 callers should slice `raw[:rep_len]`, `raw[rep_len:rep_len + def_len]`, and `raw[rep_len + def_len:]` using `repetition_levels_byte_length` and `definition_levels_byte_length` from the page header, then call `decode_levels` directly on the level slices (and `decompress` on the values slice only when `is_compressed` is true). Do not pass an entire V2 page body to `decompress` as one block.
 * **Required columns have no level block.** When `max_def_level == 0`, the file contains no def-level bytes at all. `decode_levels` returns `[0] * num_values` in that case.
 * **Indices skip nulls.** For nullable columns, the indices stream length is the non-null row count (`sum(def_levels)` when `max_def_level == 1`), not the page's `num_values`. Asking `decode_rle_bitpacked_hybrid` for too many values raises `truncated` (or silently produces garbage indices if the indices block is followed by other bytes).
-* **V2 level streams are uncompressed.** Only the values section of a V2 page is compressed (and only when `is_compressed` is true). Don't pass an entire V2 page body to `decompress` as one block — slice off the rep-level and def-level prefixes first.
 * **Per-page dictionary-index bit width.** Dictionary-encoded data pages start their indices block with a 1-byte `bit_width` chosen by the writer (it may exceed `ceil(log2(dict_size))`). Read that byte first, then pass the rest to `decode_rle_bitpacked_hybrid`.
 
 ## Technical details
