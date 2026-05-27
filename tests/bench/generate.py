@@ -64,13 +64,13 @@ def generate(path: Path, shape: Shape, *, seed: int = 42) -> Path:
     rng = np.random.default_rng(seed)
 
     # Mixed-type columns so PLAIN + dictionary + numeric paths are all
-    # exercised. Cycle through the type set as we add columns.
-    type_pool: list = []
-    for _ in range(cfg["num_columns"]):
-        type_pool.append(("int64", pa.int64()))
-        type_pool.append(("float64", pa.float64()))
-        type_pool.append(("string_low_card", pa.string()))
-        type_pool.append(("string_high_card", pa.string()))
+    # exercised. Cycle through this 4-entry pool as we add columns.
+    type_pool: list = [
+        ("int64", pa.int64()),
+        ("float64", pa.float64()),
+        ("string_low_card", pa.string()),
+        ("string_high_card", pa.string()),
+    ]
 
     columns: dict[str, pa.Array] = {}
     num_rows = cfg["num_rows"]

@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from tests.bench import generate as _generate
+from . import generate as _generate
 
 
 def _make_fixture(shape: str):
