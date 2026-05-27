@@ -210,6 +210,42 @@ def test_decompress_known_unsupported_codec_raises(codec):
         decompress(b"", codec, 0)
 
 
+@pytest.mark.parametrize(
+    "codec",
+    ["SNAPPY", "GZIP", "ZSTD", "LZ4_RAW"],
+)
+def test_decompress_malformed_payload_raises_value_error(codec):
+    """Malformed compressed payloads must surface as ``ValueError`` to
+    callers, not as the implementation-detail ``cramjam.DecompressionError``.
+    This contract lets callers write
+    ``except (ValueError, NotImplementedError):`` per the documented
+    ``Raises`` block and catch every failure mode; pre-fix, the cramjam
+    exception leaked through that catch block and dropped corruption-
+    failure cases silently."""
+    # Random bytes are extremely unlikely to be valid for any of these
+    # codecs, so cramjam rejects them with DecompressionError. We wrap.
+    payload = b"\xde\xad\xbe\xef" * 32
+    with pytest.raises(ValueError, match=f"{codec} decompression failed"):
+        decompress(payload, codec, uncompressed_size=128)
+
+
+def test_decompress_malformed_payload_chains_original_exception():
+    """The wrap preserves the original cramjam exception via ``__cause__``
+    so callers debugging can still see what the underlying codec said."""
+    try:
+        decompress(b"\xde\xad\xbe\xef" * 32, "SNAPPY", uncompressed_size=128)
+    except ValueError as e:
+        cause = e.__cause__
+        assert cause is not None
+        # Don't pin the exact class name (could be CompressionError or
+        # DecompressionError depending on what cramjam raised) — just
+        # verify a non-ValueError cramjam exception was chained.
+        assert type(cause).__module__.startswith("cramjam")
+        assert not isinstance(cause, ValueError)
+    else:
+        pytest.fail("expected ValueError")
+
+
 def test_decompress_size_mismatch_raises(tmp_path):
     path = _write_simple(tmp_path / "snappy.parquet", compression="snappy")
     page = _first_data_page(path)

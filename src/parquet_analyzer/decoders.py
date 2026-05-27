@@ -112,8 +112,12 @@ def decompress(data: bytes, codec: str, uncompressed_size: int) -> bytes:
     ``ValueError`` is raised on mismatch.
 
     Raises:
-        ValueError: ``uncompressed_size`` is negative, or the decompressed
-            output does not match it.
+        ValueError: ``uncompressed_size`` is negative, the decompressed
+            output does not match it, OR the underlying codec library
+            rejects the payload as malformed. Codec-library exceptions
+            (``cramjam.DecompressionError``) are wrapped to keep this
+            module's public exception surface a function of itself, not
+            of its transitive C-extension dependencies.
         NotImplementedError: ``codec`` is recognised but unsupported here
             (``LZO``, ``BROTLI``), or unknown entirely.
     """
@@ -133,18 +137,23 @@ def decompress(data: bytes, codec: str, uncompressed_size: int) -> bytes:
             f"{sorted(_SUPPORTED_CODECS | _KNOWN_UNSUPPORTED_CODECS)}."
         )
 
-    if codec_upper == "UNCOMPRESSED":
-        out = bytes(data)
-    elif codec_upper == "SNAPPY":
-        out = bytes(cramjam.snappy.decompress_raw(data))
-    elif codec_upper == "GZIP":
-        out = bytes(cramjam.gzip.decompress(data))
-    elif codec_upper == "ZSTD":
-        out = bytes(cramjam.zstd.decompress(data))
-    elif codec_upper == "LZ4_RAW":
-        out = bytes(cramjam.lz4.decompress_block(data, output_len=uncompressed_size))
-    else:  # codec_upper == "LZ4"
-        out = _decompress_lz4_hadoop(data, uncompressed_size)
+    try:
+        if codec_upper == "UNCOMPRESSED":
+            out = bytes(data)
+        elif codec_upper == "SNAPPY":
+            out = bytes(cramjam.snappy.decompress_raw(data))
+        elif codec_upper == "GZIP":
+            out = bytes(cramjam.gzip.decompress(data))
+        elif codec_upper == "ZSTD":
+            out = bytes(cramjam.zstd.decompress(data))
+        elif codec_upper == "LZ4_RAW":
+            out = bytes(
+                cramjam.lz4.decompress_block(data, output_len=uncompressed_size)
+            )
+        else:  # codec_upper == "LZ4"
+            out = _decompress_lz4_hadoop(data, uncompressed_size)
+    except (cramjam.DecompressionError, cramjam.CompressionError) as e:
+        raise ValueError(f"{codec_upper} decompression failed: {e}") from e
 
     if len(out) != uncompressed_size:
         raise ValueError(
