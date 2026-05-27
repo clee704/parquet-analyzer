@@ -386,9 +386,14 @@ def decode_v1_level_block(
         just past the level block (or equal to ``offset`` for max_level == 0).
 
     Raises:
-        ValueError: ``offset`` out of range, truncated length prefix, or
-            the level block's RLE stream is malformed.
+        ValueError: ``max_level`` or ``num_values`` negative, ``offset`` out
+            of range, truncated length prefix, or the level block's RLE
+            stream is malformed.
     """
+    if max_level < 0:
+        raise ValueError(f"max_level must be >= 0, got {max_level}")
+    if num_values < 0:
+        raise ValueError(f"num_values must be >= 0, got {num_values}")
     if offset < 0 or offset > len(data):
         raise ValueError(
             f"offset {offset} out of range for buffer of length {len(data)}"

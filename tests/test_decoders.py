@@ -549,6 +549,31 @@ def test_decode_v1_level_block_block_longer_than_buffer_raises():
         decode_v1_level_block(bad, offset=0, max_level=1, num_values=1)
 
 
+def test_decode_v1_level_block_negative_max_level_raises():
+    """Argument-validation symmetry with sibling decoders — without this
+    check, a negative ``max_level`` slips past the ``max_level == 0`` short-
+    circuit and fails later inside ``decode_levels``, producing a less
+    direct error message than the other public decoders give for the same
+    input."""
+    with pytest.raises(ValueError, match="max_level"):
+        decode_v1_level_block(b"\x00\x00\x00\x00", offset=0, max_level=-1, num_values=0)
+
+
+def test_decode_v1_level_block_negative_num_values_raises():
+    """Argument-validation symmetry — pre-fix, the ``max_level == 0``
+    short-circuit returned ``([0] * -1, offset) == ([], offset)`` silently
+    (Python permits negative repetition counts), while every sibling
+    decoder rejects ``num_values < 0`` up front."""
+    with pytest.raises(ValueError, match="num_values"):
+        decode_v1_level_block(b"unused", offset=0, max_level=0, num_values=-1)
+    # Also verify the same rejection on the non-short-circuit path so the
+    # contract holds for both branches.
+    with pytest.raises(ValueError, match="num_values"):
+        decode_v1_level_block(
+            b"\x04\x00\x00\x00\x00", offset=0, max_level=1, num_values=-1
+        )
+
+
 # ---------------------------------------------------------------------------
 # decode_plain()
 # ---------------------------------------------------------------------------
