@@ -138,6 +138,105 @@ parquet-analyzer --output-mode html \
 
 Example: https://clee704.github.io/parquet-analyzer/examples/example.html
 
+## Library API
+
+`parquet-analyzer` is also a Python library. Anything the CLI does is available as an importable function, so you can build encoding-level verification scripts without shelling out.
+
+### Footer / segments / pages
+
+```python
+from parquet_analyzer import (
+    parse_parquet_file, find_footer_segment, segment_to_json,
+    get_pages, get_summary,
+)
+
+segments, column_offset_map = parse_parquet_file("example.parquet")
+footer = segment_to_json(find_footer_segment(segments))
+summary = get_summary(footer, segments)
+pages = get_pages(segments, column_offset_map)
+```
+
+`segments` is the byte-range view (every structural element with its offset and length); use it to locate page bodies, dictionary pages, column indexes, etc. without reimplementing the thrift footer parser.
+
+### Decoders (`parquet_analyzer.decoders`)
+
+Page-level decoders for the encoded streams a Parquet inspector actually needs to read:
+
+```python
+from parquet_analyzer.decoders import (
+    decompress,
+    decode_rle_bitpacked_hybrid,
+    decode_levels,
+    decode_v1_level_block,
+    decode_plain,
+    DecodeStats,
+)
+```
+
+| Function | What it does |
+|---|---|
+| `decompress(data, codec, uncompressed_size)` | Decompress a Parquet compressed byte slice. Supports `UNCOMPRESSED`, `SNAPPY`, `GZIP`, `ZSTD`, `LZ4` (legacy Hadoop framed), `LZ4_RAW`. |
+| `decode_rle_bitpacked_hybrid(data, bit_width, num_values)` | Decode a raw RLE / bit-packed-hybrid stream — used for dictionary indices and (with no length prefix) V2 level streams. Returns `(values, DecodeStats)` where `DecodeStats` records RLE-run / bit-packed-run counts, lengths, and RLE-run values for verification workflows. |
+| `decode_levels(data, max_level, num_values)` | Decode definition or repetition levels. Bit width is derived from `max_level`. Returns `[0] * num_values` if `max_level == 0` (no level block exists on disk for required columns). |
+| `decode_v1_level_block(data, offset, max_level, num_values)` | V1-data-page helper that handles the 4-byte little-endian length prefix in front of each level block. Returns `(levels, new_offset)`. V2 data pages store level byte lengths in the page header instead — for those, slice the bytes yourself and call `decode_levels` directly. |
+| `decode_plain(data, parquet_type, num_values, type_length=None)` | Decode `PLAIN`-encoded values. Supported types: `BOOLEAN`, `INT32`, `INT64`, `INT96`, `FLOAT`, `DOUBLE`, `BYTE_ARRAY`, `FIXED_LEN_BYTE_ARRAY` (`type_length` required). `INT96` is returned as 12-byte `bytes` — interpretation is the caller's responsibility. |
+
+End-to-end example — decode the indices of a dictionary-encoded V1 data page and recover the original values:
+
+```python
+from parquet_analyzer import parse_parquet_file
+from parquet_analyzer.decoders import (
+    decompress, decode_v1_level_block, decode_rle_bitpacked_hybrid, decode_plain,
+)
+
+segments, _ = parse_parquet_file("example.parquet")
+file_bytes = open("example.parquet", "rb").read()
+
+# Find the dictionary page and the data page from `segments`
+# (offset/length are recorded on each "page_data" segment).
+dict_seg = ...  # the page_data segment for the DICTIONARY_PAGE
+data_seg = ...  # the page_data segment for the DATA_PAGE
+
+# Dictionary entries are PLAIN BYTE_ARRAY values.
+dict_raw = decompress(
+    file_bytes[dict_seg["offset"]:dict_seg["offset"] + dict_seg["length"]],
+    "SNAPPY",
+    dict_uncompressed_size,
+)
+dict_values = decode_plain(dict_raw, "BYTE_ARRAY", num_dict_values)
+
+# Data page layout: [4-byte LE def-level block length][def-level RLE stream]
+#                   [1-byte indices bit-width][indices RLE/bit-packed-hybrid stream]
+raw = decompress(
+    file_bytes[data_seg["offset"]:data_seg["offset"] + data_seg["length"]],
+    "SNAPPY",
+    data_uncompressed_size,
+)
+def_levels, after_def = decode_v1_level_block(raw, 0, max_level=1, num_values=num_values)
+indices_bit_width = raw[after_def]
+
+# In V1 dict-encoded pages, the indices stream contains entries only for
+# non-null rows (nulls are represented in the def-level stream above and
+# carry no value). So the index count is `num_non_null`, NOT `num_values`.
+num_non_null = sum(def_levels)
+indices, stats = decode_rle_bitpacked_hybrid(
+    raw[after_def + 1:], indices_bit_width, num_non_null,
+)
+print(f"RLE runs: {stats.rle_run_count}, bit-packed runs: {stats.bit_packed_run_count}")
+
+# Reassemble nulls into the final value list using the def-level stream.
+it = iter(indices)
+values = [dict_values[next(it)] if d == 1 else None for d in def_levels]
+```
+
+Gotchas worth knowing:
+
+* **V1 vs V2 level layout.** V1 prefixes each level block with a 4-byte LE length. V2 stores the byte length in the page header instead (see the next bullet for V2's body layout). Use `decode_v1_level_block` for V1; for V2 slice the bytes yourself and call `decode_levels`.
+* **V2 page body layout is `[rep_levels][def_levels][values]`.** Levels are stored uncompressed regardless of `is_compressed`; only the values section is (optionally) compressed. Concretely, V2 callers should slice `raw[:rep_len]`, `raw[rep_len:rep_len + def_len]`, and `raw[rep_len + def_len:]` using `repetition_levels_byte_length` and `definition_levels_byte_length` from the page header, then call `decode_levels` directly on the level slices (and `decompress` on the values slice only when `is_compressed` is true). Do not pass an entire V2 page body to `decompress` as one block.
+* **Required columns have no level block.** When `max_def_level == 0`, the file contains no def-level bytes at all. `decode_levels` returns `[0] * num_values` in that case.
+* **Indices skip nulls.** For nullable columns, the indices stream length is the non-null row count (`sum(def_levels)` when `max_def_level == 1`), not the page's `num_values`. Asking `decode_rle_bitpacked_hybrid` for too many values raises `truncated` (or silently produces garbage indices if the indices block is followed by other bytes).
+* **Per-page dictionary-index bit width.** Dictionary-encoded data pages start their indices block with a 1-byte `bit_width` chosen by the writer (it may exceed `ceil(log2(dict_size))`). Read that byte first, then pass the rest to `decode_rle_bitpacked_hybrid`.
+
 ## Technical details
 
 The tool uses a custom Thrift protocol implementation (`OffsetRecordingProtocol`) that wraps the standard Thrift compact protocol to track byte offsets and lengths of all decoded structures. This enables precise mapping of logical Parquet structures to their binary representation.
