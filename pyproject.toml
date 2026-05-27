@@ -16,6 +16,7 @@ keywords = ["parquet", "thrift", "data-engineering", "debugging"]
 dependencies = [
   "thrift>=0.16",
   "Jinja2==3.1.6",
+  "cramjam>=2.7",
 ]
 classifiers = [
   "Development Status :: 3 - Alpha",
