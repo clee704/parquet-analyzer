@@ -12,6 +12,7 @@ doesn't reliably trigger.
 
 from __future__ import annotations
 
+import dataclasses
 import struct
 from pathlib import Path
 
@@ -89,6 +90,61 @@ def _first_data_page(path: Path) -> dict:
         if p["page_type"] == "DATA_PAGE":
             return p
     raise AssertionError(f"no V1 DATA_PAGE in {path}")
+
+
+def _first_data_page_v2(path: Path) -> dict:
+    """Find the first V2 data page and capture its V2-specific header fields.
+
+    Augments the base ``_first_data_page`` shape with
+    ``definition_levels_byte_length``, ``repetition_levels_byte_length``, and
+    ``is_compressed`` — the page-header fields a V2 caller needs to slice
+    the body into ``[rep_levels][def_levels][values]``.
+    """
+    segments, _ = parse_parquet_file(str(path))
+    file_bytes = path.read_bytes()
+    for i, s in enumerate(segments):
+        if s["name"] != "page":
+            continue
+        page_type = None
+        v2_info: dict = {
+            "num_values": None,
+            "encoding": None,
+            "definition_levels_byte_length": None,
+            "repetition_levels_byte_length": None,
+            "is_compressed": None,
+        }
+        uncompressed_size = compressed_size = None
+        for sub in s["value"]:
+            if sub["name"] == "type":
+                page_type = sub["metadata"]["enum_name"]
+            elif sub["name"] == "uncompressed_page_size":
+                uncompressed_size = sub["value"]
+            elif sub["name"] == "compressed_page_size":
+                compressed_size = sub["value"]
+            elif sub["name"] == "data_page_header_v2":
+                for k in sub["value"]:
+                    name = k["name"]
+                    if name in v2_info:
+                        v2_info[name] = (
+                            k["metadata"]["enum_name"]
+                            if name == "encoding"
+                            else k["value"]
+                        )
+        if page_type != "DATA_PAGE_V2":
+            continue
+        if i + 1 >= len(segments) or segments[i + 1]["name"] != "page_data":
+            continue
+        d = segments[i + 1]
+        return {
+            "page_type": page_type,
+            "uncompressed_size": uncompressed_size,
+            "compressed_size": compressed_size,
+            "data_offset": d["offset"],
+            "data_length": d["length"],
+            "data": file_bytes[d["offset"] : d["offset"] + d["length"]],
+            **v2_info,
+        }
+    raise AssertionError(f"no V2 DATA_PAGE_V2 in {path}")
 
 
 def _write_simple(path: Path, *, compression: str, num_rows: int = 1000) -> Path:
@@ -339,12 +395,28 @@ def test_rle_decode_negative_num_values_raises():
 def test_rle_decode_bitpacked_overshoot_is_trimmed():
     """Bit-packed runs encode in groups of 8; if num_values isn't a multiple
     of 8, the trailing values from the last group must be discarded so the
-    output length equals num_values."""
+    output length equals num_values.
+
+    DecodeStats pin: the recorded ``bit_packed_run_lengths`` reports the
+    encoder-declared run length (``num_groups * 8 = 8``), NOT the
+    truncated-emitted count (5). This is the documented contract on
+    DecodeStats — encoder-declared lengths preserve "what the encoder
+    actually wrote" inspection semantics, which is more useful than
+    post-truncation counts for writer-behaviour verification.
+    """
     # bit_width=1, one group of 8 values: 0,1,0,1,0,1,0,1 → byte 0b10101010 = 0xAA.
     stream = bytes([3, 0xAA])  # (1 << 1) | 1 = 3
-    values, _ = decode_rle_bitpacked_hybrid(stream, bit_width=1, num_values=5)
+    values, stats = decode_rle_bitpacked_hybrid(stream, bit_width=1, num_values=5)
     assert values == [0, 1, 0, 1, 0]
     assert len(values) == 5
+    # Encoder declared one group of 8 values; stats reflect that declared
+    # length, not the 5 actually emitted to `values`.
+    assert stats.bit_packed_run_lengths == (8,)
+    assert stats.bit_packed_run_count == 1
+    assert stats.rle_run_count == 0
+    # Concretely, the sum-of-run-lengths invariant does NOT hold for this
+    # overshoot case — that's the documented behaviour we're pinning.
+    assert sum(stats.bit_packed_run_lengths) + sum(stats.rle_run_lengths) > 5
 
 
 # ---------------------------------------------------------------------------
@@ -416,6 +488,41 @@ def test_decode_v1_level_block_real_v1_page(tmp_path):
     # new_offset is positioned past the 4-byte prefix + the block bytes.
     (declared,) = struct.unpack_from("<I", raw, 0)
     assert new_offset == 4 + declared
+
+
+def test_decode_levels_real_v2_page(tmp_path):
+    """End-to-end V2 caller flow — pin the V2 contract documented in the
+    module docstring and README ("V2 records definition_levels_byte_length
+    in the page header; slice the raw page body and call decode_levels
+    directly, NOT decode_v1_level_block").
+
+    Companion to ``test_decode_v1_level_block_real_v1_page`` — same
+    nullable-column round-trip, V2 page format instead. Detects regressions
+    where the V2 path silently breaks (e.g., a future change that adds a
+    length prefix to ``decode_levels``).
+    """
+    table = pa.table({"k": pa.array([1, 2, None, 4, None] * 200, type=pa.int32())})
+    path = tmp_path / "v2-nullable.parquet"
+    pq.write_table(table, path, compression="snappy", data_page_version="2.0")
+
+    data_page = _first_data_page_v2(path)
+    assert data_page["page_type"] == "DATA_PAGE_V2"
+    def_len = data_page["definition_levels_byte_length"]
+    rep_len = data_page["repetition_levels_byte_length"]
+    assert def_len > 0, "expected a def-level block for a nullable column"
+    assert rep_len == 0, "non-nested column has no rep-level block"
+    # V2 page body layout: [rep_levels (uncompressed)][def_levels
+    # (uncompressed)][values (may be compressed if is_compressed)]. Levels are
+    # never compressed in V2, so we can read them straight from the raw page
+    # bytes without calling decompress() on the whole body.
+    raw = data_page["data"]
+    def_levels_bytes = raw[rep_len : rep_len + def_len]
+    levels = decode_levels(
+        def_levels_bytes, max_level=1, num_values=data_page["num_values"]
+    )
+    assert len(levels) == data_page["num_values"]
+    expected = [1, 1, 0, 1, 0] * 200
+    assert levels == expected
 
 
 def test_decode_v1_level_block_negative_offset_raises():
@@ -649,5 +756,5 @@ def test_decode_stats_is_immutable():
         rle_run_values=(0,),
         bit_packed_run_lengths=(),
     )
-    with pytest.raises(Exception):  # FrozenInstanceError
+    with pytest.raises(dataclasses.FrozenInstanceError):
         stats.rle_run_count = 2  # type: ignore[misc]

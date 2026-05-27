@@ -65,6 +65,18 @@ class DecodeStats:
     order. Bit-packed runs do not contribute to ``rle_run_values`` — value
     transitions inside a bit-packed run are visible only by inspecting the
     decoded values themselves.
+
+    ``rle_run_lengths`` and ``bit_packed_run_lengths`` record the
+    **encoder-declared** run lengths (the value count the run header claims),
+    not the emitted-to-``values`` counts. For pages whose ``num_values`` is
+    not a multiple of 8, the trailing bit-packed run reports its declared
+    ``num_groups * 8`` length even though :func:`decode_rle_bitpacked_hybrid`
+    truncates the emitted values to ``num_values``. As a result,
+    ``sum(rle_run_lengths) + sum(bit_packed_run_lengths)`` is generally
+    ``>= num_values``, not equal to it. This preserves "what the encoder
+    actually wrote on disk" inspection semantics — knowing the on-disk run
+    length is more useful for verifying writer behaviour than knowing the
+    post-truncation emitted count.
     """
 
     rle_run_count: int
