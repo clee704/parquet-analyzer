@@ -39,7 +39,9 @@ dev = [
   "ruff",
   "pytest",
   "pytest-cov",
+  "pytest-benchmark",
   "pyarrow",
+  "numpy",
   "mypy",
 ]
 
@@ -100,7 +102,7 @@ target-version = "py311"
 extend-exclude = ["src/parquet"]
 
 [tool.pytest.ini_options]
-addopts = "-q"
+addopts = "-q --ignore=tests/bench"
 testpaths = ["tests"]
 
 [tool.setuptools.package-data]

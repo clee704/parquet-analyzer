@@ -250,7 +250,38 @@ pip install -e .[dev]
 hatch run dev:check  # will format, lint, type-check, test with coverage
 ```
 
-The development extra pulls in tooling (`hatch`, `ruff`, `pytest`) and `pyarrow` so tests can generate Parquet fixtures on the fly.
+The development extra pulls in tooling (`hatch`, `ruff`, `pytest`, `pytest-benchmark`) and `pyarrow` / `numpy` so tests can generate Parquet fixtures on the fly.
+
+### Benchmarks
+
+Benchmark tests live under `tests/bench/` and are **excluded from the default `pytest` run** (and from `hatch run dev:check`) — they're heavier than the unit tests and not meant for every commit. Run them explicitly:
+
+```bash
+# Run all benchmarks (synthetic parquet fixtures generated on the fly)
+pytest tests/bench/ --benchmark-only
+
+# Compare against the committed baseline (captured at the start of the
+# lazy-core work; see tests/bench/baselines/ for the JSON)
+pytest tests/bench/ --benchmark-only \
+  --benchmark-storage=file://tests/bench/baselines \
+  --benchmark-compare=eager-v0.4.0
+```
+
+The synthetic fixture generator (`tests/bench/generate.py`) produces three shapes that stress different lazy-parsing boundaries:
+
+- `wide` — many columns, few rows (footer is large relative to body)
+- `tall` — few columns, many rows (body is huge relative to footer; the canonical case for the lazy-core's footer-only fast path)
+- `deep` — few columns, many rows split across many row groups (stresses per-row-group / per-chunk walking)
+
+To capture a fresh baseline (e.g., after a behavior change in the eager path):
+
+```bash
+pytest tests/bench/ --benchmark-only \
+  --benchmark-storage=file://tests/bench/baselines \
+  --benchmark-save=eager-vX.Y.Z
+```
+
+Baseline files are platform-specific (CPU, Python version) — pytest-benchmark stores them under `tests/bench/baselines/<platform>/`.
 
 ### Regenerating Thrift bindings
 
