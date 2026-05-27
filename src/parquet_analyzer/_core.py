@@ -501,7 +501,7 @@ def read_offset_index(f, column_chunk, segments: list[dict[str, Any]]):
 
 def read_bloom_filter(f, column_chunk, segments: list[dict[str, Any]]):
     _, bloom_filter_segment = read_thrift_segment(
-        f, column_chunk.bloom_filter_offset, "bloom_filter", BloomFilterHeader
+        f, column_chunk.meta_data.bloom_filter_offset, "bloom_filter", BloomFilterHeader
     )
     segments.append(bloom_filter_segment)
     return bloom_filter_segment["offset"]
@@ -661,7 +661,7 @@ def get_summary(footer: dict, segments: list[dict]) -> dict[str, Any]:
             compressed_page_size += column["meta_data"]["total_compressed_size"]
             column_index_size += column.get("column_index_length", 0)
             offset_index_size += column.get("offset_index_length", 0)
-            bloom_filter_size += column.get("bloom_filter_length", 0)
+            bloom_filter_size += column["meta_data"].get("bloom_filter_length", 0)
 
     # These page sizes include header size
     summary["uncompressed_page_size"] = uncompressed_page_size

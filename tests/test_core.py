@@ -137,10 +137,10 @@ def test_get_summary_counts_pages_and_sizes():
                         "meta_data": {
                             "total_uncompressed_size": 256,
                             "total_compressed_size": 128,
+                            "bloom_filter_length": 4,
                         },
                         "column_index_length": 12,
                         "offset_index_length": 6,
-                        "bloom_filter_length": 4,
                     }
                 ]
             }
@@ -467,7 +467,6 @@ def test_read_helpers_and_summary(monkeypatch):
         ),
         column_index_offset=30,
         offset_index_offset=40,
-        bloom_filter_offset=50,
     )
 
     segments: list[dict] = []
@@ -539,10 +538,10 @@ def test_read_helpers_and_summary(monkeypatch):
                         "meta_data": {
                             "total_uncompressed_size": 9,
                             "total_compressed_size": 6,
+                            "bloom_filter_length": 1,
                         },
                         "column_index_length": 2,
                         "offset_index_length": 3,
-                        "bloom_filter_length": 1,
                     }
                 ]
             }
