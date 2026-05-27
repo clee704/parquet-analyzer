@@ -258,17 +258,19 @@ def test_decompress_lz4_hadoop_truncated_block_raises():
 
 def test_rle_decode_dictionary_indices_from_real_page(tmp_path):
     """Real PLAIN_DICTIONARY page → decompress → strip def-level + bit-width →
-    decode indices → recover original values via dict lookup."""
-    # 1000 rows over 4 distinct strings — guarantees dictionary encoding with
-    # bit_width >= 2 and a single data page.
-    table = pa.table(
-        {
-            "k": pa.array(
-                ["red", "green", "blue", "green", "red"] * 200,
-                type=pa.string(),
-            )
-        }
-    )
+    decode indices → recover original values via dict lookup.
+
+    Uses a nullable column WITH actual nulls so the test exercises the
+    nullability path the README documents (indices count = non-null row
+    count, not page num_values). A previous version of this test used a
+    null-free fixture which silently passed even when the indices count
+    was wrong; the explicit null pattern below would have caught that.
+    """
+    # 600 rows over 3 distinct strings + nulls — guarantees dict encoding
+    # with bit_width >= 2, two-thirds non-null entries in the indices
+    # stream (400 non-null + 200 null = 600 def-levels).
+    pattern = ["red", "green", None, "blue", None, "red"]
+    table = pa.table({"k": pa.array(pattern * 100, type=pa.string())})
     path = tmp_path / "dict.parquet"
     pq.write_table(table, path, use_dictionary=True, compression="snappy")
 
@@ -287,21 +289,26 @@ def test_rle_decode_dictionary_indices_from_real_page(tmp_path):
     # Decode the data page: snappy → strip 4-byte def-level block prefix +
     # block + 1-byte bit_width → RLE/bit-packed-hybrid stream.
     raw = decompress(data_page["data"], "SNAPPY", data_page["uncompressed_size"])
-    # column is nullable (default for pa.array w/o explicit nullability),
-    # so V1 page begins with def-level block (max_def_level == 1).
-    _, after_def = decode_v1_level_block(
+    def_levels, after_def = decode_v1_level_block(
         raw, 0, max_level=1, num_values=data_page["num_values"]
     )
     bit_width = raw[after_def]
-    indices, stats = decode_rle_bitpacked_hybrid(
-        raw[after_def + 1 :], bit_width, data_page["num_values"]
+    # Indices stream contains entries only for non-null rows (this is what
+    # the README's "Indices skip nulls" gotcha documents).
+    num_non_null = sum(def_levels)
+    assert num_non_null < data_page["num_values"], (
+        "fixture must contain nulls so the non-null-vs-total distinction "
+        "is exercised — otherwise the bug the README example used to have "
+        "(passing num_values instead of num_non_null) would not be caught"
     )
-    decoded = [dict_values[i] for i in indices]
-    expected = ["red", "green", "blue", "green", "red"] * 200
-    assert decoded == expected
+    indices, stats = decode_rle_bitpacked_hybrid(
+        raw[after_def + 1 :], bit_width, num_non_null
+    )
+    # Reassemble nulls back into the column using the def-level stream.
+    it = iter(indices)
+    decoded = [dict_values[next(it)] if d == 1 else None for d in def_levels]
+    assert decoded == pattern * 100
     assert isinstance(stats, DecodeStats)
-    # Either RLE runs, bit-packed runs, or a mix — but at least one of each
-    # category should fire for this data.
     assert stats.rle_run_count + stats.bit_packed_run_count > 0
 
 

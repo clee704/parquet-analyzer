@@ -214,15 +214,26 @@ raw = decompress(
 )
 def_levels, after_def = decode_v1_level_block(raw, 0, max_level=1, num_values=num_values)
 indices_bit_width = raw[after_def]
-indices, stats = decode_rle_bitpacked_hybrid(raw[after_def + 1:], indices_bit_width, num_values)
+
+# In V1 dict-encoded pages, the indices stream contains entries only for
+# non-null rows (nulls are represented in the def-level stream above and
+# carry no value). So the index count is `num_non_null`, NOT `num_values`.
+num_non_null = sum(def_levels)
+indices, stats = decode_rle_bitpacked_hybrid(
+    raw[after_def + 1:], indices_bit_width, num_non_null,
+)
 print(f"RLE runs: {stats.rle_run_count}, bit-packed runs: {stats.bit_packed_run_count}")
-values = [dict_values[i] for i in indices]
+
+# Reassemble nulls into the final value list using the def-level stream.
+it = iter(indices)
+values = [dict_values[next(it)] if d == 1 else None for d in def_levels]
 ```
 
 Gotchas worth knowing:
 
 * **V1 vs V2 level layout.** V1 prefixes each level block with a 4-byte LE length. V2 stores the byte length in the page header instead. Use `decode_v1_level_block` for V1; for V2 slice the bytes yourself and call `decode_levels`.
 * **Required columns have no level block.** When `max_def_level == 0`, the file contains no def-level bytes at all. `decode_levels` returns `[0] * num_values` in that case.
+* **Indices skip nulls.** For nullable columns, the indices stream length is the non-null row count (`sum(def_levels)` when `max_def_level == 1`), not the page's `num_values`. Asking `decode_rle_bitpacked_hybrid` for too many values raises `truncated` (or silently produces garbage indices if the indices block is followed by other bytes).
 * **V2 level streams are uncompressed.** Only the values section of a V2 page is compressed (and only when `is_compressed` is true). Don't pass an entire V2 page body to `decompress` as one block — slice off the rep-level and def-level prefixes first.
 * **Per-page dictionary-index bit width.** Dictionary-encoded data pages start their indices block with a 1-byte `bit_width` chosen by the writer (it may exceed `ceil(log2(dict_size))`). Read that byte first, then pass the rest to `decode_rle_bitpacked_hybrid`.
 
