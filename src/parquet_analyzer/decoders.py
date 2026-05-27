@@ -206,6 +206,18 @@ def _decompress_lz4_hadoop(data: bytes, uncompressed_size: int) -> bytes:
             )
         out.extend(block)
         pos += block_compressed
+    if pos != end:
+        # Loop exited because `len(out) >= uncompressed_size` but there are
+        # more bytes left in `data` — at minimum another block header. The
+        # caller's uncompressed_size disagrees with the frame's actual
+        # content; surfacing this here keeps the codec's failure-detection
+        # symmetry with every other path in `decompress()` (which all
+        # raise on length mismatches via the post-decompression size check).
+        raise ValueError(
+            f"LZ4 (Hadoop) frame has {end - pos} trailing bytes after "
+            f"producing the requested {uncompressed_size}-byte output — "
+            f"caller's uncompressed_size disagrees with frame content"
+        )
     return bytes(out)
 
 

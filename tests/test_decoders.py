@@ -287,6 +287,32 @@ def test_decompress_lz4_hadoop_truncated_block_raises():
         decompress(bad, "LZ4", 100)
 
 
+def test_decompress_lz4_hadoop_undersized_uncompressed_size_raises():
+    """An under-reported ``uncompressed_size`` that happens to land exactly
+    on a block boundary previously caused the decoder to silently truncate
+    trailing blocks — exactly the corruption mode a parquet inspection
+    library is meant to surface (a writer bug / corrupt page header that
+    under-reports the size). The fix rejects any frame whose actual byte
+    content disagrees with the caller's claimed size, even on an exact
+    sub-block boundary."""
+    blocks = [b"a" * 50, b"b" * 50, b"c" * 50]
+    parts: list[bytes] = []
+    for block in blocks:
+        compressed = bytes(cramjam.lz4.compress_block(block, store_size=False))
+        parts.append(struct.pack(">II", len(block), len(compressed)))
+        parts.append(compressed)
+    frame = b"".join(parts)
+    # Claim uncompressed_size = 100, which is exactly the first two blocks'
+    # combined output. Pre-fix, this silently returned blocks[0] + blocks[1]
+    # and dropped blocks[2]; post-fix, it raises because trailing bytes
+    # remain unconsumed.
+    with pytest.raises(ValueError, match="trailing bytes"):
+        decompress(frame, "LZ4", 100)
+    # Sanity check: the symmetric case (correctly-reported size) still works.
+    full = decompress(frame, "LZ4", 150)
+    assert full == b"".join(blocks)
+
+
 # ---------------------------------------------------------------------------
 # decode_rle_bitpacked_hybrid() — round-trip via real parquet pages
 # ---------------------------------------------------------------------------
