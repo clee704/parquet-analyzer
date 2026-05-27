@@ -261,10 +261,13 @@ Benchmark tests live under `tests/bench/` and are **excluded from the default `p
 pytest tests/bench/ --benchmark-only
 
 # Compare against the committed baseline (captured at the start of the
-# lazy-core work; see tests/bench/baselines/ for the JSON)
+# lazy-core work; see tests/bench/baselines/ for the JSON).
+# Note: the leading "0001_" is pytest-benchmark's auto-prepended save-
+# sequence prefix; --benchmark-compare matches by prefix, so the full
+# filename stem is required.
 pytest tests/bench/ --benchmark-only \
   --benchmark-storage=file://tests/bench/baselines \
-  --benchmark-compare=eager-v0.4.0
+  --benchmark-compare=0001_eager-v0.4.0
 ```
 
 The synthetic fixture generator (`tests/bench/generate.py`) produces three shapes that stress different lazy-parsing boundaries:

@@ -4,17 +4,23 @@ Three "shapes" cover the lazy-parsing boundaries the Slice 2 work is
 about exposing — see RFC #3:
 
 - ``wide``  — many columns, few rows (stresses per-column metadata
-  walking; footer is large because it lists every column)
-- ``tall``  — few columns, many rows (large file body relative to footer
-  — the canonical "footer is < 1% of file" case the lazy core targets)
+  walking; footer is large because it lists every column).
+  **No-regression check** for footer-heavy schemas: lazy can only win
+  modestly here (~2-3×) because the footer IS most of the eager cost.
+- ``tall``  — few columns, many rows (large file body relative to
+  footer — the canonical "footer is < 1% of file" case the lazy core
+  targets). **Sized large enough to clear 100×** at default bench
+  shape: ~300 MB file, ~2 KB footer, file/footer ratio ~150,000×.
 - ``deep``  — few columns, many rows split across many row groups
-  (stresses per-row-group / per-chunk metadata walking)
+  (stresses per-row-group / per-chunk metadata walking). Lazy
+  eliminates ~1000 page-header parses; eager pays for each.
+  ~50-100× ratio, bounded by footer-parse cost which grows with
+  row-group count.
 
-The shapes are intentionally sized for CI / dev-laptop runtime (~tens
-of MB, generates in a few seconds). Even at this scale the eager vs
-lazy delta is dramatic — eager reads the full file, lazy reads the
-footer only, so the ratio is bounded by file_size / footer_size which
-is already >= 100x for these shapes.
+The shapes are sized for CI / dev-laptop runtime (generates in tens
+of seconds, ~MB-GB on disk). Session-scoped fixtures (see
+``conftest.py``) amortize the generation cost over all benchmarks in
+a single run.
 """
 
 from __future__ import annotations
@@ -32,6 +38,21 @@ Shape = Literal["wide", "tall", "deep"]
 # Shape parameters tuned so generation completes in a few seconds while
 # still producing files large enough that the eager-vs-lazy parse-time
 # delta is unambiguous (file body >> footer for "tall" and "deep").
+#
+# Per-shape purpose (the ratios the lazy core targets are bounded by
+# different things on each shape):
+#
+# - "wide" tests footer-heavy schemas (200 cols => ~50KB footer).
+#   Footer parsing IS most of the eager cost here, so lazy can't win
+#   much (~2-3x). This shape exists as a no-regression check, NOT as a
+#   100x demonstration.
+# - "tall" is the canonical "footer is < 1% of file" case (~2KB footer
+#   vs ~300MB body). Lazy reads only the footer; eager scans the whole
+#   file. Sized large enough that the ratio comfortably clears 100x.
+# - "deep" tests the per-row-group / per-chunk walking that lazy
+#   eliminates. 100 row groups means eager parses ~1000 page headers;
+#   lazy parses a single (larger) footer. Ratio ~50-100x bounded by
+#   footer-parse cost growing with row-group count.
 SHAPES: dict[str, dict] = {
     "wide": {
         "num_columns": 200,
@@ -39,9 +60,12 @@ SHAPES: dict[str, dict] = {
         "row_group_size": 5_000,
     },
     "tall": {
+        # ~300 MB file; eager ~300-500 ms; lazy ~1-2 ms => ~150-500x ratio.
+        # Generation cost ~10-20 s (dominated by high-cardinality string
+        # column construction); amortized via session-scoped fixture.
         "num_columns": 10,
-        "num_rows": 1_000_000,
-        "row_group_size": 1_000_000,
+        "num_rows": 5_000_000,
+        "row_group_size": 5_000_000,
     },
     "deep": {
         "num_columns": 10,

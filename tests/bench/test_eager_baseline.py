@@ -24,11 +24,14 @@ To save a baseline JSON:
         --benchmark-storage=file://tests/bench/baselines \\
         --benchmark-save=eager-v0.4.0
 
-To compare a later run against this baseline:
+To compare a later run against this baseline (the leading ``0001_`` is
+pytest-benchmark's auto-prepended save-sequence prefix; the
+``--benchmark-compare`` flag matches by prefix-anchored glob, so the
+full filename stem is required):
 
     pytest tests/bench/ --benchmark-only \\
         --benchmark-storage=file://tests/bench/baselines \\
-        --benchmark-compare=eager-v0.4.0
+        --benchmark-compare=0001_eager-v0.4.0
 """
 
 from __future__ import annotations
