@@ -283,6 +283,108 @@ def test_column_chunk_page_indexes_offsets(nested_row_groups_parquet):
         cc = pf.row_groups[0].columns[0]
         assert cc.column_index_offset is not None
         assert cc.offset_index_offset is not None
+        assert cc.has_offset_index is True
+    finally:
+        pf.close()
+
+
+def test_num_pages_fast_path_via_offset_index(nested_row_groups_parquet):
+    """When OffsetIndex is present, num_pages must equal len(pages())
+    AND not trigger a page-header walk.
+
+    The OffsetIndex itself tracks only data pages — num_pages is the
+    user-facing 'total pages including dictionary' count, so the fast
+    path has to add 1 when a dictionary page exists. Asserting equality
+    with len(pages()) pins that the two paths agree.
+    """
+    from parquet_analyzer import _core, parquet_file as _pf_module
+
+    page_read_count = 0
+    original = _core.read_thrift_segment
+
+    def counting(f, offset, name, thrift_class):
+        nonlocal page_read_count
+        if name == "page":
+            page_read_count += 1
+        return original(f, offset, name, thrift_class)
+
+    pf = ParquetFile(str(nested_row_groups_parquet))
+    try:
+        cc = pf.row_groups[0].columns[0]
+        assert cc.has_offset_index, "fixture must have OffsetIndex"
+
+        # Install probe AFTER construction so footer parse isn't counted.
+        import pytest
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_core, "read_thrift_segment", counting)
+            mp.setattr(_pf_module, "read_thrift_segment", counting)
+
+            n = cc.num_pages  # noqa: F841
+            fast_path_page_reads = page_read_count
+
+        # Now walk for comparison.
+        walk_count = len(cc.pages())
+        assert n == walk_count, (
+            f"num_pages fast path returned {n}, walk returned {walk_count}; "
+            "OffsetIndex/walk disagreement"
+        )
+        assert fast_path_page_reads == 0, (
+            f"num_pages fast path triggered {fast_path_page_reads} page-header "
+            "reads (should be 0 — OffsetIndex parse only)"
+        )
+    finally:
+        pf.close()
+
+
+def test_num_pages_slow_path_walks_when_no_offset_index(tmp_path):
+    """When OffsetIndex is absent, num_pages falls back to walking page
+    headers and still returns the right count."""
+    table = pa.table({"x": pa.array([1, 2, 3, 4, 5], type=pa.int32())})
+    path = tmp_path / "no-oi.parquet"
+    pq.write_table(table, path, write_page_index=False, use_dictionary=False)
+
+    pf = ParquetFile(str(path))
+    try:
+        cc = pf.row_groups[0].columns[0]
+        assert cc.has_offset_index is False
+        assert cc.num_pages == len(cc.pages())
+        assert cc.num_pages >= 1
+    finally:
+        pf.close()
+
+
+def test_num_pages_caches_offset_index_read(nested_row_groups_parquet):
+    """OffsetIndex is cached on first read; subsequent num_pages calls
+    must not re-parse it."""
+    from parquet_analyzer import _core, parquet_file as _pf_module
+
+    offset_index_reads = 0
+    original = _core.read_thrift_segment
+
+    def counting(f, offset, name, thrift_class):
+        nonlocal offset_index_reads
+        if name == "offset_index":
+            offset_index_reads += 1
+        return original(f, offset, name, thrift_class)
+
+    pf = ParquetFile(str(nested_row_groups_parquet))
+    try:
+        cc = pf.row_groups[0].columns[0]
+
+        import pytest
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_core, "read_thrift_segment", counting)
+            mp.setattr(_pf_module, "read_thrift_segment", counting)
+
+            _ = cc.num_pages
+            _ = cc.num_pages
+            _ = cc.num_pages
+
+        assert offset_index_reads == 1, (
+            f"num_pages should cache OffsetIndex; saw {offset_index_reads} reads"
+        )
     finally:
         pf.close()
 

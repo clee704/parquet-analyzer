@@ -36,6 +36,7 @@ from parquet.ttypes import (
     ColumnChunk as _ThriftColumnChunk,
     CompressionCodec as _ThriftCodec,
     Encoding as _ThriftEncoding,
+    OffsetIndex as _ThriftOffsetIndex,
     PageHeader as _ThriftPageHeader,
     PageType as _ThriftPageType,
     RowGroup as _ThriftRowGroup,
@@ -451,6 +452,7 @@ class ColumnChunk:
         self._t = thrift_obj
         self._md = thrift_obj.meta_data
         self._pages_cache: tuple[Page, ...] | None = None
+        self._offset_index_cache: _ThriftOffsetIndex | None = None
 
     def __repr__(self) -> str:
         return (
@@ -503,6 +505,74 @@ class ColumnChunk:
     @property
     def offset_index_offset(self) -> int | None:
         return self._t.offset_index_offset
+
+    @property
+    def has_offset_index(self) -> bool:
+        """Whether this chunk has an OffsetIndex thrift struct in the file.
+
+        When ``True``, :attr:`num_pages` and (future Slice 4) ``page(index)``
+        can serve queries via a single small thrift parse without walking
+        every page header — typically 50-200 bytes per page entry in the
+        OffsetIndex.
+
+        SNPW (Spark Native Parquet Writer) writes OffsetIndex on every
+        column chunk; pyarrow writes it when ``write_page_index=True`` is
+        passed to ``write_table``; older parquet-mr versions and many
+        DuckDB-produced files do not have it. Without OffsetIndex, the
+        only way to discover page count or seek to a specific page is to
+        walk every prior page header — a fundamental parquet limitation,
+        not an API choice.
+        """
+        return self._t.offset_index_offset is not None
+
+    @property
+    def num_pages(self) -> int:
+        """Total number of pages in this column chunk (including the
+        dictionary page, if present).
+
+        Fast path (O(1) page walk): when :attr:`has_offset_index` is
+        ``True``, reads the OffsetIndex thrift struct (one small parse,
+        cached). The OffsetIndex itself only tracks data pages, so this
+        property adds 1 if :attr:`dictionary_page_offset` is set —
+        producing the same count as ``len(self.pages())`` either way.
+
+        Slow path: when OffsetIndex is absent, falls back to walking
+        every page header — same cost as ``len(self.pages())``. Use
+        :attr:`has_offset_index` to decide whether the call will be cheap
+        before invoking it on large chunks.
+        """
+        if self.has_offset_index:
+            oi = self._read_offset_index()
+            data_pages = len(oi.page_locations or [])
+            dict_page = 1 if self._md.dictionary_page_offset else 0
+            return data_pages + dict_page
+        return len(self.pages())
+
+    def _read_offset_index(self) -> _ThriftOffsetIndex:
+        """Read + cache the OffsetIndex thrift struct for this chunk.
+
+        Caller must check :attr:`has_offset_index` first; this raises
+        ``ValueError`` if the chunk has none. The cached object is
+        returned on subsequent calls.
+
+        Slice 4 (#8) will expose a public ``offset_index`` property that
+        returns this object; for now it stays private since the only
+        consumer in this PR is :attr:`num_pages`.
+        """
+        if self._t.offset_index_offset is None:
+            raise ValueError(
+                f"column chunk {self.path!r} has no OffsetIndex; "
+                "check has_offset_index before calling _read_offset_index"
+            )
+        if self._offset_index_cache is None:
+            oi, _segment = read_thrift_segment(
+                self._pf._f,
+                self._t.offset_index_offset,
+                "offset_index",
+                _ThriftOffsetIndex,
+            )
+            self._offset_index_cache = oi
+        return self._offset_index_cache
 
     @property
     def bloom_filter_offset(self) -> int | None:

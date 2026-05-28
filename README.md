@@ -169,11 +169,20 @@ Two summary surfaces:
 Per-chunk lazy page walking (Phase 2):
 
 ```python
-for page in pf.row_groups[0].columns[0].pages():
+# How many pages does this chunk have? Fast (O(1)) if the writer included
+# an OffsetIndex; falls back to walking otherwise.
+cc = pf.row_groups[0].columns[0]
+if cc.has_offset_index:
+    print(f"chunk has {cc.num_pages} pages (cheap lookup via OffsetIndex)")
+else:
+    print(f"chunk has {cc.num_pages} pages (paid full walk to count them)")
+
+# Iterate the page headers themselves (walks once, caches).
+for page in cc.pages():
     print(page.type, page.encoding, page.num_values, page.offset)
 ```
 
-`columnchunk.pages()` walks only that one chunk's page headers (cached after first call) — much cheaper than the full-file walk.
+`columnchunk.pages()` walks only that one chunk's page headers (cached after first call) — much cheaper than the full-file walk. `num_pages` is even cheaper when an OffsetIndex is present (SNPW always writes one; pyarrow does when `write_page_index=True`; older parquet-mr files often don't).
 
 ### Full eager walk (legacy shape)
 
