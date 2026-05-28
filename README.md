@@ -265,9 +265,13 @@ pytest tests/bench/ --benchmark-only
 # Note: the leading "0001_" is pytest-benchmark's auto-prepended save-
 # sequence prefix; --benchmark-compare matches by prefix, so the full
 # filename stem is required.
+# The -W flag suppresses pytest-benchmark's "machine_info changed"
+# warning, which fires noisily on virtualized hosts where cpu.hz_actual
+# jitters between runs even on the same machine.
 pytest tests/bench/ --benchmark-only \
   --benchmark-storage=file://tests/bench/baselines \
-  --benchmark-compare=0001_eager-v0.4.0
+  --benchmark-compare=0001_eager-v0.4.0 \
+  -W ignore::pytest_benchmark.logger.PytestBenchmarkWarning
 ```
 
 The synthetic fixture generator (`tests/bench/generate.py`) produces three shapes that stress different lazy-parsing boundaries:

@@ -27,11 +27,15 @@ To save a baseline JSON:
 To compare a later run against this baseline (the leading ``0001_`` is
 pytest-benchmark's auto-prepended save-sequence prefix; the
 ``--benchmark-compare`` flag matches by prefix-anchored glob, so the
-full filename stem is required):
+full filename stem is required). The ``-W`` flag suppresses
+pytest-benchmark's "machine_info changed" warning, which fires noisily
+on virtualized hosts where ``cpu.hz_actual`` jitters between runs even
+on the same machine:
 
     pytest tests/bench/ --benchmark-only \\
         --benchmark-storage=file://tests/bench/baselines \\
-        --benchmark-compare=0001_eager-v0.4.0
+        --benchmark-compare=0001_eager-v0.4.0 \\
+        -W ignore::pytest_benchmark.logger.PytestBenchmarkWarning
 """
 
 from __future__ import annotations
