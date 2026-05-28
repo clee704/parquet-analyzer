@@ -16,10 +16,20 @@ pip install parquet-analyzer
 
 ## Usage
 
+`parquet-analyzer` ships two complementary CLI surfaces:
+
+- **Verb-noun subcommands** (`parquet-analyzer file kv ...`, `column show ...`, etc.) — small, composable, AI-friendly. One subcommand → one JSON object. Footer-only and fast. See [Subcommands](#subcommands).
+- **Whole-file modes** (`parquet-analyzer <path> [--output-mode ...]`) — the original "show me everything" surface for interactive exploration and the HTML report.
+
 ### Basic usage
 
 ```bash
-# Analyze a Parquet file and emit the JSON summary/footer/pages bundle
+# Verb-noun subcommands (footer-only, fast)
+parquet-analyzer file summary example.parquet
+parquet-analyzer column show example.parquet --column ints
+parquet-analyzer rowgroup list example.parquet
+
+# Whole-file: analyze and emit the JSON summary/footer/pages bundle
 parquet-analyzer example.parquet
 
 # Show raw segment structures (offsets, lengths, thrift payloads)
@@ -39,6 +49,217 @@ parquet-analyzer --log-level DEBUG example.parquet
 # Run via python -m if the console script is unavailable
 python -m parquet_analyzer example.parquet
 ```
+
+## Subcommands
+
+The verb-noun surface answers one question per invocation and is built for
+chaining with `jq` and consumption by AI agents. All eight subcommands listed
+here are **footer-only** — they do not walk page headers or read page
+bodies. Page-level subcommands (`page list / header / extract / decode`) land
+in a future release.
+
+### Conventions
+
+- **One subcommand → one JSON object on stdout.** List-shaped outputs wrap in `{items, total, returned, truncated}`.
+- **Every output object carries a `$schema` field** of the form `parquet-analyzer/v1/<command>` so downstream tools can validate the shape.
+- **`--schema-version`** on any subcommand short-circuits to print just the schema URI — no file is opened.
+- **`--limit N`** caps list-shaped outputs. Truncation is reported explicitly via the `truncated` field; nothing is silently dropped.
+- **`-o / --output PATH`** writes JSON to a file instead of stdout.
+- **`--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}`** is the top-level global option.
+- **Errors → stderr** as a single JSON line: `{"$schema": "parquet-analyzer/v1/error", "error": "<code>", "message": "<human>", "fix": "<retry command>"}`. The process exits non-zero on operational errors; `file validate` reports parse failures as findings (exit 0).
+- **Column path matching.** Every emitted column carries both `column` (dot-joined display string) and `path` (list of segments). `--column NAME` matches against the dot-joined form. Ambiguous matches (when multiple distinct paths join to the same string) produce a JSON error listing the candidate paths.
+
+> **Design contract for what goes in the output:** see
+> [`docs/output-principles.md`](docs/output-principles.md). The TL;DR is
+> "footer-bounded and walk-free": every emitted field is derivable from
+> the parsed footer plus, at most, one extra parse of an index thrift
+> the writer already wrote (OffsetIndex, ColumnIndex, BloomFilter
+> header). Anything that would require walking per-page thrift headers
+> or reading page bodies is explicitly deferred to the `page` subcommand
+> surface (Slice 4 / #8).
+
+### `file` — file-level inspection
+
+```bash
+$ parquet-analyzer file summary example.parquet
+{
+  "$schema": "parquet-analyzer/v1/file-summary",
+  "num_rows": 891,
+  "num_row_groups": 1,
+  "num_columns": 12,
+  "uncompressed_page_size": 90429,
+  "compressed_page_size": 38839,
+  "column_index_size": 0,
+  "offset_index_size": 0,
+  "bloom_filter_size": 0,
+  "footer_size": 1162,
+  "file_size": 40013,
+  "footer_offset": 38843
+}
+
+$ parquet-analyzer file kv example.parquet
+$ parquet-analyzer file kv example.parquet --key ARROW:schema  # filter by key
+{
+  "$schema": "parquet-analyzer/v1/file-kv",
+  "items": [{"key": "ARROW:schema", "value": "..."}],
+  "returned": 1, "total": 1, "truncated": false,
+  "filter_key": "ARROW:schema"
+}
+
+$ parquet-analyzer file schema example.parquet
+{
+  "$schema": "parquet-analyzer/v1/file-schema",
+  "elements": [
+    {"name": "root", "repetition_type": "REQUIRED", "num_children": 12},
+    {"name": "PassengerId", "type": "INT64", ...},
+    ...
+  ]
+}
+
+$ parquet-analyzer file validate example.parquet
+{
+  "$schema": "parquet-analyzer/v1/file-validate",
+  "path": "example.parquet",
+  "valid": true,
+  "errors": []
+}
+```
+
+`file kv` preserves duplicate keys and original ordering (parquet's spec
+allows duplicate KV entries). `file validate` runs footer-only structural
+checks: magic-number parse, row-count consistency between file and row
+groups, per-row-group column count matches schema, and column chunks with
+rows have non-zero compressed size. Parse failures (bad magic, unparseable
+footer) are reported as findings with `valid: false` rather than as CLI
+errors. Deep validation (byte-range overlap detection, page-count vs.
+column metadata) requires an eager walk and will land in a future release.
+
+### `rowgroup` — row-group inspection
+
+```bash
+$ parquet-analyzer rowgroup list example.parquet
+{
+  "$schema": "parquet-analyzer/v1/rowgroup-list",
+  "items": [
+    {"row_group": 0, "num_rows": 891, "file_offset": 4,
+     "total_byte_size": 306419, "total_compressed_size": 38839,
+     "num_columns": 12}
+  ],
+  "returned": 1, "total": 1, "truncated": false
+}
+
+$ parquet-analyzer rowgroup show example.parquet --row-group 0
+{
+  "$schema": "parquet-analyzer/v1/rowgroup-show",
+  "row_group": 0,
+  "num_rows": 891,
+  "file_offset": 4,
+  "total_byte_size": 306419,
+  "total_compressed_size": 38839,
+  "num_columns": 12,
+  "columns": [
+    {
+      "row_group": 0, "column": "PassengerId", "path": ["PassengerId"],
+      "type": "INT64", "encodings": ["PLAIN"], "codec": "SNAPPY",
+      "num_values": 891, "compressed_size": 4357, "uncompressed_size": 7155,
+      "chunk_offset": 4, "chunk_length": 4357,
+      "data_page_offset": 4, "dictionary_page_offset": null,
+      "has_dictionary": false,
+      "has_offset_index": false, "offset_index_offset": null, "offset_index_length": null,
+      "has_column_index": false, "column_index_offset": null, "column_index_length": null,
+      "has_bloom_filter": false, "bloom_filter_offset": null, "bloom_filter_length": null,
+      "num_pages": null, "num_pages_known": false,
+      ...
+    },
+    ...
+  ]
+}
+```
+
+### `column` — column-chunk inspection
+
+```bash
+# One entry per (row_group, column_chunk); --row-group N to filter
+$ parquet-analyzer column list example.parquet
+$ parquet-analyzer column list example.parquet --row-group 0 --limit 5
+
+# Aggregated view across row groups for one named column
+$ parquet-analyzer column show example.parquet --column Sex
+{
+  "$schema": "parquet-analyzer/v1/column-show",
+  "column": "Sex",
+  "path": ["Sex"],
+  "type": "BYTE_ARRAY",
+  "num_row_groups": 1,
+  "total_num_values": 891,
+  "total_compressed_size": 501,
+  "total_uncompressed_size": 897,
+  "row_groups": [
+    {
+      "row_group": 0, "column": "Sex", "path": ["Sex"],
+      "encodings": ["PLAIN", "RLE_DICTIONARY"], "codec": "SNAPPY",
+      "num_values": 891, "compressed_size": 501, "uncompressed_size": 897,
+      "chunk_offset": 24256, "chunk_length": 501,
+      "data_page_offset": 24276, "dictionary_page_offset": 24256,
+      "has_dictionary": true,
+      "has_offset_index": false, "offset_index_offset": null, "offset_index_length": null,
+      "has_column_index": false, "column_index_offset": null, "column_index_length": null,
+      "has_bloom_filter": false, "bloom_filter_offset": null, "bloom_filter_length": null,
+      "num_pages": null, "num_pages_known": false,
+      "statistics": {"min": "...", "max": "...", "null_count": 0}
+    }
+  ]
+}
+```
+
+`num_pages` is reported (`num_pages_known: true`) only when the chunk has
+an `OffsetIndex` — counting otherwise would require walking page headers,
+which the v1 subcommand contract forbids. SNPW (Spark Native Parquet Writer)
+writes OffsetIndex on every chunk; pyarrow does when
+`write_page_index=True`; older parquet-mr and many DuckDB files do not.
+
+**Byte-range pairs.** Every per-chunk output carries the seek-and-read
+pair `chunk_offset` / `chunk_length`, plus `offset_index_offset` /
+`offset_index_length`, `column_index_offset` / `column_index_length`,
+and `bloom_filter_offset` / `bloom_filter_length` (each `null` when the
+writer didn't emit the corresponding structure). `chunk_offset` is the
+dictionary page offset when a dictionary is present, otherwise the data
+page offset (parquet's spec: dictionary always precedes data within a
+chunk; `total_compressed_size` already includes the dictionary). Together
+these let an AI agent issue `read(chunk_offset, chunk_length)` against
+the file and get the entire compressed chunk bytes without re-parsing the
+footer.
+
+### Schema-version discovery
+
+Every subcommand accepts `--schema-version`, which short-circuits to print
+the JSON `$schema` URI for that subcommand's output without opening the
+file. Useful for tools that want to fetch the matching schema definition.
+
+```bash
+$ parquet-analyzer column show --schema-version
+{
+  "$schema": "parquet-analyzer/v1/column-show"
+}
+```
+
+### Errors
+
+Errors are written to **stderr** as a single JSON line with the contract:
+
+```json
+{
+  "$schema": "parquet-analyzer/v1/error",
+  "error": "column_not_found",
+  "message": "column 'foo' not found. Available: a, b, c",
+  "fix": "parquet-analyzer column list example.parquet"
+}
+```
+
+The `fix` field always contains an exact command to retry. The process
+exits non-zero on operational errors. `file validate` is the exception:
+parse failures are reported as findings (`valid: false`, exit 0) so the
+subcommand stays useful for "is this file partially-written?" queries.
 
 ## Output Formats
 
