@@ -84,7 +84,8 @@ $ parquet-analyzer file summary example.parquet
   "offset_index_size": 0,
   "bloom_filter_size": 0,
   "footer_size": 1162,
-  "file_size": 40013
+  "file_size": 40013,
+  "footer_offset": 38843
 }
 
 $ parquet-analyzer file kv example.parquet
@@ -131,7 +132,9 @@ $ parquet-analyzer rowgroup list example.parquet
 {
   "$schema": "parquet-analyzer/v1/rowgroup-list",
   "items": [
-    {"row_group": 0, "num_rows": 891, "total_byte_size": 306419, "num_columns": 12}
+    {"row_group": 0, "num_rows": 891, "file_offset": 4,
+     "total_byte_size": 306419, "total_compressed_size": 38839,
+     "num_columns": 12}
   ],
   "returned": 1, "total": 1, "truncated": false
 }
@@ -141,15 +144,21 @@ $ parquet-analyzer rowgroup show example.parquet --row-group 0
   "$schema": "parquet-analyzer/v1/rowgroup-show",
   "row_group": 0,
   "num_rows": 891,
+  "file_offset": 4,
   "total_byte_size": 306419,
+  "total_compressed_size": 38839,
   "num_columns": 12,
   "columns": [
     {
       "row_group": 0, "column": "PassengerId", "path": ["PassengerId"],
       "type": "INT64", "encodings": ["PLAIN"], "codec": "SNAPPY",
       "num_values": 891, "compressed_size": 4357, "uncompressed_size": 7155,
-      "has_dictionary": false, "has_offset_index": false,
-      "has_column_index": false, "has_bloom_filter": false,
+      "chunk_offset": 4, "chunk_length": 4357,
+      "data_page_offset": 4, "dictionary_page_offset": null,
+      "has_dictionary": false,
+      "has_offset_index": false, "offset_index_offset": null, "offset_index_length": null,
+      "has_column_index": false, "column_index_offset": null, "column_index_length": null,
+      "has_bloom_filter": false, "bloom_filter_offset": null, "bloom_filter_length": null,
       "num_pages": null, "num_pages_known": false,
       ...
     },
@@ -172,13 +181,22 @@ $ parquet-analyzer column show example.parquet --column Sex
   "column": "Sex",
   "path": ["Sex"],
   "type": "BYTE_ARRAY",
+  "num_row_groups": 1,
+  "total_num_values": 891,
+  "total_compressed_size": 501,
+  "total_uncompressed_size": 897,
   "row_groups": [
     {
       "row_group": 0, "column": "Sex", "path": ["Sex"],
       "encodings": ["PLAIN", "RLE_DICTIONARY"], "codec": "SNAPPY",
       "num_values": 891, "compressed_size": 501, "uncompressed_size": 897,
+      "chunk_offset": 24256, "chunk_length": 501,
+      "data_page_offset": 24276, "dictionary_page_offset": 24256,
       "has_dictionary": true,
-      "has_offset_index": false, "num_pages": null, "num_pages_known": false,
+      "has_offset_index": false, "offset_index_offset": null, "offset_index_length": null,
+      "has_column_index": false, "column_index_offset": null, "column_index_length": null,
+      "has_bloom_filter": false, "bloom_filter_offset": null, "bloom_filter_length": null,
+      "num_pages": null, "num_pages_known": false,
       "statistics": {"min": "...", "max": "...", "null_count": 0}
     }
   ]
@@ -190,6 +208,18 @@ an `OffsetIndex` — counting otherwise would require walking page headers,
 which the v1 subcommand contract forbids. SNPW (Spark Native Parquet Writer)
 writes OffsetIndex on every chunk; pyarrow does when
 `write_page_index=True`; older parquet-mr and many DuckDB files do not.
+
+**Byte-range pairs.** Every per-chunk output carries the seek-and-read
+pair `chunk_offset` / `chunk_length`, plus `offset_index_offset` /
+`offset_index_length`, `column_index_offset` / `column_index_length`,
+and `bloom_filter_offset` / `bloom_filter_length` (each `null` when the
+writer didn't emit the corresponding structure). `chunk_offset` is the
+dictionary page offset when a dictionary is present, otherwise the data
+page offset (parquet's spec: dictionary always precedes data within a
+chunk; `total_compressed_size` already includes the dictionary). Together
+these let an AI agent issue `read(chunk_offset, chunk_length)` against
+the file and get the entire compressed chunk bytes without re-parsing the
+footer.
 
 ### Schema-version discovery
 

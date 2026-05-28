@@ -73,6 +73,7 @@ class _FakeParquetFile:
         kv_metadata=None,
         footer_summary=None,
         row_group_wrappers=None,
+        footer_offset=0,
     ):
         self.footer = footer if footer is not None else {"row_groups": []}
         self.num_rows = num_rows
@@ -80,6 +81,7 @@ class _FakeParquetFile:
         self.num_columns = num_columns
         self.schema = self.footer.get("schema", [])
         self.kv_metadata = kv_metadata if kv_metadata is not None else []
+        self.footer_offset = footer_offset
         self.footer_summary = footer_summary or {
             "num_rows": num_rows,
             "num_row_groups": self.num_row_groups,
@@ -126,19 +128,37 @@ class _FakeParquetFile:
 
 
 def _make_footer(row_groups):
-    """Compose a footer dict from a list of (num_rows, total_byte_size, columns)."""
+    """Compose a footer dict from a list of (num_rows, total_byte_size, columns).
+
+    Optionally include a 4th element ``file_offset`` per row group; if
+    omitted the field is left out (matches parquet's optional nature).
+    """
+    out_rgs = []
+    for rg in row_groups:
+        if len(rg) == 4:
+            num_rows, total_bytes, cols, file_offset = rg
+            out_rgs.append(
+                {
+                    "num_rows": num_rows,
+                    "total_byte_size": total_bytes,
+                    "columns": cols,
+                    "file_offset": file_offset,
+                }
+            )
+        else:
+            num_rows, total_bytes, cols = rg
+            out_rgs.append(
+                {
+                    "num_rows": num_rows,
+                    "total_byte_size": total_bytes,
+                    "columns": cols,
+                }
+            )
     return {
         "version": 1,
         "schema": [],
         "num_rows": sum(rg[0] for rg in row_groups),
-        "row_groups": [
-            {
-                "num_rows": rg[0],
-                "total_byte_size": rg[1],
-                "columns": rg[2],
-            }
-            for rg in row_groups
-        ],
+        "row_groups": out_rgs,
     }
 
 
@@ -151,10 +171,14 @@ def _make_column(
     uncompressed=400,
     codec="SNAPPY",
     encodings=("PLAIN",),
+    data_offset=100,
     dictionary_offset=None,
     offset_index_offset=None,
+    offset_index_length=20,
     column_index_offset=None,
+    column_index_length=30,
     bloom_filter_offset=None,
+    bloom_filter_length=None,
     statistics=None,
 ):
     """Build a single column-chunk dict shaped like pf.footer's columns."""
@@ -166,21 +190,22 @@ def _make_column(
         "num_values": num_values,
         "total_uncompressed_size": uncompressed,
         "total_compressed_size": compressed,
-        "data_page_offset": 100,
+        "data_page_offset": data_offset,
     }
     if dictionary_offset is not None:
         md["dictionary_page_offset"] = dictionary_offset
     if bloom_filter_offset is not None:
         md["bloom_filter_offset"] = bloom_filter_offset
+        md["bloom_filter_length"] = bloom_filter_length
     if statistics is not None:
         md["statistics"] = statistics
     cc = {"file_offset": 0, "meta_data": md}
     if offset_index_offset is not None:
         cc["offset_index_offset"] = offset_index_offset
-        cc["offset_index_length"] = 20
+        cc["offset_index_length"] = offset_index_length
     if column_index_offset is not None:
         cc["column_index_offset"] = column_index_offset
-        cc["column_index_length"] = 30
+        cc["column_index_length"] = column_index_length
     return cc
 
 
@@ -283,6 +308,7 @@ def test_file_summary_emits_footer_summary(monkeypatch):
     fake = _FakeParquetFile(
         num_rows=42,
         num_columns=3,
+        footer_offset=1006,
         footer_summary={
             "num_rows": 42,
             "num_row_groups": 1,
@@ -303,6 +329,9 @@ def test_file_summary_emits_footer_summary(monkeypatch):
     assert payload["$schema"] == "parquet-analyzer/v1/file-summary"
     assert payload["num_rows"] == 42
     assert payload["compressed_page_size"] == 600
+    assert payload["footer_offset"] == 1006
+    assert payload["footer_size"] == 200
+    assert payload["file_size"] == 1206
     assert fake.closed
 
 
@@ -463,9 +492,9 @@ def test_file_validate_catches_parquet_file_construction_error(monkeypatch):
 
 
 def test_rowgroup_list(monkeypatch):
-    cols = [_make_column(("a",)), _make_column(("b",))]
+    cols = [_make_column(("a",), compressed=50), _make_column(("b",), compressed=70)]
     fake = _FakeParquetFile(
-        footer=_make_footer([(10, 100, cols), (20, 200, cols)]),
+        footer=_make_footer([(10, 100, cols, 4), (20, 200, cols, 250)]),
         num_rows=30,
         num_columns=2,
     )
@@ -476,7 +505,10 @@ def test_rowgroup_list(monkeypatch):
     assert payload["total"] == 2
     assert payload["items"][0]["num_rows"] == 10
     assert payload["items"][0]["num_columns"] == 2
+    assert payload["items"][0]["file_offset"] == 4
+    assert payload["items"][0]["total_compressed_size"] == 120  # 50 + 70
     assert payload["items"][1]["total_byte_size"] == 200
+    assert payload["items"][1]["file_offset"] == 250
 
 
 def test_rowgroup_show_uses_wrapper_for_num_pages(monkeypatch):
@@ -506,6 +538,71 @@ def test_rowgroup_show_uses_wrapper_for_num_pages(monkeypatch):
     assert payload["columns"][0]["num_pages_known"] is True
     assert payload["columns"][1]["num_pages"] is None
     assert payload["columns"][1]["num_pages_known"] is False
+
+
+def test_column_show_emits_byte_offset_fields(monkeypatch):
+    """chunk_offset/chunk_length + every index's offset/length pair."""
+    cc = _make_column(
+        ("a",),
+        data_offset=200,
+        dictionary_offset=100,  # chunk starts here (dict precedes data)
+        compressed=300,  # chunk_length
+        offset_index_offset=900,
+        offset_index_length=15,
+        column_index_offset=800,
+        column_index_length=42,
+        bloom_filter_offset=700,
+        bloom_filter_length=128,
+    )
+    fake = _FakeParquetFile(
+        footer=_make_footer([(10, 100, [cc])]),
+        num_rows=10,
+        num_columns=1,
+        row_group_wrappers=[
+            _FakeRowGroup(
+                [_FakeColumnChunk(("a",), num_pages_value=3, has_offset_index=True)]
+            )
+        ],
+    )
+    out, _err, code = _run(
+        ["column", "show", "f.parquet", "--column", "a"], monkeypatch, fake
+    )
+    assert code == 0
+    rg = _parse_json(out)["row_groups"][0]
+    # Chunk seek-and-read pair: dict_offset .. dict_offset + total_compressed
+    assert rg["chunk_offset"] == 100
+    assert rg["chunk_length"] == 300
+    # Index offsets / lengths surfaced verbatim from the footer
+    assert rg["offset_index_offset"] == 900
+    assert rg["offset_index_length"] == 15
+    assert rg["column_index_offset"] == 800
+    assert rg["column_index_length"] == 42
+    assert rg["bloom_filter_offset"] == 700
+    assert rg["bloom_filter_length"] == 128
+
+
+def test_column_show_omits_index_offsets_when_absent(monkeypatch):
+    """Indexes absent → both *_offset and *_length are null (not missing)."""
+    cc = _make_column(("a",))  # no dict, no indexes, no bloom
+    fake = _FakeParquetFile(
+        footer=_make_footer([(10, 100, [cc])]),
+        num_rows=10,
+        num_columns=1,
+        row_group_wrappers=[_FakeRowGroup([_FakeColumnChunk(("a",))])],
+    )
+    out, _err, code = _run(
+        ["column", "show", "f.parquet", "--column", "a"], monkeypatch, fake
+    )
+    assert code == 0
+    rg = _parse_json(out)["row_groups"][0]
+    # No dictionary → chunk_offset == data_page_offset
+    assert rg["chunk_offset"] == rg["data_page_offset"]
+    assert rg["offset_index_offset"] is None
+    assert rg["offset_index_length"] is None
+    assert rg["column_index_offset"] is None
+    assert rg["column_index_length"] is None
+    assert rg["bloom_filter_offset"] is None
+    assert rg["bloom_filter_length"] is None
 
 
 def test_rowgroup_show_requires_row_group_flag(monkeypatch):
@@ -576,7 +673,7 @@ def test_column_list_filtered_by_row_group(monkeypatch):
 
 
 def test_column_show_aggregates_across_row_groups(monkeypatch):
-    cols = [_make_column(("a",), num_values=10)]
+    cols = [_make_column(("a",), num_values=10, compressed=50, uncompressed=200)]
     fake = _FakeParquetFile(
         footer=_make_footer([(10, 100, cols), (10, 100, cols), (10, 100, cols)]),
         num_rows=30,
@@ -596,6 +693,11 @@ def test_column_show_aggregates_across_row_groups(monkeypatch):
     assert payload["path"] == ["a"]
     assert len(payload["row_groups"]) == 3
     assert [rg["row_group"] for rg in payload["row_groups"]] == [0, 1, 2]
+    # Aggregates across the 3 matched row groups.
+    assert payload["num_row_groups"] == 3
+    assert payload["total_num_values"] == 30  # 10 * 3
+    assert payload["total_compressed_size"] == 150  # 50 * 3
+    assert payload["total_uncompressed_size"] == 600  # 200 * 3
 
 
 def test_column_show_requires_column(monkeypatch):

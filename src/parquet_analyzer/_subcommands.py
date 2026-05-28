@@ -219,6 +219,20 @@ def _column_chunk_summary(
 ) -> dict:
     """Footer-only per-chunk summary.
 
+    Byte-offset / length fields surfaced (all footer-derived):
+
+    * ``chunk_offset`` / ``chunk_length`` — the seek-and-read pair for the
+      column chunk's on-disk bytes. ``chunk_offset`` is the dictionary page
+      offset when a dictionary is present, otherwise the data page offset
+      (per parquet spec: dictionary always precedes data within a chunk).
+      ``chunk_length == total_compressed_size``; parquet's
+      ``total_compressed_size`` already includes the dictionary page.
+    * ``offset_index_offset`` / ``offset_index_length`` (null if absent).
+    * ``column_index_offset`` / ``column_index_length`` (null if absent).
+    * ``bloom_filter_offset`` / ``bloom_filter_length`` (null if absent).
+    * Existing ``data_page_offset``, ``dictionary_page_offset``,
+      ``compressed_size``, ``uncompressed_size`` are unchanged.
+
     ``num_pages`` is reported only when the chunk has an OffsetIndex
     (``offset_index_offset`` present) AND ``cc_wrapper`` is supplied — the
     wrapper does an O(1) OffsetIndex lookup via the offset_index_length
@@ -233,6 +247,16 @@ def _column_chunk_summary(
     has_column_index = "column_index_offset" in footer_column
     has_dictionary = "dictionary_page_offset" in md
     has_bloom_filter = "bloom_filter_offset" in md
+
+    # Chunk byte range: dictionary precedes data when present.
+    data_page_offset = md.get("data_page_offset")
+    dictionary_page_offset = md.get("dictionary_page_offset")
+    chunk_offset = (
+        dictionary_page_offset
+        if dictionary_page_offset is not None
+        else data_page_offset
+    )
+    chunk_length = md.get("total_compressed_size")
 
     num_pages: int | None = None
     num_pages_known = False
@@ -251,14 +275,22 @@ def _column_chunk_summary(
         "encodings": list(md.get("encodings", [])),
         "codec": md.get("codec"),
         "num_values": md.get("num_values"),
-        "compressed_size": md.get("total_compressed_size"),
+        "compressed_size": chunk_length,
         "uncompressed_size": md.get("total_uncompressed_size"),
-        "data_page_offset": md.get("data_page_offset"),
-        "dictionary_page_offset": md.get("dictionary_page_offset"),
+        "chunk_offset": chunk_offset,
+        "chunk_length": chunk_length,
+        "data_page_offset": data_page_offset,
+        "dictionary_page_offset": dictionary_page_offset,
         "has_dictionary": has_dictionary,
         "has_offset_index": has_offset_index,
+        "offset_index_offset": footer_column.get("offset_index_offset"),
+        "offset_index_length": footer_column.get("offset_index_length"),
         "has_column_index": has_column_index,
+        "column_index_offset": footer_column.get("column_index_offset"),
+        "column_index_length": footer_column.get("column_index_length"),
         "has_bloom_filter": has_bloom_filter,
+        "bloom_filter_offset": md.get("bloom_filter_offset"),
+        "bloom_filter_length": md.get("bloom_filter_length"),
         "num_pages": num_pages,
         "num_pages_known": num_pages_known,
     }
@@ -280,6 +312,7 @@ def handle_file_summary(args: argparse.Namespace) -> None:
         payload = {
             "$schema": _schema_uri("file-summary"),
             **pf.footer_summary,
+            "footer_offset": pf.footer_offset,
         }
     _emit_json(payload, args.output)
 
@@ -409,19 +442,39 @@ def handle_file_validate(args: argparse.Namespace) -> None:
     _emit_json(payload, args.output)
 
 
+def _row_group_summary(rg_index: int, footer_rg: dict) -> dict:
+    """Footer-only per-row-group summary (no column-chunk detail).
+
+    Adds byte-offset / length context:
+
+    * ``file_offset`` — start of the row group's data on disk (parquet's
+      ``RowGroup.file_offset``, the offset of the first page in the rg).
+    * ``total_byte_size`` — sum of *uncompressed* column data (parquet's
+      ``RowGroup.total_byte_size``).
+    * ``total_compressed_size`` — computed sum of
+      ``ColumnChunk.meta_data.total_compressed_size`` across the rg.
+    """
+    cols = footer_rg.get("columns", [])
+    total_compressed = sum(
+        (cc.get("meta_data", {}).get("total_compressed_size") or 0) for cc in cols
+    )
+    return {
+        "row_group": rg_index,
+        "num_rows": footer_rg.get("num_rows"),
+        "file_offset": footer_rg.get("file_offset"),
+        "total_byte_size": footer_rg.get("total_byte_size"),
+        "total_compressed_size": total_compressed,
+        "num_columns": len(cols),
+    }
+
+
 def handle_rowgroup_list(args: argparse.Namespace) -> None:
     with ParquetFile(args.path) as pf:
         footer = pf.footer
-        items = []
-        for rg_idx, rg in enumerate(footer["row_groups"]):
-            items.append(
-                {
-                    "row_group": rg_idx,
-                    "num_rows": rg.get("num_rows"),
-                    "total_byte_size": rg.get("total_byte_size"),
-                    "num_columns": len(rg.get("columns", [])),
-                }
-            )
+        items = [
+            _row_group_summary(rg_idx, rg)
+            for rg_idx, rg in enumerate(footer["row_groups"])
+        ]
     payload = _wrap_list(items, args.limit, "rowgroup-list")
     _emit_json(payload, args.output)
 
@@ -449,10 +502,7 @@ def handle_rowgroup_show(args: argparse.Namespace) -> None:
 
     payload = {
         "$schema": _schema_uri("rowgroup-show"),
-        "row_group": args.row_group,
-        "num_rows": rg.get("num_rows"),
-        "total_byte_size": rg.get("total_byte_size"),
-        "num_columns": len(rg.get("columns", [])),
+        **_row_group_summary(args.row_group, rg),
         "columns": columns,
     }
     _emit_json(payload, args.output)
@@ -537,11 +587,25 @@ def handle_column_show(args: argparse.Namespace) -> None:
                 _column_chunk_summary(rg_idx, footer_cc, cc_wrapper)
             )
 
+    # Aggregates across matched row groups. All footer-derived (sum of
+    # ColumnMetaData fields), so zero additional cost — and they answer
+    # the "how big is column X overall?" / "how many values across the
+    # whole file?" questions in one step. Symmetric with the existing
+    # file-level (compressed_page_size) and rowgroup-level
+    # (total_compressed_size) sums.
+    total_compressed = sum(d["compressed_size"] or 0 for d in row_group_details)
+    total_uncompressed = sum(d["uncompressed_size"] or 0 for d in row_group_details)
+    total_num_values = sum(d["num_values"] or 0 for d in row_group_details)
+
     payload: dict[str, Any] = {
         "$schema": _schema_uri("column-show"),
         "column": _path_display(path),
         "path": list(path),
         "type": type_name,
+        "num_row_groups": len(row_group_details),
+        "total_num_values": total_num_values,
+        "total_compressed_size": total_compressed,
+        "total_uncompressed_size": total_uncompressed,
         "row_groups": row_group_details,
     }
     if args.row_group is not None:
