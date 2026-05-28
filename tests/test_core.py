@@ -11,20 +11,20 @@ import parquet_analyzer._core as core
 from parquet_analyzer._core import (
     OffsetRecordingCompactProtocol,
     TFileTransport,
+    _compute_pages,
+    _compute_summary,
+    _find_footer_segment,
     create_segment,
     create_segment_from_offset_info,
     fill_gaps,
-    find_footer_segment,
-    get_pages,
-    get_summary,
     json_encode,
-    parse_parquet_file,
     segment_to_json,
     read_bloom_filter,
     read_column_index,
     read_offset_index,
     read_pages,
 )
+from parquet_analyzer import ParquetFile
 from parquet.ttypes import ColumnMetaData, CompressionCodec, Encoding
 
 
@@ -147,7 +147,7 @@ def test_get_summary_counts_pages_and_sizes():
         ],
     }
 
-    summary = get_summary(footer_json, segments)
+    summary = _compute_summary(footer_json, segments)
 
     assert summary["num_rows"] == 10
     assert summary["num_row_groups"] == 1
@@ -198,7 +198,7 @@ def test_get_pages_includes_offsets_with_page_details():
         ]
     }
 
-    pages = get_pages(segments, column_chunk_data_offsets)
+    pages = _compute_pages(segments, column_chunk_data_offsets)
 
     assert pages[0]["column"] == ("col1",)
     assert pages[0]["row_groups"][0]["pages"][0]["$offset"] == 4
@@ -522,7 +522,7 @@ def test_read_helpers_and_summary(monkeypatch):
         ]
     }
 
-    pages = get_pages(segments, column_offsets)
+    pages = _compute_pages(segments, column_offsets)
     row_group = pages[0]["row_groups"][0]
     assert row_group["dictionary_page"]["$offset"] == dict_offset
     assert row_group["column_index"]["$offset"] == col_index_offset
@@ -548,7 +548,7 @@ def test_read_helpers_and_summary(monkeypatch):
         ],
     }
 
-    summary = get_summary(footer_json, segments)
+    summary = _compute_summary(footer_json, segments)
     assert summary["num_pages"] == 3
     assert summary["num_data_pages"] == 2
     assert summary["num_v1_data_pages"] == 1
@@ -683,13 +683,13 @@ def test_segment_to_json_enum_scalar():
 
 
 def test_find_footer_segment_returns_none():
-    assert find_footer_segment([create_segment(0, 1, "page")]) is None
+    assert _find_footer_segment([create_segment(0, 1, "page")]) is None
 
 
 def test_find_footer_segment_returns_match():
     footer = create_segment(0, 1, "footer")
 
-    assert find_footer_segment([footer]) is footer
+    assert _find_footer_segment([footer]) is footer
 
 
 def test_json_encode_short_binary():
@@ -700,18 +700,18 @@ def test_json_encode_short_binary():
     assert encoded == {"type": "binary", "length": 3, "value": [97, 98, 99]}
 
 
-def test_parse_parquet_file_invalid_header(tmp_path):
+def test_parquet_file_invalid_header(tmp_path):
     target = tmp_path / "invalid-header.parquet"
     target.write_bytes(b"BAD!" + b"\x00" * 12)
 
     with pytest.raises(ValueError, match="missing PAR1 header"):
-        parse_parquet_file(str(target))
+        ParquetFile(str(target))
 
 
-def test_parse_parquet_file_invalid_footer(tmp_path):
+def test_parquet_file_invalid_footer(tmp_path):
     target = tmp_path / "invalid-footer.parquet"
     content = b"PAR1" + b"\x00" * 12 + struct.pack("<I", 0) + b"BAD!"
     target.write_bytes(content)
 
     with pytest.raises(ValueError, match="missing PAR1 footer"):
-        parse_parquet_file(str(target))
+        ParquetFile(str(target))

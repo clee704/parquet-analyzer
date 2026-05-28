@@ -6,15 +6,9 @@ import logging
 import pathlib
 from typing import Sequence
 
-from ._core import (
-    find_footer_segment,
-    get_pages,
-    get_summary,
-    json_encode,
-    parse_parquet_file,
-    segment_to_json,
-)
+from ._core import json_encode
 from ._html import generate_html_report
+from .parquet_file import ParquetFile
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
@@ -65,32 +59,32 @@ def main(argv: Sequence[str] | None = None) -> None:
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 
-    segments, column_chunk_data_offsets = parse_parquet_file(args.parquet_file)
-    if args.output_mode == "default":
-        footer = segment_to_json(find_footer_segment(segments))
-        output = json.dumps(
-            {
-                "summary": get_summary(footer, segments),
-                "footer": footer,
-                "pages": get_pages(segments, column_chunk_data_offsets),
-            },
-            indent=2,
-            default=json_encode,
-        )
-    elif args.output_mode == "segments":
-        output = json.dumps(segments, indent=2, default=json_encode)
-    elif args.output_mode == "html":
-        footer = segment_to_json(find_footer_segment(segments))
-        summary = get_summary(footer, segments)
-        output = generate_html_report(
-            args.parquet_file,
-            summary=summary,
-            footer=footer,
-            segments=segments,
-            sections=args.html_sections,
-        )
-    else:
-        raise ValueError(f"Unknown output mode: {args.output_mode}")
+    pf = ParquetFile(args.parquet_file)
+    try:
+        if args.output_mode == "default":
+            output = json.dumps(
+                {
+                    "summary": pf.full_summary,
+                    "footer": pf.footer,
+                    "pages": pf.all_pages(),
+                },
+                indent=2,
+                default=json_encode,
+            )
+        elif args.output_mode == "segments":
+            output = json.dumps(pf.all_segments(), indent=2, default=json_encode)
+        elif args.output_mode == "html":
+            output = generate_html_report(
+                args.parquet_file,
+                summary=pf.full_summary,
+                footer=pf.footer,
+                segments=pf.all_segments(),
+                sections=args.html_sections,
+            )
+        else:
+            raise ValueError(f"Unknown output mode: {args.output_mode}")
+    finally:
+        pf.close()
 
     if args.output:
         pathlib.Path(args.output).write_text(output)
