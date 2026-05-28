@@ -69,6 +69,15 @@ in a future release.
 - **Errors → stderr** as a single JSON line: `{"$schema": "parquet-analyzer/v1/error", "error": "<code>", "message": "<human>", "fix": "<retry command>"}`. The process exits non-zero on operational errors; `file validate` reports parse failures as findings (exit 0).
 - **Column path matching.** Every emitted column carries both `column` (dot-joined display string) and `path` (list of segments). `--column NAME` matches against the dot-joined form. Ambiguous matches (when multiple distinct paths join to the same string) produce a JSON error listing the candidate paths.
 
+> **Design contract for what goes in the output:** see
+> [`docs/output-principles.md`](docs/output-principles.md). The TL;DR is
+> "footer-bounded and walk-free": every emitted field is derivable from
+> the parsed footer plus, at most, one extra parse of an index thrift
+> the writer already wrote (OffsetIndex, ColumnIndex, BloomFilter
+> header). Anything that would require walking per-page thrift headers
+> or reading page bodies is explicitly deferred to the `page` subcommand
+> surface (Slice 4 / #8).
+
 ### `file` — file-level inspection
 
 ```bash

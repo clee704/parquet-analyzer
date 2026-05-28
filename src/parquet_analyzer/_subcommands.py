@@ -19,6 +19,11 @@ walk through :meth:`ParquetFile.all_pages` /
 ``cc.has_offset_index`` is true (otherwise the lookup would walk page
 headers). Page-level subcommands (``page list / header / extract / decode``)
 land in Slice 4.
+
+**Adding a new field to any subcommand's output?** See
+``docs/output-principles.md`` for the v1 contract — footer-bounded and
+walk-free, with the ``page`` subcommand surface as the explicit escape
+hatch for everything beyond.
 """
 
 from __future__ import annotations
