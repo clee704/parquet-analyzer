@@ -107,6 +107,8 @@ class ParquetFile:
         self._eager_walked: bool = False
         self._eager_segments: list[dict] | None = None
         self._eager_column_offset_map: dict | None = None
+        self._full_summary_cache: dict | None = None
+        self._all_pages_cache: list[dict] | None = None
 
     def close(self) -> None:
         """Close the underlying file handle.
@@ -284,11 +286,17 @@ class ParquetFile:
         ``page_header_size``, ``uncompressed_page_data_size``,
         ``compressed_page_data_size``). Otherwise prefer :attr:`footer_summary`.
 
-        Caches after first call.
+        Caches the computed dict after first call (subsequent accesses are
+        ~O(1) dict lookup). Returned dict is the cached reference — do not
+        mutate.
         """
-        self._ensure_eager_walked()
-        assert self._eager_segments is not None
-        return _compute_summary(self.footer, self._eager_segments)
+        if self._full_summary_cache is None:
+            self._ensure_eager_walked()
+            assert self._eager_segments is not None
+            self._full_summary_cache = _compute_summary(
+                self.footer, self._eager_segments
+            )
+        return self._full_summary_cache
 
     # ----- Full eager walk (the "I really want everything" path) ----------
 
@@ -299,7 +307,9 @@ class ParquetFile:
         "unknown" segments filling any gaps).
 
         Cached after first call. Expensive; the only way to get the
-        complete byte-range view of the file.
+        complete byte-range view of the file. Returned list is the cached
+        reference — do not mutate (mutating it would corrupt subsequent
+        :attr:`full_summary` calls that walk the same segments).
         """
         self._ensure_eager_walked()
         assert self._eager_segments is not None
@@ -309,12 +319,17 @@ class ParquetFile:
         """Walk every page header and return the per-column pages tree —
         same shape as the legacy ``get_pages()`` output.
 
-        Cached after first call (via :meth:`all_segments`). Expensive.
+        Caches the computed tree after first call. Returned list is the
+        cached reference — do not mutate.
         """
-        self._ensure_eager_walked()
-        assert self._eager_segments is not None
-        assert self._eager_column_offset_map is not None
-        return _compute_pages(self._eager_segments, self._eager_column_offset_map)
+        if self._all_pages_cache is None:
+            self._ensure_eager_walked()
+            assert self._eager_segments is not None
+            assert self._eager_column_offset_map is not None
+            self._all_pages_cache = _compute_pages(
+                self._eager_segments, self._eager_column_offset_map
+            )
+        return self._all_pages_cache
 
     @property
     def column_offset_map(self) -> dict[tuple[str, ...], list[dict]]:
@@ -322,7 +337,8 @@ class ParquetFile:
         list of dicts containing the byte offsets of each page / dictionary
         page / index per row group.
 
-        **Triggers an eager walk** if not already done. Cached.
+        **Triggers an eager walk** if not already done. Cached. Returned
+        dict is the cached reference — do not mutate.
         """
         self._ensure_eager_walked()
         assert self._eager_column_offset_map is not None

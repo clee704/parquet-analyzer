@@ -486,3 +486,56 @@ def test_titanic_footer_matches_pre_refactor_snapshot():
     finally:
         pf.close()
     assert observed == snap["footer"], "footer diverged from snapshot"
+
+
+# ---------------------------------------------------------------------------
+# Cache identity (the docstring promises must be kept)
+# ---------------------------------------------------------------------------
+
+
+def test_full_summary_caches_result(small_parquet):
+    """full_summary docstring promises caching; assert true `is`-identity
+    on the returned dict to lock in that promise. Pre-fix this rebuilt
+    the summary dict per-call (~5ms repeat cost on a 100-rg file)."""
+    pf = ParquetFile(str(small_parquet))
+    try:
+        first = pf.full_summary
+        second = pf.full_summary
+        assert first is second, "full_summary should return cached reference"
+    finally:
+        pf.close()
+
+
+def test_all_pages_caches_result(small_parquet):
+    """all_pages docstring promises caching; assert true `is`-identity."""
+    pf = ParquetFile(str(small_parquet))
+    try:
+        first = pf.all_pages()
+        second = pf.all_pages()
+        assert first is second, "all_pages should return cached reference"
+    finally:
+        pf.close()
+
+
+def test_column_offset_map_caches_result(small_parquet):
+    """column_offset_map docstring promises caching; assert
+    `is`-identity. (This one was already correctly cached as part of
+    _ensure_eager_walked; the test pins the documented contract.)"""
+    pf = ParquetFile(str(small_parquet))
+    try:
+        first = pf.column_offset_map
+        second = pf.column_offset_map
+        assert first is second
+    finally:
+        pf.close()
+
+
+def test_all_segments_caches_result(small_parquet):
+    """all_segments docstring promises caching; assert `is`-identity."""
+    pf = ParquetFile(str(small_parquet))
+    try:
+        first = pf.all_segments()
+        second = pf.all_segments()
+        assert first is second
+    finally:
+        pf.close()
