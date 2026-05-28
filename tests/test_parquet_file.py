@@ -335,7 +335,7 @@ def test_construction_does_not_read_pages(small_parquet, monkeypatch):
     """Constructing a ParquetFile and reading footer-only properties must
     NOT call read_thrift_segment with name='page'. This is the whole point
     of the lazy core: page-header parsing is deferred."""
-    from parquet_analyzer import _core
+    from parquet_analyzer import _core, parquet_file as _pf_module
 
     page_read_count = 0
     original = _core.read_thrift_segment
@@ -347,6 +347,12 @@ def test_construction_does_not_read_pages(small_parquet, monkeypatch):
         return original(f, offset, name, thrift_class)
 
     monkeypatch.setattr(_core, "read_thrift_segment", counting)
+    # parquet_file binds `read_thrift_segment` at import (hoisted out of
+    # the per-call function-local path for perf), so the monkeypatch above
+    # alone doesn't redirect ColumnChunk.pages(); patch the rebound symbol
+    # too. _walk_chunks_eager lives in _core itself so its callers still
+    # see the patched version.
+    monkeypatch.setattr(_pf_module, "read_thrift_segment", counting)
 
     pf = ParquetFile(str(small_parquet))
     try:
@@ -378,7 +384,7 @@ def test_pages_call_triggers_only_that_chunks_headers(
 ):
     """Calling pages() on one column chunk reads only that chunk's page
     headers, not the whole file."""
-    from parquet_analyzer import _core
+    from parquet_analyzer import _core, parquet_file as _pf_module
 
     page_read_count = 0
     original = _core.read_thrift_segment
@@ -390,6 +396,7 @@ def test_pages_call_triggers_only_that_chunks_headers(
         return original(f, offset, name, thrift_class)
 
     monkeypatch.setattr(_core, "read_thrift_segment", counting)
+    monkeypatch.setattr(_pf_module, "read_thrift_segment", counting)
 
     pf = ParquetFile(str(nested_row_groups_parquet))
     try:

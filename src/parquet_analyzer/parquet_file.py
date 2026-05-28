@@ -36,6 +36,7 @@ from parquet.ttypes import (
     ColumnChunk as _ThriftColumnChunk,
     CompressionCodec as _ThriftCodec,
     Encoding as _ThriftEncoding,
+    PageHeader as _ThriftPageHeader,
     PageType as _ThriftPageType,
     RowGroup as _ThriftRowGroup,
     Type as _ThriftType,
@@ -47,6 +48,7 @@ from ._core import (
     _parse_footer,
     _walk_chunks_eager,
     fill_gaps,
+    read_thrift_segment,
     segment_to_json,
 )
 
@@ -517,10 +519,6 @@ class ColumnChunk:
         with the Slice 4 CLI surface.
         """
         if self._pages_cache is None:
-            from parquet.ttypes import PageHeader as _ThriftPageHeader
-
-            from ._core import read_thrift_segment
-
             pages: list[Page] = []
             remaining_values = self._md.num_values
             if self._md.dictionary_page_offset:
@@ -603,14 +601,7 @@ class Page:
 
     @property
     def type(self) -> str:
-        from parquet.ttypes import PageType as _ThriftPageType
-
-        names = {
-            getattr(_ThriftPageType, n): n
-            for n in dir(_ThriftPageType)
-            if not n.startswith("_") and isinstance(getattr(_ThriftPageType, n), int)
-        }
-        return names.get(self._t.type, str(self._t.type))
+        return _PAGE_TYPE_NAMES.get(self._t.type, str(self._t.type))
 
     @property
     def num_values(self) -> int:
@@ -623,13 +614,6 @@ class Page:
 
     @property
     def encoding(self) -> str:
-        from parquet.ttypes import Encoding as _ThriftEncoding
-
-        names = {
-            getattr(_ThriftEncoding, n): n
-            for n in dir(_ThriftEncoding)
-            if not n.startswith("_") and isinstance(getattr(_ThriftEncoding, n), int)
-        }
         h = (
             self._t.data_page_header
             or self._t.data_page_header_v2
@@ -637,7 +621,7 @@ class Page:
         )
         if h is None:
             return ""
-        return names.get(h.encoding, str(h.encoding))
+        return _ENCODING_NAMES.get(h.encoding, str(h.encoding))
 
     @property
     def segment(self) -> dict:
