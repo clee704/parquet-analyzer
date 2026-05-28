@@ -149,3 +149,121 @@ def test_main_module_invokes_cli(monkeypatch):
     module.main()
 
     assert invoked == {"called": None}
+
+
+# ---------------------------------------------------------------------------
+# End-to-end subcommand tests against real pyarrow fixtures (Slice 3)
+# ---------------------------------------------------------------------------
+
+
+def test_subcommand_file_summary_end_to_end(sample_parquet, capsys):
+    cli.main(["file", "summary", str(sample_parquet)])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["$schema"] == "parquet-analyzer/v1/file-summary"
+    assert payload["num_rows"] == 3
+    assert payload["num_columns"] == 2
+
+
+def test_subcommand_file_schema_end_to_end(sample_parquet, capsys):
+    cli.main(["file", "schema", str(sample_parquet)])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["$schema"] == "parquet-analyzer/v1/file-schema"
+    names = [e.get("name") for e in payload["elements"]]
+    assert "ints" in names
+    assert "floats" in names
+
+
+def test_subcommand_file_kv_end_to_end(sample_parquet, capsys):
+    cli.main(["file", "kv", str(sample_parquet)])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["$schema"] == "parquet-analyzer/v1/file-kv"
+    # pyarrow writes ARROW:schema in kv metadata; just verify the shape.
+    assert payload["truncated"] is False
+    assert isinstance(payload["items"], list)
+    for item in payload["items"]:
+        assert set(item.keys()) == {"key", "value"}
+
+
+def test_subcommand_file_validate_end_to_end(sample_parquet, capsys):
+    cli.main(["file", "validate", str(sample_parquet)])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["valid"] is True
+    assert payload["errors"] == []
+
+
+def test_subcommand_rowgroup_list_end_to_end(sample_parquet, capsys):
+    cli.main(["rowgroup", "list", str(sample_parquet)])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total"] == 1
+    assert payload["items"][0]["num_rows"] == 3
+    assert payload["items"][0]["num_columns"] == 2
+
+
+def test_subcommand_rowgroup_show_end_to_end(sample_parquet, capsys):
+    cli.main(["rowgroup", "show", str(sample_parquet), "--row-group", "0"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["row_group"] == 0
+    assert payload["num_columns"] == 2
+    assert [c["column"] for c in payload["columns"]] == ["ints", "floats"]
+
+
+def test_subcommand_column_list_end_to_end(sample_parquet, capsys):
+    cli.main(["column", "list", str(sample_parquet)])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["total"] == 2  # 1 row group × 2 columns
+    cols = {(i["row_group"], i["column"]) for i in payload["items"]}
+    assert cols == {(0, "ints"), (0, "floats")}
+
+
+def test_subcommand_column_show_end_to_end(sample_parquet, capsys):
+    cli.main(["column", "show", str(sample_parquet), "--column", "ints"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["column"] == "ints"
+    assert payload["type"] == "INT32"
+    assert len(payload["row_groups"]) == 1
+
+
+def test_subcommand_column_show_no_offset_index_marks_pages_unknown(
+    sample_parquet, capsys
+):
+    """pyarrow default writes no page index — `num_pages` must NOT be reported.
+
+    This guards against accidental page-header walks in Slice 3 by
+    asserting the contract on a real file that lacks an OffsetIndex.
+    """
+    cli.main(["column", "show", str(sample_parquet), "--column", "ints"])
+    payload = json.loads(capsys.readouterr().out)
+    rg = payload["row_groups"][0]
+    assert rg["has_offset_index"] is False
+    assert rg["num_pages"] is None
+    assert rg["num_pages_known"] is False
+
+
+def test_subcommand_column_show_with_offset_index_reports_pages(
+    sample_parquet_with_page_index, capsys
+):
+    cli.main(
+        ["column", "show", str(sample_parquet_with_page_index), "--column", "dict_col"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    for rg in payload["row_groups"]:
+        assert rg["has_offset_index"] is True
+        assert rg["num_pages_known"] is True
+        assert rg["num_pages"] >= 1
+
+
+def test_subcommand_column_show_unknown_column_lists_available(sample_parquet, capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        cli.main(["column", "show", str(sample_parquet), "--column", "missing"])
+    assert exc_info.value.code == 1
+    err_json = json.loads(capsys.readouterr().err)
+    assert err_json["error"] == "column_not_found"
+    assert "Available:" in err_json["message"]
+
+
+def test_subcommand_legacy_invocation_still_works(sample_parquet, capsys):
+    """Sanity: presence of subcommand dispatcher must not break legacy CLI."""
+    cli.main(["--output-mode", "segments", str(sample_parquet)])
+    payload = json.loads(capsys.readouterr().out)
+    assert isinstance(payload, list)
+    assert payload[0]["name"] == "magic_number"

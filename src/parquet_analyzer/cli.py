@@ -4,10 +4,12 @@ import argparse
 import json
 import logging
 import pathlib
+import sys
 from typing import Sequence
 
 from ._core import json_encode
 from ._html import generate_html_report
+from ._subcommands import is_subcommand_invocation, run_subcommand
 from .parquet_file import ParquetFile
 
 
@@ -49,7 +51,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> None:
+def _run_legacy(argv: Sequence[str]) -> int:
     parser = build_argument_parser()
     args = parser.parse_args(argv)
 
@@ -90,6 +92,19 @@ def main(argv: Sequence[str] | None = None) -> None:
         pathlib.Path(args.output).write_text(output)
     else:
         print(output)
+    return 0
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+
+    if is_subcommand_invocation(argv_list):
+        exit_code = run_subcommand(argv_list)
+    else:
+        exit_code = _run_legacy(argv_list)
+
+    if exit_code:
+        sys.exit(exit_code)
 
 
 if __name__ == "__main__":  # pragma: no cover
