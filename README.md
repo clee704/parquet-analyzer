@@ -290,6 +290,8 @@ pytest tests/bench/ --benchmark-only \
 
 Baseline files are platform-specific (CPU, Python version) — pytest-benchmark stores them under `tests/bench/baselines/<platform>/`.
 
+> **⚠️ Cross-machine comparisons are not meaningful.** The committed baseline (`eager-v0.4.0`) was captured on the maintainer's machine (Linux/CPython 3.14/x86_64, AMD EPYC 9V74). The per-platform subdirectory prevents the most obvious mismatches (Linux vs macOS, x86 vs ARM), but does **not** distinguish between CPU SKUs in the same broad category — an old i7 and a current EPYC both land in `Linux-CPython-3.14-64bit/`, with wildly different absolute numbers. When validating perf changes across the lazy-core work, **capture your own baseline before the change and compare against that**, not against the committed one. The committed baseline is useful for the maintainer's own session-to-session comparisons and as a frozen reference for the Slice 2 PR's perf claims. There's no CI gating on benchmark numbers; perf validation is operator-driven on a single machine at a time.
+
 ### Regenerating Thrift bindings
 
 The Python modules in `src/parquet` are generated from `parquet.thrift`.
