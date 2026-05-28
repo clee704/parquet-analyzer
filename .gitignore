@@ -6,6 +6,9 @@ __pycache__/
 # C extensions
 *.so
 
+# pytest-benchmark default storage (we use tests/bench/baselines/ for committed baselines)
+.benchmarks/
+
 # Distribution / packaging
 .Python
 build/

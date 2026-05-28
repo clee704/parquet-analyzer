@@ -250,7 +250,47 @@ pip install -e .[dev]
 hatch run dev:check  # will format, lint, type-check, test with coverage
 ```
 
-The development extra pulls in tooling (`hatch`, `ruff`, `pytest`) and `pyarrow` so tests can generate Parquet fixtures on the fly.
+The development extra pulls in tooling (`hatch`, `ruff`, `pytest`, `pytest-benchmark`) and `pyarrow` / `numpy` so tests can generate Parquet fixtures on the fly.
+
+### Benchmarks
+
+Benchmark tests live under `tests/bench/` and are **excluded from the default `pytest` run** (and from `hatch run dev:check`) — they're heavier than the unit tests and not meant for every commit. Run them explicitly:
+
+```bash
+# Run all benchmarks (synthetic parquet fixtures generated on the fly)
+pytest tests/bench/ --benchmark-only
+
+# Compare against the committed baseline (captured at the start of the
+# lazy-core work; see tests/bench/baselines/ for the JSON).
+# Note: the leading "0001_" is pytest-benchmark's auto-prepended save-
+# sequence prefix; --benchmark-compare matches by prefix, so the full
+# filename stem is required.
+# The -W flag suppresses pytest-benchmark's "machine_info changed"
+# warning, which fires noisily on virtualized hosts where cpu.hz_actual
+# jitters between runs even on the same machine.
+pytest tests/bench/ --benchmark-only \
+  --benchmark-storage=file://tests/bench/baselines \
+  --benchmark-compare=0001_eager-v0.4.0 \
+  -W ignore::pytest_benchmark.logger.PytestBenchmarkWarning
+```
+
+The synthetic fixture generator (`tests/bench/generate.py`) produces three shapes that stress different lazy-parsing boundaries:
+
+- `wide` — many columns, few rows (footer is large relative to body)
+- `tall` — few columns, many rows (body is huge relative to footer; the canonical case for the lazy-core's footer-only fast path)
+- `deep` — few columns, many rows split across many row groups (stresses per-row-group / per-chunk walking)
+
+To capture a fresh baseline (e.g., after a behavior change in the eager path):
+
+```bash
+pytest tests/bench/ --benchmark-only \
+  --benchmark-storage=file://tests/bench/baselines \
+  --benchmark-save=eager-vX.Y.Z
+```
+
+Baseline files are platform-specific (CPU, Python version) — pytest-benchmark stores them under `tests/bench/baselines/<platform>/`.
+
+> **⚠️ Cross-machine comparisons are not meaningful.** The committed baseline (`eager-v0.4.0`) was captured on the maintainer's machine (Linux/CPython 3.14/x86_64, AMD EPYC 9V74). The per-platform subdirectory prevents the most obvious mismatches (Linux vs macOS, x86 vs ARM), but does **not** distinguish between CPU SKUs in the same broad category — an old i7 and a current EPYC both land in `Linux-CPython-3.14-64bit/`, with wildly different absolute numbers. When validating perf changes across the lazy-core work, **capture your own baseline before the change and compare against that**, not against the committed one. The committed baseline is useful for the maintainer's own session-to-session comparisons and as a frozen reference for the Slice 2 PR's perf claims. There's no CI gating on benchmark numbers; perf validation is operator-driven on a single machine at a time.
 
 ### Regenerating Thrift bindings
 
