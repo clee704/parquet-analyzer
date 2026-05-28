@@ -188,7 +188,7 @@ with ParquetFile("example.parquet") as pf:
 
 These are the only methods that trigger the full per-page Thrift walk that the legacy `parse_parquet_file()` always did. The CLI's `--output-mode segments` mode uses `pf.all_segments()`; the `default` and `html` modes use `pf.full_summary` + `pf.footer` + `pf.all_pages()`.
 
-**Breaking change in v0.5:** the free functions `parse_parquet_file()`, `get_summary()`, `get_pages()`, and `find_footer_segment()` were removed. Use the `ParquetFile` methods above as drop-in replacements.
+**Breaking change in v0.4:** the free functions `parse_parquet_file()`, `get_summary()`, `get_pages()`, and `find_footer_segment()` were removed. Use the `ParquetFile` methods above as drop-in replacements.
 
 `segment_to_json`, `json_encode`, and `fill_gaps` remain as module-level utilities.
 

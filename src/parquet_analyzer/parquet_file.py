@@ -34,6 +34,9 @@ from typing import Any
 
 from parquet.ttypes import (
     ColumnChunk as _ThriftColumnChunk,
+    CompressionCodec as _ThriftCodec,
+    Encoding as _ThriftEncoding,
+    PageType as _ThriftPageType,
     RowGroup as _ThriftRowGroup,
     Type as _ThriftType,
 )
@@ -388,13 +391,26 @@ class RowGroup:
 # ---------------------------------------------------------------------------
 
 
-# Type enum-name lookup for ColumnChunk.type — parquet thrift Type enum
-# stores ints, callers expect strings ("INT32", "INT64", etc.).
-_TYPE_NAMES: dict[int, str] = {
-    getattr(_ThriftType, name): name
-    for name in dir(_ThriftType)
-    if not name.startswith("_") and isinstance(getattr(_ThriftType, name), int)
-}
+# Type enum-name lookups for ColumnChunk / Page properties. Parquet thrift
+# stores enums as ints; callers expect strings ("INT32", "SNAPPY", "PLAIN").
+# These dicts are built once at import (cheap, ~30 entries each total) and
+# looked up by integer key on the hot path — critically, ColumnChunk.pages()
+# iteration would otherwise rebuild these on every Page.type / Page.encoding
+# property access.
+
+
+def _enum_name_map(enum_class) -> dict[int, str]:
+    return {
+        getattr(enum_class, name): name
+        for name in dir(enum_class)
+        if not name.startswith("_") and isinstance(getattr(enum_class, name), int)
+    }
+
+
+_TYPE_NAMES = _enum_name_map(_ThriftType)
+_ENCODING_NAMES = _enum_name_map(_ThriftEncoding)
+_CODEC_NAMES = _enum_name_map(_ThriftCodec)
+_PAGE_TYPE_NAMES = _enum_name_map(_ThriftPageType)
 
 
 class ColumnChunk:
@@ -436,25 +452,11 @@ class ColumnChunk:
 
     @property
     def encodings(self) -> tuple[str, ...]:
-        from parquet.ttypes import Encoding as _ThriftEncoding
-
-        names = {
-            getattr(_ThriftEncoding, n): n
-            for n in dir(_ThriftEncoding)
-            if not n.startswith("_") and isinstance(getattr(_ThriftEncoding, n), int)
-        }
-        return tuple(names.get(e, str(e)) for e in (self._md.encodings or []))
+        return tuple(_ENCODING_NAMES.get(e, str(e)) for e in (self._md.encodings or []))
 
     @property
     def codec(self) -> str:
-        from parquet.ttypes import CompressionCodec as _ThriftCodec
-
-        names = {
-            getattr(_ThriftCodec, n): n
-            for n in dir(_ThriftCodec)
-            if not n.startswith("_") and isinstance(getattr(_ThriftCodec, n), int)
-        }
-        return names.get(self._md.codec, str(self._md.codec))
+        return _CODEC_NAMES.get(self._md.codec, str(self._md.codec))
 
     @property
     def num_values(self) -> int:

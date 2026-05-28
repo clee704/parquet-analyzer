@@ -518,27 +518,6 @@ def fill_gaps(segments: list[dict[str, Any]], file_size: int):
     return new_segments
 
 
-def parse_parquet_file(file_path: str):
-    """Legacy entry point — removed in this refactor.
-
-    Use :class:`parquet_analyzer.ParquetFile` instead. The same
-    ``(segments, column_chunk_data_offsets)`` tuple is available via::
-
-        from parquet_analyzer import ParquetFile
-        pf = ParquetFile(file_path)
-        segments = pf.all_segments()
-        column_offset_map = pf.column_offset_map  # the second element
-
-    Lazy footer-only queries (schema, kv-metadata, per-row-group
-    metadata) are now first-class on :class:`ParquetFile` and don't
-    trigger the per-page Thrift walk that this function did.
-    """
-    raise NotImplementedError(
-        "parse_parquet_file() was removed in favour of the lazy "
-        "ParquetFile API. Use `from parquet_analyzer import ParquetFile`."
-    )
-
-
 def _parse_footer(
     f, file_size: int
 ) -> tuple[FileMetaData, dict[str, Any], int, dict[str, Any], dict[str, Any]]:

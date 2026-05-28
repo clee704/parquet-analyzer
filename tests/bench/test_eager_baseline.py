@@ -141,15 +141,22 @@ def test_baseline_full_parse(benchmark, request, fixture_name):
     "fixture_name", ["wide_parquet", "tall_parquet", "deep_parquet"]
 )
 def test_baseline_segments_dump(benchmark, request, fixture_name):
-    """The `--output-mode segments` workload: parse + return every segment.
-    Lazy core must not regress this -- `segments` mode genuinely needs to
-    walk the whole file."""
+    """The `--output-mode segments` workload: parse + JSON-transform every
+    segment. Lazy core must not regress this -- `segments` mode genuinely
+    needs to walk the whole file.
+
+    The per-segment ``segment_to_json`` transform is kept in the timed
+    workload so the comparison against ``0001_eager-v0.4.0`` (which had
+    the same transform inside the timed block) stays apples-to-apples.
+    """
+    from parquet_analyzer import segment_to_json
+
     path = str(request.getfixturevalue(fixture_name))
 
     def run() -> list:
         pf = ParquetFile(path)
         try:
-            return pf.all_segments()
+            return [segment_to_json(s) for s in pf.all_segments()]
         finally:
             pf.close()
 
