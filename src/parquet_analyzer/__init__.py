@@ -5,11 +5,7 @@ from ._core import (
     OffsetRecordingProtocol,
     TFileTransport,
     fill_gaps,
-    find_footer_segment,
-    get_pages,
-    get_summary,
     json_encode,
-    parse_parquet_file,
     segment_to_json,
 )
 from .decoders import (
@@ -20,11 +16,16 @@ from .decoders import (
     decode_v1_level_block,
     decompress,
 )
+from .parquet_file import ColumnChunk, Page, ParquetFile, RowGroup
 
 __all__ = [
+    "ColumnChunk",
     "DecodeStats",
     "OffsetRecordingCompactProtocol",
     "OffsetRecordingProtocol",
+    "Page",
+    "ParquetFile",
+    "RowGroup",
     "TFileTransport",
     "decode_levels",
     "decode_plain",
@@ -32,11 +33,7 @@ __all__ = [
     "decode_v1_level_block",
     "decompress",
     "fill_gaps",
-    "find_footer_segment",
-    "get_pages",
-    "get_summary",
     "json_encode",
-    "parse_parquet_file",
     "segment_to_json",
 ]
 

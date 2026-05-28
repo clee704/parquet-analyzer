@@ -142,21 +142,55 @@ Example: https://clee704.github.io/parquet-analyzer/examples/example.html
 
 `parquet-analyzer` is also a Python library. Anything the CLI does is available as an importable function, so you can build encoding-level verification scripts without shelling out.
 
-### Footer / segments / pages
+### `ParquetFile` (the primary entry point)
 
 ```python
-from parquet_analyzer import (
-    parse_parquet_file, find_footer_segment, segment_to_json,
-    get_pages, get_summary,
-)
+from parquet_analyzer import ParquetFile
 
-segments, column_offset_map = parse_parquet_file("example.parquet")
-footer = segment_to_json(find_footer_segment(segments))
-summary = get_summary(footer, segments)
-pages = get_pages(segments, column_offset_map)
+with ParquetFile("example.parquet") as pf:
+    # Footer-only — instant on any file size.
+    print(pf.num_rows, pf.num_row_groups, pf.num_columns)
+    print(pf.schema)
+    print(pf.kv_metadata_lookup("com.acme.author"))
+
+    # Walk row groups + column chunks — still footer-only, no body reads.
+    for rg in pf.row_groups:
+        for cc in rg.columns:
+            print(cc.path, cc.type, cc.encodings, cc.codec, cc.num_values)
 ```
 
-`segments` is the byte-range view (every structural element with its offset and length); use it to locate page bodies, dictionary pages, column indexes, etc. without reimplementing the thrift footer parser.
+`ParquetFile` reads only the footer on construction (a few KB at end of file). Per-row-group / per-column / per-page metadata is exposed through wrapper classes that defer expensive parsing until you actually ask for it.
+
+Two summary surfaces:
+
+- `pf.footer_summary` — cheap, footer-only (row/group/column counts, footer + file size, aggregate compressed/uncompressed column-chunk sizes).
+- `pf.full_summary` — same shape as legacy `get_summary()`, includes per-page counts (`num_pages`, `num_data_pages`, etc.). **Triggers a full eager walk.**
+
+Per-chunk lazy page walking (Phase 2):
+
+```python
+for page in pf.row_groups[0].columns[0].pages():
+    print(page.type, page.encoding, page.num_values, page.offset)
+```
+
+`columnchunk.pages()` walks only that one chunk's page headers (cached after first call) — much cheaper than the full-file walk.
+
+### Full eager walk (legacy shape)
+
+When you genuinely need the complete byte-range view of every structural element:
+
+```python
+with ParquetFile("example.parquet") as pf:
+    every_segment = pf.all_segments()       # sorted + gap-filled
+    every_page = pf.all_pages()             # per-column pages tree
+    chunk_offset_map = pf.column_offset_map # legacy parse_parquet_file()[1] shape
+```
+
+These are the only methods that trigger the full per-page Thrift walk that the legacy `parse_parquet_file()` always did. The CLI's `--output-mode segments` mode uses `pf.all_segments()`; the `default` and `html` modes use `pf.full_summary` + `pf.footer` + `pf.all_pages()`.
+
+**Breaking change in v0.5:** the free functions `parse_parquet_file()`, `get_summary()`, `get_pages()`, and `find_footer_segment()` were removed. Use the `ParquetFile` methods above as drop-in replacements.
+
+`segment_to_json`, `json_encode`, and `fill_gaps` remain as module-level utilities.
 
 ### Decoders (`parquet_analyzer.decoders`)
 

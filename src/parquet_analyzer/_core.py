@@ -38,11 +38,7 @@ __all__ = [
     "create_segment",
     "create_segment_from_offset_info",
     "fill_gaps",
-    "find_footer_segment",
-    "get_pages",
-    "get_summary",
     "json_encode",
-    "parse_parquet_file",
     "read_bloom_filter",
     "read_column_index",
     "read_offset_index",
@@ -307,8 +303,10 @@ class OffsetRecordingProtocol(TProtocol.TProtocolBase):
 
     def _annotate_enum(self) -> None:
         if self._has_parent(
-            lambda p: p["type"] in ("struct", "list")
-            and self._is_enum(p["type_class"], self._current["name"])
+            lambda p: (
+                p["type"] in ("struct", "list")
+                and self._is_enum(p["type_class"], self._current["name"])
+            )
         ):
             enum_class, name = self._get_enum(
                 self._get_parent()["type_class"], self._current["name"]
@@ -521,68 +519,107 @@ def fill_gaps(segments: list[dict[str, Any]], file_size: int):
 
 
 def parse_parquet_file(file_path: str):
-    segments: list[dict[str, Any]] = []
+    """Legacy entry point — removed in this refactor.
 
-    with open(file_path, "rb") as f:
-        # Read file header
-        f.seek(0)
-        header = f.read(4)
-        if header != b"PAR1":
-            raise ValueError("Not a valid Parquet file - missing PAR1 header")
-        segments.append(create_segment(0, 4, "magic_number", "PAR1"))
+    Use :class:`parquet_analyzer.ParquetFile` instead. The same
+    ``(segments, column_chunk_data_offsets)`` tuple is available via::
 
-        # Read footer length (last 8 bytes)
-        f.seek(-8, 2)
-        footer_size = f.read(4)
-        footer_magic = f.read(4)
-        file_size = f.tell()
-        if footer_magic != b"PAR1":
-            raise ValueError("Not a valid Parquet file - missing PAR1 footer")
-        footer_size = struct.unpack("<I", footer_size)[0]
-        segments.append(
-            create_segment(file_size - 4, file_size, "magic_number", "PAR1")
-        )
-        segments.append(
-            create_segment(file_size - 8, file_size - 4, "footer_length", footer_size)
-        )
+        from parquet_analyzer import ParquetFile
+        pf = ParquetFile(file_path)
+        segments = pf.all_segments()
+        column_offset_map = pf.column_offset_map  # the second element
 
-        # Parse footer with offset recording
-        footer_offset = file_size - 8 - footer_size
-        footer, footer_segment = read_thrift_segment(
-            f, footer_offset, "footer", FileMetaData
-        )
-        segments.append(footer_segment)
+    Lazy footer-only queries (schema, kv-metadata, per-row-group
+    metadata) are now first-class on :class:`ParquetFile` and don't
+    trigger the per-page Thrift walk that this function did.
+    """
+    raise NotImplementedError(
+        "parse_parquet_file() was removed in favour of the lazy "
+        "ParquetFile API. Use `from parquet_analyzer import ParquetFile`."
+    )
 
-        column_chunk_data_offsets: dict[Tuple[str, ...], list[dict[str, Any]]] = {}
 
-        for row_group in footer.row_groups:
-            for column_chunk in row_group.columns:
-                column_key = tuple(column_chunk.meta_data.path_in_schema)
-                offset_list = column_chunk_data_offsets.setdefault(column_key, [])
+def _parse_footer(
+    f, file_size: int
+) -> tuple[FileMetaData, dict[str, Any], int, dict[str, Any], dict[str, Any]]:
+    """Footer-only parse — used by both the lazy ParquetFile core and the
+    full eager walk.
 
-                offsets: dict[str, Any] = {}
-                offsets["pages"] = read_pages(f, column_chunk, segments)
+    Returns ``(footer_obj, footer_segment, footer_offset, header_magic_segment, trailer_segments)``
+    where ``trailer_segments`` is a dict with keys ``footer_length`` and
+    ``trailer_magic`` (the last 8 bytes' decomposition). The caller decides
+    whether to do anything else (walk pages, etc.) afterwards.
 
-                if column_chunk.column_index_offset is not None:
-                    offsets["column_index"] = read_column_index(
-                        f, column_chunk, segments
-                    )
+    Reads exactly three byte ranges from ``f``:
 
-                if column_chunk.offset_index_offset is not None:
-                    offsets["offset_index"] = read_offset_index(
-                        f, column_chunk, segments
-                    )
+    1. ``[0:4]`` — header magic ``PAR1``
+    2. ``[file_size-8:file_size]`` — footer length + trailer magic
+    3. ``[footer_offset:file_size-8]`` — the thrift FileMetaData
 
-                if column_chunk.meta_data.bloom_filter_offset is not None:
-                    offsets["bloom_filter"] = read_bloom_filter(
-                        f, column_chunk, segments
-                    )
+    No page-header, column-index, offset-index or bloom-filter parsing.
+    """
+    f.seek(0)
+    header = f.read(4)
+    if header != b"PAR1":
+        raise ValueError("Not a valid Parquet file - missing PAR1 header")
+    header_segment = create_segment(0, 4, "magic_number", "PAR1")
 
-                offset_list.append(offsets)
+    f.seek(-8, 2)
+    footer_size_bytes = f.read(4)
+    footer_magic = f.read(4)
+    if footer_magic != b"PAR1":
+        raise ValueError("Not a valid Parquet file - missing PAR1 footer")
+    footer_size = struct.unpack("<I", footer_size_bytes)[0]
+    trailer_segments = {
+        "trailer_magic": create_segment(
+            file_size - 4, file_size, "magic_number", "PAR1"
+        ),
+        "footer_length": create_segment(
+            file_size - 8, file_size - 4, "footer_length", footer_size
+        ),
+    }
 
-    segments.sort(key=lambda s: s["offset"])
-    segments = fill_gaps(segments, file_size)
-    return segments, column_chunk_data_offsets
+    footer_offset = file_size - 8 - footer_size
+    footer, footer_segment = read_thrift_segment(
+        f, footer_offset, "footer", FileMetaData
+    )
+
+    return footer, footer_segment, footer_offset, header_segment, trailer_segments
+
+
+def _walk_chunks_eager(
+    f, footer: FileMetaData, segments: list[dict[str, Any]]
+) -> dict[Tuple[str, ...], list[dict[str, Any]]]:
+    """Walk every column chunk, parsing page headers + column/offset
+    indexes + bloom filter headers. Mutates ``segments`` in place (appending
+    each parsed segment) and returns the column-chunk data-offsets map.
+
+    This is the expensive part of the original ``parse_parquet_file`` —
+    only called when the caller explicitly asks for ``all_segments()``
+    or ``all_pages()`` on a :class:`ParquetFile`.
+    """
+    column_chunk_data_offsets: dict[Tuple[str, ...], list[dict[str, Any]]] = {}
+
+    for row_group in footer.row_groups:
+        for column_chunk in row_group.columns:
+            column_key = tuple(column_chunk.meta_data.path_in_schema)
+            offset_list = column_chunk_data_offsets.setdefault(column_key, [])
+
+            offsets: dict[str, Any] = {}
+            offsets["pages"] = read_pages(f, column_chunk, segments)
+
+            if column_chunk.column_index_offset is not None:
+                offsets["column_index"] = read_column_index(f, column_chunk, segments)
+
+            if column_chunk.offset_index_offset is not None:
+                offsets["offset_index"] = read_offset_index(f, column_chunk, segments)
+
+            if column_chunk.meta_data.bloom_filter_offset is not None:
+                offsets["bloom_filter"] = read_bloom_filter(f, column_chunk, segments)
+
+            offset_list.append(offsets)
+
+    return column_chunk_data_offsets
 
 
 def segment_to_json(segment):
@@ -601,14 +638,27 @@ def segment_to_json(segment):
     return segment
 
 
-def find_footer_segment(segments: Iterable[dict[str, Any]]):
+def _find_footer_segment(segments: Iterable[dict[str, Any]]):
+    """Locate the footer segment within a segments list.
+
+    Private helper used by :class:`ParquetFile.full_summary` (after a
+    full eager walk produces a complete segments list). Not part of the
+    public API — callers reading the footer should construct a
+    :class:`ParquetFile` and use ``pf.footer_segment``.
+    """
     for s in segments:
         if s["name"] == "footer":
             return s
     return None
 
 
-def get_summary(footer: dict, segments: list[dict]) -> dict[str, Any]:
+def _compute_summary(footer: dict, segments: list[dict]) -> dict[str, Any]:
+    """Compute the full-summary dict from a parsed footer + walked segments.
+
+    Private helper backing :meth:`ParquetFile.full_summary`. Requires that
+    ``segments`` contains every page header (i.e., a full eager walk has
+    happened); otherwise the page-count fields will be wrong.
+    """
     summary: dict[str, Any] = {}
     summary["num_rows"] = footer["num_rows"]
     summary["num_row_groups"] = len(footer["row_groups"])
@@ -671,7 +721,7 @@ def get_summary(footer: dict, segments: list[dict]) -> dict[str, Any]:
     summary["offset_index_size"] = offset_index_size
     summary["bloom_filter_size"] = bloom_filter_size
 
-    footer_segment = find_footer_segment(segments)
+    footer_segment = _find_footer_segment(segments)
     if footer_segment is not None:
         summary["footer_size"] = footer_segment["length"]
     summary["file_size"] = segments[-1]["offset"] + segments[-1]["length"]
@@ -679,9 +729,16 @@ def get_summary(footer: dict, segments: list[dict]) -> dict[str, Any]:
     return summary
 
 
-def get_pages(
+def _compute_pages(
     segments: list[dict], column_chunk_data_offsets: dict[str, list[dict]]
 ) -> list[dict]:
+    """Compute the per-column pages tree from a walked segments list.
+
+    Private helper backing :meth:`ParquetFile.all_pages`. Requires that
+    ``segments`` contains every page header / column-index / offset-index /
+    bloom-filter segment (i.e., a full eager walk has happened); otherwise
+    pages will be missing from the result.
+    """
     page_offset_map: dict[int, Any] = {}
     for s in segments:
         if s["name"] in ("page", "column_index", "offset_index", "bloom_filter"):

@@ -1,8 +1,8 @@
 """Tests for :mod:`parquet_analyzer.decoders`.
 
 Strategy: round-trip through pyarrow-generated parquet files wherever possible.
-Page byte ranges are discovered with :func:`parquet_analyzer.parse_parquet_file`
-(the existing thrift parser), so tests exercise the same code path real callers
+Page byte ranges are discovered with :class:`parquet_analyzer.ParquetFile`
+(the lazy thrift parser), so tests exercise the same code path real callers
 will use. A small number of argument-validation tests do not need any bytes at
 all; the only place hand-encoded bytes appear is one LZ4-Hadoop multi-block
 test where the encoder is :mod:`cramjam` itself (not hand-rolled by us) and the
@@ -22,7 +22,7 @@ cramjam = pytest.importorskip("cramjam")
 pa = pytest.importorskip("pyarrow")
 pq = pytest.importorskip("pyarrow.parquet")
 
-from parquet_analyzer._core import parse_parquet_file
+from parquet_analyzer import ParquetFile
 from parquet_analyzer.decoders import (
     DecodeStats,
     decode_levels,
@@ -45,7 +45,11 @@ def _read_pages(path: Path) -> list[dict]:
     ``uncompressed_size``, ``compressed_size``, ``data_offset``,
     ``data_length``, ``data`` (the raw compressed bytes for this page).
     """
-    segments, _ = parse_parquet_file(str(path))
+    pf = ParquetFile(str(path))
+    try:
+        segments = pf.all_segments()
+    finally:
+        pf.close()
     file_bytes = path.read_bytes()
     pages: list[dict] = []
     for i, s in enumerate(segments):
@@ -100,7 +104,11 @@ def _first_data_page_v2(path: Path) -> dict:
     ``is_compressed`` — the page-header fields a V2 caller needs to slice
     the body into ``[rep_levels][def_levels][values]``.
     """
-    segments, _ = parse_parquet_file(str(path))
+    pf = ParquetFile(str(path))
+    try:
+        segments = pf.all_segments()
+    finally:
+        pf.close()
     file_bytes = path.read_bytes()
     for i, s in enumerate(segments):
         if s["name"] != "page":

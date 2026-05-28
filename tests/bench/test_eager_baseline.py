@@ -1,30 +1,26 @@
-"""Baseline benchmarks: eager ``parse_parquet_file`` against current code.
+"""Baseline benchmarks against the ``ParquetFile`` lazy core.
 
-These are captured **before** any lazy-core work lands. They establish
-the bar that Slice 2's lazy core has to beat for "footer-only"
-equivalents (>= 100x faster) and stay within (<= 5% regression) for the
-full-parse paths.
+These benchmarks compare against the ``eager-v0.4.0`` baseline JSON captured
+before the lazy-core refactor (PR #16's harness ran against the pre-refactor
+free-function eager pipeline). The test names are unchanged from that
+baseline so ``--benchmark-compare=0001_eager-v0.4.0`` produces a direct
+side-by-side ratio.
 
 Two parameter groups, by intent:
 
-- ``footer_only_equivalent`` -- operations a lazy core could serve from
-  the footer alone (kv-metadata lookup, schema dump, column-encoding
-  inspection). Today they all pay full-parse cost.
-- ``full_parse`` -- operations that genuinely need to walk the whole
-  file (the ``segments`` / ``html`` / ``default`` modes). The lazy
-  core must not slow these down.
+- ``footer_only_equivalent`` -- operations the lazy core can serve from the
+  footer alone (kv-metadata lookup, schema dump, column-encoding inspection).
+  Pre-refactor these paid full eager-walk cost; post-refactor they're
+  footer-only. **Target: >= 100x speedup vs baseline on `tall`.**
+- ``full_parse`` -- operations the CLI ``default`` / ``html`` / ``segments``
+  modes legitimately need (full segment list, full summary, full pages tree).
+  Lazy core must not regress these. **Target: within 5% of baseline.**
 
 Run:
 
     pytest tests/bench/ --benchmark-only
 
-To save a baseline JSON:
-
-    pytest tests/bench/ --benchmark-only \\
-        --benchmark-storage=file://tests/bench/baselines \\
-        --benchmark-save=eager-v0.4.0
-
-To compare a later run against this baseline (the leading ``0001_`` is
+To compare a later run against the v0.4.0 baseline (the leading ``0001_`` is
 pytest-benchmark's auto-prepended save-sequence prefix; the
 ``--benchmark-compare`` flag matches by prefix-anchored glob, so the
 full filename stem is required). The ``-W`` flag suppresses
@@ -42,38 +38,47 @@ from __future__ import annotations
 
 import pytest
 
-from parquet_analyzer._core import (
-    find_footer_segment,
-    get_pages,
-    get_summary,
-    parse_parquet_file,
-    segment_to_json,
-)
+from parquet_analyzer import ParquetFile
 
 
 # ---------------------------------------------------------------------------
-# Footer-only equivalents (eager today; lazy core targets >= 100x speedup)
+# Footer-only equivalents (lazy core target: >= 100x speedup on `tall`)
 # ---------------------------------------------------------------------------
 
 
-def _kv_metadata_eager(path: str) -> dict[str, str] | None:
-    """Today's path to read kv metadata: full eager parse, then walk."""
-    segments, _ = parse_parquet_file(path)
-    footer = segment_to_json(find_footer_segment(segments))
-    return footer.get("key_value_metadata")
+def _kv_metadata_lazy(path: str):
+    pf = ParquetFile(path)
+    try:
+        return pf.kv_metadata
+    finally:
+        pf.close()
 
 
-def _schema_eager(path: str) -> list:
-    segments, _ = parse_parquet_file(path)
-    footer = segment_to_json(find_footer_segment(segments))
-    return footer.get("schema", [])
+def _schema_lazy(path: str):
+    pf = ParquetFile(path)
+    try:
+        return pf.schema
+    finally:
+        pf.close()
 
 
-def _column_metadata_eager(path: str) -> list:
-    """Today's path to inspect per-column metadata for the first row group."""
-    segments, _ = parse_parquet_file(path)
-    footer = segment_to_json(find_footer_segment(segments))
-    return footer["row_groups"][0]["columns"]
+def _column_metadata_lazy(path: str):
+    pf = ParquetFile(path)
+    try:
+        # Mirror the pre-refactor `footer["row_groups"][0]["columns"]` shape
+        # by returning the first row group's column-chunk wrappers.
+        return [
+            {
+                "path": cc.path,
+                "type": cc.type,
+                "encodings": cc.encodings,
+                "codec": cc.codec,
+                "num_values": cc.num_values,
+            }
+            for cc in pf.row_groups[0].columns
+        ]
+    finally:
+        pf.close()
 
 
 @pytest.mark.benchmark(group="footer_only_equivalent")
@@ -82,7 +87,7 @@ def _column_metadata_eager(path: str) -> list:
 )
 def test_baseline_kv_metadata(benchmark, request, fixture_name):
     path = str(request.getfixturevalue(fixture_name))
-    benchmark(_kv_metadata_eager, path)
+    benchmark(_kv_metadata_lazy, path)
 
 
 @pytest.mark.benchmark(group="footer_only_equivalent")
@@ -91,7 +96,7 @@ def test_baseline_kv_metadata(benchmark, request, fixture_name):
 )
 def test_baseline_schema(benchmark, request, fixture_name):
     path = str(request.getfixturevalue(fixture_name))
-    benchmark(_schema_eager, path)
+    benchmark(_schema_lazy, path)
 
 
 @pytest.mark.benchmark(group="footer_only_equivalent")
@@ -100,7 +105,7 @@ def test_baseline_schema(benchmark, request, fixture_name):
 )
 def test_baseline_column_metadata(benchmark, request, fixture_name):
     path = str(request.getfixturevalue(fixture_name))
-    benchmark(_column_metadata_eager, path)
+    benchmark(_column_metadata_lazy, path)
 
 
 # ---------------------------------------------------------------------------
@@ -108,13 +113,18 @@ def test_baseline_column_metadata(benchmark, request, fixture_name):
 # ---------------------------------------------------------------------------
 
 
-def _full_parse(path: str) -> tuple:
-    """The complete eager pipeline used by `--output-mode default`."""
-    segments, column_offset_map = parse_parquet_file(path)
-    footer = segment_to_json(find_footer_segment(segments))
-    summary = get_summary(footer, segments)
-    pages = get_pages(segments, column_offset_map)
-    return summary, footer, pages
+def _full_parse_lazy(path: str) -> tuple:
+    """The complete pipeline used by `--output-mode default`."""
+    pf = ParquetFile(path)
+    try:
+        # Order matters: full_summary triggers the eager walk; all_pages
+        # reuses the same cached walk; footer is footer-only.
+        summary = pf.full_summary
+        footer = pf.footer
+        pages = pf.all_pages()
+        return summary, footer, pages
+    finally:
+        pf.close()
 
 
 @pytest.mark.benchmark(group="full_parse")
@@ -123,7 +133,7 @@ def _full_parse(path: str) -> tuple:
 )
 def test_baseline_full_parse(benchmark, request, fixture_name):
     path = str(request.getfixturevalue(fixture_name))
-    benchmark(_full_parse, path)
+    benchmark(_full_parse_lazy, path)
 
 
 @pytest.mark.benchmark(group="full_parse")
@@ -131,13 +141,16 @@ def test_baseline_full_parse(benchmark, request, fixture_name):
     "fixture_name", ["wide_parquet", "tall_parquet", "deep_parquet"]
 )
 def test_baseline_segments_dump(benchmark, request, fixture_name):
-    """The `--output-mode segments` workload: parse + emit every segment
-    as JSON. Lazy core must not regress this -- `segments` mode genuinely
-    needs to walk the whole file."""
+    """The `--output-mode segments` workload: parse + return every segment.
+    Lazy core must not regress this -- `segments` mode genuinely needs to
+    walk the whole file."""
     path = str(request.getfixturevalue(fixture_name))
 
     def run() -> list:
-        segments, _ = parse_parquet_file(path)
-        return [segment_to_json(s) for s in segments]
+        pf = ParquetFile(path)
+        try:
+            return pf.all_segments()
+        finally:
+            pf.close()
 
     benchmark(run)
