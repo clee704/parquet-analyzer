@@ -1,8 +1,8 @@
-"""Verb-noun subcommand handlers for the AI-friendly CLI surface (Slice 3).
+"""Verb-noun subcommand handlers for the AI-friendly CLI surface.
 
 This module wires the lazy :class:`parquet_analyzer.ParquetFile` core to a
-set of small, composable subcommands that each answer one question. See
-issue #7 for the scope and conventions this slice locks in for v1:
+set of small, composable subcommands that each answer one question. The
+v1 contract this module implements:
 
 * one subcommand → one JSON object on stdout; list-shaped outputs wrap in
   ``{items, total, returned, truncated}``
@@ -18,7 +18,7 @@ walk through :meth:`ParquetFile.all_pages` /
 :meth:`ParquetFile.all_segments`, and ``cc.num_pages`` is only consulted when
 ``cc.has_offset_index`` is true (otherwise the lookup would walk page
 headers). Page-level subcommands (``page list / header / extract / decode``)
-land in Slice 4.
+are tracked in #21.
 
 **Adding a new field to any subcommand's output?** See
 ``docs/output-principles.md`` for the v1 contract — footer-bounded and
@@ -242,8 +242,8 @@ def _column_chunk_summary(
     (``offset_index_offset`` present) AND ``cc_wrapper`` is supplied — the
     wrapper does an O(1) OffsetIndex lookup via the offset_index_length
     that the footer records. Without an OffsetIndex, computing the count
-    requires walking page headers; Slice 3 must not do that, so we report
-    ``num_pages: null`` / ``num_pages_known: false`` instead.
+    requires walking page headers; the v1 contract forbids that, so we
+    report ``num_pages: null`` / ``num_pages_known: false`` instead.
     """
     md = footer_column["meta_data"]
     path = tuple(md["path_in_schema"])

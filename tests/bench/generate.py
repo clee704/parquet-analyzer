@@ -1,7 +1,7 @@
 """Synthetic parquet fixture generator for benchmarks.
 
-Three "shapes" cover the lazy-parsing boundaries the Slice 2 work is
-about exposing — see RFC #3:
+Three "shapes" cover the lazy-parsing boundaries the lazy core (PR #18)
+is about exposing — see RFC #3:
 
 - ``wide``  — many columns, few rows (stresses per-column metadata
   walking; footer is large because it lists every column).
