@@ -142,22 +142,41 @@ or label physical byte ranges that have no logical counterpart.
 - The `$schema` URI on outputs carries the major version:
   `parquet-analyzer/v2/...`.
 
+## Derived-field policy
+
+Each fact in the file should live in **one node** in the tree.
+Convenience pull-ups (copying a field from one node to another for
+shallow-access ergonomics) are not allowed — they create two paths
+to the same fact, raise "which one is canonical?" ambiguity, and
+have no natural stopping point (if `num_rows` is pulled up, why
+not `created_by`, `schema`, …?).
+
+What IS allowed:
+
+| Category | Example | OK? |
+|---|---|---|
+| **Same-node derivation** — alternative presentation of a field this node owns | `column_chunk.path_display` is the dot-joined form of `column_chunk.path` | yes |
+| **Up-aggregation from children** — a derived value that doesn't exist as a single field anywhere; computed by summing/iterating children | `row_group.total_compressed_size` is the sum of its `column_chunk.compressed_size`s; no single field carries this | yes |
+| **Cross-node pull-up** — copying a field that already exists on another node, just for ergonomic shallow access | `file.num_rows` copying `footer.num_rows` | **no** |
+
+Verbs (the Slice 3 verb-noun surface — `file summary`, `column show`,
+etc.) compose the curated output they need from across the tree. The
+tree shouldn't pre-compose; the verbs do that work.
+
 ## The v0 kind catalog
 
 Read top-down — `file` is the root.
 
 ### `file` (branch, root)
 
-Spans the entire file. Convenience fields re-exposed from `footer`
-to save consumers a navigation step.
+Spans the entire file. The only content field is `path` (a property
+of *this parse*, not of the file content). Aggregates from other
+nodes (e.g., `footer.num_rows`) are NOT re-exposed here — see
+"Derived-field policy" below.
 
 | Field | Type | Notes |
 |---|---|---|
 | `path` | string | filesystem path used to open the file |
-| `created_by` | string \| null | re-exposed from `footer.created_by` |
-| `num_rows` | int | re-exposed from `footer.num_rows` |
-| `num_row_groups` | int | derived |
-| `num_columns` | int | derived |
 
 Logical children:
 
@@ -514,10 +533,6 @@ Also deferred:
   "_offset": 0,
   "_length": 40013,
   "path": "example.parquet",
-  "created_by": "parquet-cpp version 1.5.1-SNAPSHOT",
-  "num_rows": 891,
-  "num_row_groups": 1,
-  "num_columns": 12,
   "header_magic": {"_kind": "header_magic", "_offset": 0, "_length": 4, "_value": "PAR1"},
   "row_groups": [
     {
@@ -539,6 +554,10 @@ Also deferred:
   "trailer_magic": {"_kind": "trailer_magic", "_offset": 40009, "_length": 4, "_value": "PAR1"}
 }
 ```
+
+Note `file` carries only `path` as a content field — logical aggregates
+like `num_rows`, `created_by` live on `footer` (per the derived-field
+policy above). Consumers navigate `.footer.num_rows` or `pf.tree.footer.num_rows`.
 
 Note `row_group._offset`/`_length` describe the RowGroup thrift in
 the footer, not the on-disk data extent.
