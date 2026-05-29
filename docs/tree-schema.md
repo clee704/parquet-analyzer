@@ -12,7 +12,7 @@ contract operates on.
 
 This is **v0** — the footer-layer kinds. Body-layer kinds (sub-page
 structure: def_block, values_block, indices, dict_lookup, encoding-
-specific leaves) land in v1 alongside the body-decode work in [#21].
+specific leaves) land in v1 alongside the body-decode work in #21.
 Both versions are additive within v2.
 
 ## Universal node contract
@@ -80,7 +80,7 @@ single-leaf shape wins.
   framework. Today: `_kind`, `_offset`, `_length`, `_value`. Future:
   `_lazy`, `_error`, etc.
 - `$schema` at output root — the response-shape URI (existing JSON
-  Schema convention, carried over from Slice 3). Format:
+  Schema convention, carried over from PR #19). Format:
   `parquet-analyzer/v2/...`.
 
 All other names are kind-specific content.
@@ -164,8 +164,10 @@ Parquet's on-disk reality has two equally-real shapes:
   [arrow#43427](https://github.com/apache/arrow/issues/43427)).
 
 v0 supports both as first-class views. Same kind catalog (mostly —
-see "Layout-view-only kinds" below). The views differ in **how
-children are arranged**:
+two kinds, `column_chunk_data_region` and `unknown`, exist only in
+layout view; see "Per-kind: 'logical children' + 'physically
+contained?'" below). The views differ in **how children are
+arranged**:
 
 | | Tree view | Layout view |
 |---|---|---|
@@ -174,7 +176,7 @@ children are arranged**:
 | Non-contained logical children | Appear inline as full child nodes | Replaced by `<name>_ref` content fields carrying `{_kind, _offset, _length}`; the actual node lives at its physical position in the tree |
 | Unreferenced bytes | Don't appear (nothing logically points to them) | Appear as `unknown` leaf nodes |
 | `$schema` URI | `parquet-analyzer/v2/tree` | `parquet-analyzer/v2/layout` |
-| Verbs | `tree`, plus all Slice 3 verb-noun verbs (curated tree views) | `layout` (replaces legacy `--output-mode segments`) |
+| Verbs | `tree`, plus the existing curated verb-noun verbs (`file summary`, `column show`, etc.) — see PR #19 | `layout` (replaces legacy `--output-mode segments`) |
 
 The Python API hides the distinction — `cc.offset_index` returns
 the offset_index node regardless of which view emits the JSON.
@@ -224,9 +226,10 @@ What IS allowed:
 | **Up-aggregation from children** — a derived value that doesn't exist as a single field anywhere; computed by summing/iterating children | `row_group.total_compressed_size` is the sum of its `column_chunk.compressed_size`s; no single field carries this | yes |
 | **Cross-node pull-up** — copying a field that already exists on another node, just for ergonomic shallow access | `file.num_rows` copying `footer.num_rows` | **no** |
 
-Verbs (the Slice 3 verb-noun surface — `file summary`, `column show`,
-etc.) compose the curated output they need from across the tree. The
-tree shouldn't pre-compose; the verbs do that work.
+Verbs (the existing curated verb-noun surface — `file summary`,
+`column show`, etc.) compose the curated output they need from
+across the tree. The tree shouldn't pre-compose; the verbs do that
+work.
 
 ## The v0 kind catalog
 
@@ -400,7 +403,7 @@ range within the footer.
 
 | Field | Type | Notes |
 |---|---|---|
-| `path` | list of string | column path; flat columns have length 1 |
+| `path` | list of strings | column path; flat columns have length 1 |
 | `path_display` | string | dot-joined `path` for human display |
 | `type` | string | physical type (`INT32`, `BYTE_ARRAY`, etc.) |
 | `codec` | string | compression codec (`SNAPPY`, `UNCOMPRESSED`, ...) |
@@ -419,7 +422,7 @@ Logical children:
 |---|---|---|---|
 | `dictionary_page` | `dictionary_page` | 0 or 1 | no |
 | `pages` | `data_page_v1` \| `data_page_v2` | 0+ (array) | no |
-| `data_region` | `column_chunk_data_region` | exactly 1 (in tree view, optional; see below) | no |
+| `data_region` | `column_chunk_data_region` | view-specific (see below) | no |
 | `offset_index` | `offset_index` | 0 or 1 | no |
 | `column_index` | `column_index` | 0 or 1 | no |
 | `bloom_filter` | `bloom_filter_header` | 0 or 1 | no |
@@ -455,7 +458,7 @@ Tied back to its logical chunk via `chunk_ref` content field
 |---|---|---|
 | `chunk_ref` | object | back-pointer to the corresponding `column_chunk` node in the footer |
 | `row_group_index` | int | derived |
-| `column_index_in_row_group` | int | derived |
+| `column_position_in_row_group` | int | derived; 0-based positional index of this chunk within its row group (named to avoid collision with the `column_index` kind, which is parquet's per-page-stats thrift) |
 
 Logical children:
 
@@ -581,7 +584,7 @@ later revision. For now, consumers needing the raw bytes can use
 
 `_kind` = `"unknown"`. No content fields, no `_value`.
 
-## Out of scope for v0 (landing in v1 via [#21])
+## Out of scope for v0 (landing in v1 via #21)
 
 The following kinds will be added when the body-decode work lands:
 
@@ -713,7 +716,7 @@ footer.)
   "_length": 501,
   "chunk_ref": {"_kind": "column_chunk", "_offset": 39050, "_length": 120},
   "row_group_index": 0,
-  "column_index_in_row_group": 5,
+  "column_position_in_row_group": 5,
   "dictionary_page": {"_kind": "dictionary_page", "_offset": 24256, "_length": 20, "_lazy": true},
   "pages": [
     {"_kind": "data_page_v1", "_offset": 24276, "_length": 481, "_lazy": true}
@@ -735,6 +738,6 @@ footer.)
   documented inline; old consumers ignore the new field.
 - Breaking schema changes bump the major (v2 → v3) and require this
   doc to be reissued at the new version.
-- The body-layer kinds (v1) get added by [#21]; each kind's
+- The body-layer kinds (v1) get added by #21; each kind's
   introduction in code carries a docstring, and that docstring
   populates this doc's catalog entry.
