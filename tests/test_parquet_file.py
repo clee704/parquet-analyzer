@@ -390,7 +390,7 @@ def test_num_pages_caches_offset_index_read(nested_row_groups_parquet):
 
 
 # ---------------------------------------------------------------------------
-# Page wrapper (Phase 2 lazy walking within a chunk)
+# Page wrapper (per-chunk lazy walking within a chunk)
 # ---------------------------------------------------------------------------
 
 

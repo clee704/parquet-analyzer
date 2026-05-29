@@ -437,8 +437,9 @@ class ColumnChunk:
 
     Constructed by :attr:`RowGroup.columns`. All properties are
     footer-derived (cheap, no body reads). The :meth:`pages` accessor
-    walks per-chunk page headers on first call (Phase 2 lazy boundary —
-    cheaper than full-file walk; only this chunk's headers are parsed).
+    walks per-chunk page headers on first call (per-chunk lazy
+    boundary — cheaper than full-file walk; only this chunk's headers
+    are parsed).
     """
 
     def __init__(
