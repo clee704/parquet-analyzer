@@ -437,8 +437,9 @@ class ColumnChunk:
 
     Constructed by :attr:`RowGroup.columns`. All properties are
     footer-derived (cheap, no body reads). The :meth:`pages` accessor
-    walks per-chunk page headers on first call (Phase 2 lazy boundary —
-    cheaper than full-file walk; only this chunk's headers are parsed).
+    walks per-chunk page headers on first call (per-chunk lazy
+    boundary — cheaper than full-file walk; only this chunk's headers
+    are parsed).
     """
 
     def __init__(
@@ -510,10 +511,10 @@ class ColumnChunk:
     def has_offset_index(self) -> bool:
         """Whether this chunk has an OffsetIndex thrift struct in the file.
 
-        When ``True``, :attr:`num_pages` and (future Slice 4) ``page(index)``
-        can serve queries via a single small thrift parse without walking
-        every page header — typically 50-200 bytes per page entry in the
-        OffsetIndex.
+        When ``True``, :attr:`num_pages` (and the future ``page(index)``
+        accessor tracked in #21) can serve queries via a single small
+        thrift parse without walking every page header — typically 50-200
+        bytes per page entry in the OffsetIndex.
 
         SNPW (Spark Native Parquet Writer) writes OffsetIndex on every
         column chunk; pyarrow writes it when ``write_page_index=True`` is
@@ -555,9 +556,10 @@ class ColumnChunk:
         ``ValueError`` if the chunk has none. The cached object is
         returned on subsequent calls.
 
-        Slice 4 (#8) will expose a public ``offset_index`` property that
-        returns this object; for now it stays private since the only
-        consumer in this PR is :attr:`num_pages`.
+        A public ``offset_index`` property exposing this object is tracked
+        in #20 / #21 (the tree-model and page-subcommand work); for now
+        the accessor stays private since the only consumer is
+        :attr:`num_pages`.
         """
         if self._t.offset_index_offset is None:
             raise ValueError(
@@ -592,17 +594,16 @@ class ColumnChunk:
         """
         return self._md.statistics
 
-    # ----- Page-header walking (Phase 2 lazy boundary) ---------------------
+    # ----- Page-header walking (per-chunk lazy boundary) -------------------
 
     def pages(self) -> tuple["Page", ...]:
         """Walk this column chunk's page headers on first call; cache and
         return :class:`Page` wrappers.
 
-        Phase 2 of the lazy parsing work: per-chunk page walking is cheap
-        because it only touches one column's pages, not the whole file.
-        Page bodies are NOT read — only the per-page Thrift header is
-        parsed. Body access (raw_bytes / decompress / decode) will be added
-        with the Slice 4 CLI surface.
+        Per-chunk page walking is cheap because it only touches one
+        column's pages, not the whole file. Page bodies are NOT read —
+        only the per-page Thrift header is parsed. Body access
+        (``raw_bytes`` / ``decompress`` / ``decode``) is tracked in #21.
         """
         if self._pages_cache is None:
             pages: list[Page] = []
@@ -644,10 +645,9 @@ class Page:
     header-derived (cheap, no body reads).
 
     Page body access (``raw_bytes()``, ``decompressed_bytes()``,
-    ``decode_values()``) is intentionally not exposed in this PR — that's
-    the Slice 4 (#8) surface that wires the existing decoder primitives
-    in :mod:`parquet_analyzer.decoders` to a CLI verb. Adding it later
-    will not change any of the properties below.
+    ``decode_values()``) is tracked in #21 — it wires the existing
+    decoder primitives in :mod:`parquet_analyzer.decoders` to a CLI
+    verb. Adding it later will not change any of the properties below.
     """
 
     def __init__(

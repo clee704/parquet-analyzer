@@ -76,7 +76,7 @@ in a future release.
 > the writer already wrote (OffsetIndex, ColumnIndex, BloomFilter
 > header). Anything that would require walking per-page thrift headers
 > or reading page bodies is explicitly deferred to the `page` subcommand
-> surface (Slice 4 / #8).
+> surface (tracked in #21).
 
 ### `file` — file-level inspection
 
@@ -387,7 +387,7 @@ Two summary surfaces:
 - `pf.footer_summary` — cheap, footer-only (row/group/column counts, footer + file size, aggregate compressed/uncompressed column-chunk sizes).
 - `pf.full_summary` — same shape as legacy `get_summary()`, includes per-page counts (`num_pages`, `num_data_pages`, etc.). **Triggers a full eager walk.**
 
-Per-chunk lazy page walking (Phase 2):
+Per-chunk lazy page walking:
 
 ```python
 # How many pages does this chunk have? Fast (O(1)) if the writer included
@@ -554,7 +554,7 @@ pytest tests/bench/ --benchmark-only \
 
 Baseline files are platform-specific (CPU, Python version) — pytest-benchmark stores them under `tests/bench/baselines/<platform>/`.
 
-> **⚠️ Cross-machine comparisons are not meaningful.** The committed baseline (`eager-v0.4.0`) was captured on the maintainer's machine (Linux/CPython 3.14/x86_64, AMD EPYC 9V74). The per-platform subdirectory prevents the most obvious mismatches (Linux vs macOS, x86 vs ARM), but does **not** distinguish between CPU SKUs in the same broad category — an old i7 and a current EPYC both land in `Linux-CPython-3.14-64bit/`, with wildly different absolute numbers. When validating perf changes across the lazy-core work, **capture your own baseline before the change and compare against that**, not against the committed one. The committed baseline is useful for the maintainer's own session-to-session comparisons and as a frozen reference for the Slice 2 PR's perf claims. There's no CI gating on benchmark numbers; perf validation is operator-driven on a single machine at a time.
+> **⚠️ Cross-machine comparisons are not meaningful.** The committed baseline (`eager-v0.4.0`) was captured on the maintainer's machine (Linux/CPython 3.14/x86_64, AMD EPYC 9V74). The per-platform subdirectory prevents the most obvious mismatches (Linux vs macOS, x86 vs ARM), but does **not** distinguish between CPU SKUs in the same broad category — an old i7 and a current EPYC both land in `Linux-CPython-3.14-64bit/`, with wildly different absolute numbers. When validating perf changes against the lazy-core work, **capture your own baseline before the change and compare against that**, not against the committed one. The committed baseline is useful for the maintainer's own session-to-session comparisons and as a frozen reference for the perf claims in PR #18. There's no CI gating on benchmark numbers; perf validation is operator-driven on a single machine at a time.
 
 ### Regenerating Thrift bindings
 

@@ -4,7 +4,7 @@ Subcommand tests use ``_FakeParquetFile`` rather than real parquet files so
 they exercise the argparse wiring, dispatch, JSON envelope, and error
 contract in isolation. The fake **raises** if any eager API is touched
 (``full_summary``, ``all_pages``, ``all_segments``, ``column_offset_map``)
-to guard against accidental page walks — Slice 3's invariant is that no
+to guard against accidental page walks — the v1 contract is that no
 subcommand triggers an eager walk.
 
 End-to-end tests against real pyarrow-generated parquet files live in

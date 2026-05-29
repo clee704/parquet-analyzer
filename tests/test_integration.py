@@ -152,7 +152,7 @@ def test_main_module_invokes_cli(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# End-to-end subcommand tests against real pyarrow fixtures (Slice 3)
+# End-to-end subcommand tests against real pyarrow fixtures
 # ---------------------------------------------------------------------------
 
 
@@ -228,8 +228,9 @@ def test_subcommand_column_show_no_offset_index_marks_pages_unknown(
 ):
     """pyarrow default writes no page index — `num_pages` must NOT be reported.
 
-    This guards against accidental page-header walks in Slice 3 by
-    asserting the contract on a real file that lacks an OffsetIndex.
+    This guards against accidental page-header walks (the v1 contract
+    forbids them) by asserting the behavior on a real file that lacks
+    an OffsetIndex.
     """
     cli.main(["column", "show", str(sample_parquet), "--column", "ints"])
     payload = json.loads(capsys.readouterr().out)

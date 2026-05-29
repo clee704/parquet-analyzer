@@ -10,7 +10,7 @@ The contract behind `parquet-analyzer`'s v1 verb-noun CLI output
 > additional parse of an index thrift the writer already emitted
 > (OffsetIndex, ColumnIndex, BloomFilter header). Nothing in v1 may
 > walk per-page thrift headers or read page bodies — that's the
-> `page` subcommand surface (Slice 4 / #8).
+> `page` subcommand surface (tracked in #21).
 
 This is the one hard rule. It exists because the AI-agent and
 human-investigation use cases that motivate this tool need a
@@ -97,11 +97,11 @@ Rules for these flags:
   `<field>_known: false`, the post-walk output flips it to
   `true` (same honesty pattern, just both states now reachable).
 
-Slice 4 lands the page-walk infrastructure that makes these
-flags possible. Until then, the only escape is the Python API
-(`cc.pages()` on the wrapper).
+The page-subcommand work tracked in #21 lands the page-walk
+infrastructure that makes these flags possible. Until then, the
+only escape is the Python API (`cc.pages()` on the wrapper).
 
-## What this implies for Slice 4 (`page`)
+## What this implies for the page subcommands (#21)
 
 When the page-level subcommands land:
 
@@ -113,7 +113,7 @@ When the page-level subcommands land:
   consumer is asking for exactly that work.
 - The first per-subcommand escape-hatch flag (`column show
   --walk-pages`, and the equivalent on `column list` /
-  `rowgroup show`) lands here, since this is when the page-walk
+  `rowgroup show`) lands there, since that work is when the page-walk
   CLI infrastructure becomes available.
 - `num_pages_known: true` becomes a reachable state on
   `--walk-pages` invocations (in addition to the existing
@@ -125,5 +125,5 @@ escape hatches for everything beyond — stays the same.
 
 ---
 
-*Origin: synthesized during the Slice 3 PR (#19) discussion of
+*Origin: synthesized during the discussion in PR #19 around
 `num_pages` reporting and cross-row-group aggregates.*
