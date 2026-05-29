@@ -30,7 +30,7 @@ additionally carry:
 
 | Field | Type | Meaning |
 |---|---|---|
-| `_value` | scalar or array | the decoded value this leaf represents |
+| `_value` | scalar, array of scalars, or array of dicts | the decoded content this leaf represents — see "Leaf `_value` shapes" below |
 
 Branch nodes do **not** have `_value`. Their identity is their
 content fields and children.
@@ -39,6 +39,40 @@ Everything else on a node is **kind-specific**: content fields and
 named child nodes (or arrays of child nodes), sitting flat alongside
 the system fields. No `value` wrapper around children — the named
 keys ARE the structure.
+
+### Leaf `_value` shapes
+
+`_value` represents the leaf's decoded content. Three permitted shapes:
+
+| Shape | Example kind | Example value |
+|---|---|---|
+| Scalar (string / int / bool / float) | `header_magic`, `footer_length` | `"PAR1"`, `1162` |
+| Array of scalars | `plain_values` (v1) | `[1, 2, 3, ...]` |
+| Array of dicts | `kv_metadata`, `schema` | `[{"key": "k", "value": "v"}, ...]` |
+
+**Not permitted**: a dict-with-named-keys at the top level of
+`_value` (e.g., `_value: {"key": "k", "value": "v"}` for a single
+entry). That shape collides with branch-with-named-content-fields
+and would force the reader to disambiguate based on `_kind`. If a
+node is genuinely "one structured thing with named parts," model it
+as a branch with content fields, not a dict-`_value` leaf.
+
+**Why array-of-dicts is fine**: the array IS the leaf's content (a
+sequence). Each dict inside is uniform-shape and consumer-indexable
+— same access pattern as array-of-scalars. The leaf/branch question
+is decided at the `_kind` level: a kind whose schema says "leaf with
+array `_value`" is a leaf, full stop.
+
+This is the shape used by `kv_metadata` (list of `{key, value}`
+entries — preserves order and duplicates per parquet spec) and
+`schema` (list of `{name, type, ...}` elements — flat per parquet's
+on-disk encoding).
+
+**Future consideration**: per-entry addressability (each
+`kv_metadata` entry as its own node with `_offset`/`_length` for
+its byte range in the footer) is a viable alternative shape if a
+forensics use case ever needs it. v0 doesn't, so the simpler
+single-leaf shape wins.
 
 ### Reserved namespaces
 
@@ -57,7 +91,7 @@ All other names are kind-specific content.
 Consumers should not introspect by checking "does this node have a
 `_value`?" — they should look up the kind in this catalog and know
 the answer up front. Eliminates ambiguity (e.g., a leaf with
-`_value: {"key": "val"}` vs a branch with a child named `value`).
+`_value: [...]` vs a branch with a child named `value`).
 
 ## Lazy markers
 
@@ -232,22 +266,24 @@ Logical children:
 
 | Name | Kind | Multiplicity | Physically contained? |
 |---|---|---|---|
-| `schema` | `schema_element` | 1+ (array; first element is the root, rest are flat tree per parquet spec) | yes |
-| `kv_metadata` | `kv_metadata_entry` | 0+ (array) | yes |
+| `schema` | `schema` | exactly 1 (leaf) | yes |
+| `kv_metadata` | `kv_metadata` | exactly 1 (leaf; may have empty `_value`) | yes |
 | `row_groups` | `row_group` (metadata) | 0+ (array) | yes (RowGroup thrifts are inside the footer) |
 
-### `schema_element` (branch with no children)
+### `schema` (leaf)
 
-A single entry from the footer's flat schema list. Parquet's schema
-is encoded as a depth-first flat list where each element has a
-`num_children` count indicating its sub-tree size. v0 mirrors this
-flat shape (consumers needing the tree structure can rebuild it
-from `num_children`).
+The footer's schema list, encoded on disk as a depth-first flat list
+where each element has a `num_children` count indicating its sub-tree
+size. v0 surfaces this as a single leaf node with `_value` carrying
+the list — consumers needing the tree structure rebuild it from
+`num_children`.
 
-`_offset` / `_length` reference the byte range of this element's
-thrift encoding within the footer.
+`_offset` / `_length` reference the entire schema-list byte range
+within the footer.
 
-| Field | Type | Notes |
+`_value`: list of dicts, each shaped:
+
+| Key | Type | Notes |
 |---|---|---|
 | `name` | string | |
 | `repetition_type` | string \| null | `REQUIRED` / `OPTIONAL` / `REPEATED` (null for root) |
@@ -260,23 +296,28 @@ thrift encoding within the footer.
 | `scale` | int \| null | for DECIMAL |
 | `type_length` | int \| null | for FIXED_LEN_BYTE_ARRAY |
 
-No children. No `_value`.
+No children, no other content fields.
 
-### `kv_metadata_entry` (branch with no children)
+### `kv_metadata` (leaf)
 
-A single key-value pair from the footer's key-value metadata list.
-Parquet permits duplicate keys; the list shape preserves order and
-duplicates.
+The footer's key-value metadata list. Parquet permits duplicate
+keys; the list shape preserves order and duplicates.
 
-`_offset` / `_length` reference this entry's byte range within the
-footer.
+`_offset` / `_length` reference the entire kv_metadata-list byte
+range within the footer. When the writer emitted no kv_metadata,
+the kind is still present as a leaf with `_value: []` (the
+multiplicity-1 contract on `footer.kv_metadata` is consistent;
+the absence-vs-empty distinction is carried by `_length` and
+`_value` being empty).
 
-| Field | Type | Notes |
+`_value`: list of dicts, each shaped:
+
+| Key | Type | Notes |
 |---|---|---|
 | `key` | string | |
 | `value` | string \| null | may be null if the writer recorded a key with no value |
 
-No children. No `_value`.
+No children, no other content fields.
 
 ### `row_group` (branch)
 
