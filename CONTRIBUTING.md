@@ -11,8 +11,25 @@ humans and AI agents alike.
 PR titles should describe what the PR does, in language that
 **makes sense in `git log` years from now**.
 
-- **Keep them clean.** A title should describe the change, not its
-  position in a workflow or who asked for it.
+- **Use conventional-commit prefixes.** This repo follows the
+  [Conventional Commits](https://www.conventionalcommits.org/)
+  convention. Prefix every PR title (and squash-merge subject) with
+  one of:
+  - `feat:` — user-visible new functionality
+  - `fix:` — bug fix
+  - `docs:` — documentation only
+  - `refactor:` — code restructure with no behavior change
+  - `test:` — test-only changes
+  - `perf:` — performance work
+  - `build:` — build system, packaging, deps
+  - `ci:` — CI / GitHub Actions / pre-commit hooks
+  - `chore:` — maintenance that doesn't fit above (sweeps, cleanups,
+    version bumps)
+  Scope is optional and rarely worth it on a small repo —
+  `feat(cli):` is fine but `feat:` alone is usually enough.
+- **Keep them clean.** After the prefix, a title should describe
+  the change in plain English, not its position in a workflow or
+  who asked for it.
 - **No planning jargon.** Don't include labels that exist only
   inside a session, a planning doc, or an issue's sub-numbering
   scheme. Anything matching `Slice <N>`, `Phase <N>`, `Step <N>`,
@@ -29,8 +46,9 @@ PR titles should describe what the PR does, in language that
 |---|---|
 | `docs: tree-schema v0 — footer-layer kind catalog (Slice 4a foundation)` | `docs: tree-schema v0 — footer-layer kind catalog` |
 | `feat: verb-noun subcommands (Slice 3, closes #7)` | `feat: verb-noun subcommands` (with `Closes #7` in description) |
-| `[Phase 2] add lazy chunk walk` | `add lazy chunk walk to ColumnChunk` |
+| `[Phase 2] add lazy chunk walk` | `feat: add lazy chunk walk to ColumnChunk` |
 | `fix: handle iteration 1 review feedback` | `fix: <whatever the actual fix is>` |
+| `verb-noun subcommands` | `feat: verb-noun subcommands` (missing prefix) |
 
 ### Descriptions
 
