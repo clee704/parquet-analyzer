@@ -93,7 +93,7 @@ Consumers should not introspect by checking "does this node have a
 the answer up front. Eliminates ambiguity (e.g., a leaf with
 `_value: [...]` vs a branch with a child named `value`).
 
-## Lazy markers
+## Stubs and lazy markers
 
 Tree nodes can appear in JSON output in two forms:
 
@@ -103,17 +103,48 @@ Tree nodes can appear in JSON output in two forms:
  "num_rows": 891, "total_byte_size": 306419, "columns": [...]}
 ```
 
-**Lazy stub** — only the system fields, plus `_lazy: true`:
+**Stub** — only the system fields, no content fields, no children:
 ```json
-{"_kind": "row_group", "_offset": 4, "_length": 306419, "_lazy": true}
+{"_kind": "row_group", "_offset": 4, "_length": 306419}
 ```
 
-Stubs appear when serialization stops at a depth limit, or when a
-child node hasn't been materialized because no caller asked for it.
+A stub is recognized by absence — the kind's schema declares content
+and/or children that the stub doesn't carry. Stubs appear when
+serialization stops at a depth limit (the consumer didn't ask for
+this node's content), not when materializing would require I/O.
+
+Most footer-derived nodes are NEVER `_lazy`: `ParquetFile(path)`
+parses the entire footer thrift at construction, so `row_group`,
+`column_chunk`, `schema`, `kv_metadata`, `footer` itself, and all
+the `*_data_region` / `*_magic` / `footer_length` nodes are all
+in-memory and free to access. They appear as stubs in JSON output
+only because the consumer asked for a depth-limited view.
+
+### `_lazy: true` — genuine I/O needed
+
+A separate marker, `_lazy: true`, is reserved for nodes where
+materializing actually triggers I/O or extra thrift parsing beyond
+the footer parse. v0 has exactly 5 such kinds:
+
+- `dictionary_page`, `data_page_v1`, `data_page_v2` — each requires
+  reading a page header from disk
+- `offset_index`, `column_index`, `bloom_filter_header` — each
+  requires reading + parsing an extra thrift from disk
+
+When these nodes appear as stubs in JSON output, they carry
+`_lazy: true` to signal the materialization cost:
+
+```json
+{"_kind": "data_page_v1", "_offset": 24276, "_length": 481, "_lazy": true}
+```
+
+Without `_lazy: true`, a stub is just a depth-truncation indicator
+(no I/O cost to materialize).
 
 The Python API distinguishes these implicitly — attribute access on
-a lazy node triggers materialization. JSON output makes the
-distinction explicit via `_lazy: true`.
+any node triggers materialization if needed; the cost difference
+between footer-derived and body-accessing nodes is invisible to the
+caller (other than wall time).
 
 ## Two views: `tree` and `layout`
 
@@ -592,12 +623,12 @@ Also deferred:
       "total_compressed_size": 38839,
       "ordinal": null,
       "columns": [
-        {"_kind": "column_chunk", "_offset": 38990, "_length": 70, "_lazy": true},
-        {"_kind": "column_chunk", "_offset": 39060, "_length": 70, "_lazy": true}
+        {"_kind": "column_chunk", "_offset": 38990, "_length": 70},
+        {"_kind": "column_chunk", "_offset": 39060, "_length": 70}
       ]
     }
   ],
-  "footer": {"_kind": "footer", "_offset": 38843, "_length": 1162, "_lazy": true},
+  "footer": {"_kind": "footer", "_offset": 38843, "_length": 1162},
   "footer_length": {"_kind": "footer_length", "_offset": 39997, "_length": 4, "_value": 1162},
   "trailer_magic": {"_kind": "trailer_magic", "_offset": 40009, "_length": 4, "_value": "PAR1"}
 }
@@ -655,13 +686,13 @@ the footer, not the on-disk data extent.
   "path": "example.parquet",
   "children": [
     {"_kind": "header_magic", "_offset": 0, "_length": 4, "_value": "PAR1"},
-    {"_kind": "column_chunk_data_region", "_offset": 4, "_length": 4357, "_lazy": true,
+    {"_kind": "column_chunk_data_region", "_offset": 4, "_length": 4357,
      "chunk_ref": {"_kind": "column_chunk", "_offset": 38990, "_length": 70}},
-    {"_kind": "column_chunk_data_region", "_offset": 4361, "_length": 1051, "_lazy": true,
+    {"_kind": "column_chunk_data_region", "_offset": 4361, "_length": 1051,
      "chunk_ref": {"_kind": "column_chunk", "_offset": 39060, "_length": 70}},
     // ... more column_chunk_data_regions ...
     {"_kind": "unknown", "_offset": 38500, "_length": 343},
-    {"_kind": "footer", "_offset": 38843, "_length": 1162, "_lazy": true},
+    {"_kind": "footer", "_offset": 38843, "_length": 1162},
     {"_kind": "footer_length", "_offset": 39997, "_length": 4, "_value": 1162},
     {"_kind": "trailer_magic", "_offset": 40009, "_length": 4, "_value": "PAR1"}
   ]
