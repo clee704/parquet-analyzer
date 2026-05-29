@@ -222,12 +222,19 @@ Logical children:
 | `footer_length` | `footer_length` | exactly 1 | yes |
 | `trailer_magic` | `trailer_magic` | exactly 1 | yes |
 
-Layout view additionally has these direct children (at their
-physical positions in file-offset order):
+**View-specific shape of `file.children`:**
 
-- `column_chunk_data_region` (one per `(rg, col)` pair)
-- `offset_index`, `column_index`, `bloom_filter_header` (when present)
-- `unknown` (any unreferenced byte ranges)
+- In **tree view**, `file` exposes the named-child fields above
+  (`header_magic`, `row_groups`, `footer`, `footer_length`,
+  `trailer_magic`) — order is irrelevant; consumers navigate by
+  name.
+- In **layout view**, the named-child fields collapse into a single
+  `children` array ordered by `_offset` ascending. This array also
+  includes the nodes that aren't tree-view children of `file` but
+  ARE physical children of it: `column_chunk_data_region` (one per
+  `(rg, col)`), `offset_index` / `column_index` /
+  `bloom_filter_header` (when present), and `unknown` (any
+  unreferenced byte ranges).
 
 `_offset` = 0, `_length` = file size.
 
@@ -646,7 +653,7 @@ the footer, not the on-disk data extent.
   "_offset": 0,
   "_length": 40013,
   "path": "example.parquet",
-  "children_in_offset_order": [
+  "children": [
     {"_kind": "header_magic", "_offset": 0, "_length": 4, "_value": "PAR1"},
     {"_kind": "column_chunk_data_region", "_offset": 4, "_length": 4357, "_lazy": true,
      "chunk_ref": {"_kind": "column_chunk", "_offset": 38990, "_length": 70}},
