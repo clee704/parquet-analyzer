@@ -74,14 +74,28 @@ def build_file_layout_children(pf: "ParquetFile") -> List[Any]:
 def _gap_fill(items: list[Any], file_size: int) -> list[Any]:
     """Walk sorted children and emit ``unknown`` nodes for any gaps.
 
-    Assumes ``items`` is sorted by ``_offset`` and that no two siblings
-    overlap. Returns a new list with ``unknown`` nodes interleaved.
+    ``items`` must be sorted by ``_offset``. Enforces the layout-view
+    contract that siblings are non-overlapping and contained in
+    ``[0, file_size)``: a positive-length node starting before the running
+    cursor (an overlap) or extending past ``file_size`` raises
+    ``ValueError`` rather than emitting contract-violating JSON. Returns a
+    new list with ``unknown`` nodes interleaved over the gaps.
     """
     out: list[Any] = []
     cursor = 0
     for item in items:
         offset = _tj._offset_of(item)
         length = _tj._length_of(item)
+        if length > 0 and offset < cursor:
+            raise ValueError(
+                f"overlapping layout nodes: {_tj._kind_of(item)} at offset "
+                f"{offset} starts before the end of the previous node ({cursor})"
+            )
+        if offset + length > file_size:
+            raise ValueError(
+                f"layout node {_tj._kind_of(item)} at offset {offset} "
+                f"(length {length}) extends past file_size {file_size}"
+            )
         if offset > cursor:
             out.append(_unknown_node(cursor, offset - cursor))
         out.append(item)

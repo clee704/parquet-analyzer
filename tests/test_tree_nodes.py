@@ -323,8 +323,7 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
 #
 # Kinds that legitimately materialize to system fields only are omitted:
 # the opaque branches (offset_index / column_index / bloom_filter_header)
-# and unknown are opaque in v0, and dictionary_page has a 0-row synthetic
-# fallback that carries no content.
+# and unknown are opaque in v0.
 REQUIRED_MATERIALIZED_KEYS: dict[str, set[str]] = {
     "file": {"path"},
     "header_magic": {"_value"},
@@ -352,6 +351,15 @@ REQUIRED_MATERIALIZED_KEYS: dict[str, set[str]] = {
         "chunk_ref",
         "row_group_index",
         "column_position_in_row_group",
+    },
+    "dictionary_page": {
+        "page_type",
+        "encoding",
+        "num_values",
+        "uncompressed_size",
+        "compressed_size",
+        "is_compressed",
+        "crc",
     },
     "data_page_v1": {
         "page_type",
@@ -984,21 +992,22 @@ def test_column_chunk_thrift_extents_inside_row_group(small_parquet):
 
 
 def test_empty_file_tree_all_does_not_crash(empty_parquet):
-    """A 0-row dictionary column sets ``dictionary_page_offset`` but has
-    no page header; materializing the synthetic dictionary-page fallback
-    must not raise."""
+    """A 0-row dictionary column has a real (readable) dictionary page on
+    disk; materializing it must recover its header content, not emit a
+    stub-shaped node."""
     with ParquetFile(str(empty_parquet)) as pf:
         out = pf.to_json()  # default view="tree", depth="all"
     _assert_universal_contract(out, view="tree")
-    # The dictionary-page child materialized to system fields only.
     cc = out["row_groups"][0]["columns"][0]
     dp = cc["dictionary_page"]
     assert dp is not None
     assert dp["_kind"] == "dictionary_page"
-    # System fields only — no content keys leaked from a half-rendered node.
-    assert set(dp) == {"_kind", "_offset", "_length"}
-    # The dictionary page has real on-disk bytes; its length must reflect
-    # them (the whole compressed extent), not a fabricated 0.
+    # The dictionary page header is readable even for a 0-row column, so
+    # the materialized node carries real content (not system-fields-only).
+    assert dp["page_type"] == "DICTIONARY_PAGE"
+    assert dp["num_values"] == 0
+    assert "encoding" in dp
+    # The dictionary page has real on-disk bytes; its length reflects them.
     assert dp["_length"] > 0
 
 
@@ -1223,3 +1232,61 @@ def test_schema_node_missing_schema_raises():
     fake_pf = types.SimpleNamespace(_footer_segment={"value": []})
     with pytest.raises(ValueError, match="missing mandatory schema"):
         _tree_json._schema_node(fake_pf)
+
+
+def test_gap_fill_raises_on_overlap():
+    """_gap_fill enforces the no-overlap invariant rather than silently
+    emitting overlapping siblings."""
+    from parquet_analyzer import _layout
+
+    items = [
+        {"_kind": "footer", "_offset": 10, "_length": 20},  # [10, 30)
+        {"_kind": "footer_length", "_offset": 25, "_length": 10},  # overlaps
+    ]
+    with pytest.raises(ValueError, match="overlapping layout nodes"):
+        _layout._gap_fill(items, file_size=100)
+
+
+def test_gap_fill_raises_on_out_of_bounds():
+    """_gap_fill rejects a node extending past file_size."""
+    from parquet_analyzer import _layout
+
+    items = [{"_kind": "footer", "_offset": 90, "_length": 20}]  # ends at 110
+    with pytest.raises(ValueError, match="past file_size"):
+        _layout._gap_fill(items, file_size=100)
+
+
+def test_layout_data_region_real_dictionary_page_tiles(indexed_parquet):
+    """A non-empty dictionary column's data region is covered by a real
+    (non-null) dictionary page followed by data pages that tile the region
+    exactly."""
+    with ParquetFile(str(indexed_parquet)) as pf:
+        # Find a column chunk that actually has a dictionary page.
+        target = None
+        for rg_idx, rg in enumerate(pf.row_groups):
+            for cc in rg.columns:
+                if cc.dictionary_page_offset:
+                    target = (rg_idx, cc.dictionary_page_offset)
+                    break
+            if target:
+                break
+        assert target is not None, "fixture should have a dictionary-encoded column"
+        out = pf.to_json(view="layout", depth="all")
+    region = next(
+        c
+        for c in out["children"]
+        if c["_kind"] == "column_chunk_data_region" and c["_offset"] == target[1]
+    )
+    dp = region["dictionary_page"]
+    assert dp is not None and dp["_kind"] == "dictionary_page"
+    assert dp["_offset"] == target[1]
+    # dict page + data pages, offset-sorted, tile the region exactly.
+    children = [dp] + region["pages"]
+    children.sort(key=lambda c: c["_offset"])
+    assert children[0]["_offset"] == region["_offset"]
+    assert (
+        children[-1]["_offset"] + children[-1]["_length"]
+        == region["_offset"] + region["_length"]
+    )
+    for a, b in zip(children, children[1:]):
+        assert b["_offset"] == a["_offset"] + a["_length"], "data region not tiled"

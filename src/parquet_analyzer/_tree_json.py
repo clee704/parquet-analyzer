@@ -250,16 +250,11 @@ def _render_column_chunk(cc: "ColumnChunk", view: str, child_depth: Depth) -> di
     if view == "tree":
         # Tree view: page kinds + opaque branches as named children; no
         # data_region (per docs/tree-schema.md). null when absent.
+        dict_page, data_pages = _split_pages(cc)
         out["dictionary_page"] = (
-            _render(_dictionary_page_wrapper(cc), view, child_depth)
-            if cc.dictionary_page_offset
-            else None
+            _render(dict_page, view, child_depth) if dict_page is not None else None
         )
-        out["pages"] = [
-            _render(p, view, child_depth)
-            for p in cc.pages()
-            if _kind_of(p) != "dictionary_page"
-        ]
+        out["pages"] = [_render(p, view, child_depth) for p in data_pages]
         out["offset_index"] = (
             _render(_offset_index_node(cc), view, child_depth)
             if cc.offset_index_offset is not None
@@ -307,19 +302,7 @@ def _render_data_region(node: dict, view: str, child_depth: Depth) -> dict:
     out["chunk_ref"] = _ref_stub_from_wrapper(cc, "column_chunk")
     out["row_group_index"] = node["_row_group_index"]
     out["column_position_in_row_group"] = node["_column_position_in_row_group"]
-    pages = cc.pages()
-    dict_page = None
-    data_pages: list = []
-    for p in pages:
-        if _kind_of(p) == "dictionary_page":
-            dict_page = p
-        else:
-            data_pages.append(p)
-    if dict_page is None and cc.dictionary_page_offset:
-        # 0-row dictionary column: pages() is empty but the dictionary
-        # page exists on disk. Use the synthetic wrapper so the region's
-        # bytes are still accounted for by a child.
-        dict_page = _dictionary_page_wrapper(cc)
+    dict_page, data_pages = _split_pages(cc)
     out["dictionary_page"] = (
         _render(dict_page, view, child_depth) if dict_page is not None else None
     )
@@ -329,12 +312,6 @@ def _render_data_region(node: dict, view: str, child_depth: Depth) -> dict:
 
 def _render_dictionary_page(p: Any, _view: str, _child_depth: Depth) -> dict:
     out = _system_fields(p, "dictionary_page")
-    if isinstance(p, dict):
-        # Synthetic fallback node from ``_dictionary_page_wrapper``: the
-        # writer recorded a ``dictionary_page_offset`` but no dictionary
-        # page header was found (e.g. a 0-value column). There is no
-        # thrift to read, so emit system fields only.
-        return out
     out["page_type"] = "DICTIONARY_PAGE"
     h = p._t.dictionary_page_header
     out["encoding"] = _enum_name(h.encoding, _ENC_NAMES) if h is not None else None
@@ -567,25 +544,22 @@ def _bloom_filter_header_node(cc: "ColumnChunk") -> dict:
     }
 
 
-def _dictionary_page_wrapper(cc: "ColumnChunk") -> Any:
-    """Return the wrapper for the dictionary page, walking pages if needed.
+def _split_pages(cc: "ColumnChunk") -> tuple[Any, list]:
+    """Split a column chunk's pages into ``(dictionary_page, data_pages)``.
 
-    A 0-row dictionary column records a ``dictionary_page_offset`` but has
-    no dictionary page header (``pages()`` is empty), so fall back to a
-    synthetic node. The dictionary page is then the column's only on-disk
-    page, so its length is the whole ``total_compressed_size`` extent —
-    not 0 — which keeps the ``column_chunk_data_region`` tiled by its
-    child.
+    ``cc.pages()`` yields the dictionary page (when present) followed by the
+    data pages — including for a 0-row column, whose dictionary page is read
+    unconditionally. Returns ``(None, [...])`` when the column has no
+    dictionary page.
     """
+    dict_page = None
+    data_pages: list = []
     for p in cc.pages():
         if _kind_of(p) == "dictionary_page":
-            return p
-    return {
-        "_kind": "dictionary_page",
-        "_offset": cc.dictionary_page_offset or 0,
-        "_length": cc.total_compressed_size,
-        "_cc": cc,
-    }
+            dict_page = p
+        else:
+            data_pages.append(p)
+    return dict_page, data_pages
 
 
 # ---------------------------------------------------------------------------

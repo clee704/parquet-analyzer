@@ -734,12 +734,24 @@ class ColumnChunk:
         """
         if self._pages_cache is None:
             pages: list[Page] = []
-            remaining_values = self._md.num_values
+            f = self._pf._f
+            # The dictionary page (if present) precedes the data pages and
+            # is not counted by num_values, so read it unconditionally —
+            # including for a 0-row column, where the value-walk below never
+            # executes.
             if self._md.dictionary_page_offset:
-                offset = self._md.dictionary_page_offset
+                dict_thrift, dict_segment = read_thrift_segment(
+                    f, self._md.dictionary_page_offset, "page", _ThriftPageHeader
+                )
+                pages.append(Page(self._pf, self, dict_thrift, dict_segment))
+                offset = (
+                    dict_segment["offset"]
+                    + dict_segment["length"]
+                    + dict_thrift.compressed_page_size
+                )
             else:
                 offset = self._md.data_page_offset
-            f = self._pf._f
+            remaining_values = self._md.num_values
             while remaining_values > 0:
                 page_thrift, page_segment = read_thrift_segment(
                     f, offset, "page", _ThriftPageHeader
@@ -750,8 +762,6 @@ class ColumnChunk:
                     num_values_read = page_thrift.data_page_header.num_values
                 elif page_thrift.data_page_header_v2 is not None:
                     num_values_read = page_thrift.data_page_header_v2.num_values
-                elif page_thrift.dictionary_page_header is not None:
-                    num_values_read = 0
                 else:
                     break
                 remaining_values -= num_values_read
