@@ -314,6 +314,73 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
 }
 
 
+# Lower bound: content fields that MUST be present when a node of this kind
+# is materialized (i.e. not a stub). Complements ALLOWED_MATERIALIZED_KEYS
+# (the upper bound) so a renderer that silently drops a content field is
+# caught. View-specific children are intentionally excluded (their presence
+# is asserted by the dedicated tree/layout structural tests); these are the
+# scalar content fields that must appear in both views.
+#
+# Kinds that legitimately materialize to system fields only are omitted:
+# the opaque branches (offset_index / column_index / bloom_filter_header)
+# and unknown are opaque in v0, and dictionary_page has a 0-row synthetic
+# fallback that carries no content.
+REQUIRED_MATERIALIZED_KEYS: dict[str, set[str]] = {
+    "file": {"path"},
+    "header_magic": {"_value"},
+    "trailer_magic": {"_value"},
+    "footer_length": {"_value"},
+    "footer": {"version", "num_rows", "created_by"},
+    "schema": {"_value"},
+    "kv_metadata": {"_value"},
+    "row_group": {"num_rows", "total_byte_size", "total_compressed_size", "ordinal"},
+    "column_chunk": {
+        "path",
+        "path_display",
+        "type",
+        "codec",
+        "encodings",
+        "num_values",
+        "compressed_size",
+        "uncompressed_size",
+        "data_page_offset",
+        "dictionary_page_offset",
+        "file_offset",
+        "statistics",
+    },
+    "column_chunk_data_region": {
+        "chunk_ref",
+        "row_group_index",
+        "column_position_in_row_group",
+    },
+    "data_page_v1": {
+        "page_type",
+        "encoding",
+        "num_values",
+        "uncompressed_size",
+        "compressed_size",
+        "definition_level_encoding",
+        "repetition_level_encoding",
+        "statistics",
+        "crc",
+    },
+    "data_page_v2": {
+        "page_type",
+        "encoding",
+        "num_values",
+        "num_nulls",
+        "num_rows",
+        "is_compressed",
+        "uncompressed_size",
+        "compressed_size",
+        "definition_levels_byte_length",
+        "repetition_levels_byte_length",
+        "statistics",
+        "crc",
+    },
+}
+
+
 LAZY_KINDS = {
     "dictionary_page",
     "data_page_v1",
@@ -368,6 +435,21 @@ def _assert_universal_contract(root: dict, *, view: str) -> None:
         allowed = ALLOWED_MATERIALIZED_KEYS[kind] | {"$schema", "_lazy"}
         extra = set(node.keys()) - allowed
         assert not extra, f"{kind} node has unexpected keys {extra}; allowed {allowed}"
+        # Lower bound: a materialized node must carry its required content
+        # fields. A stub carries only system fields (+ _lazy), so skip those.
+        content_keys = set(node.keys()) - {
+            "_kind",
+            "_offset",
+            "_length",
+            "_lazy",
+            "$schema",
+        }
+        is_stub = not content_keys
+        if not is_stub and kind in REQUIRED_MATERIALIZED_KEYS:
+            missing = REQUIRED_MATERIALIZED_KEYS[kind] - set(node.keys())
+            assert not missing, (
+                f"materialized {kind} node missing required content fields {missing}"
+            )
         # Lazy markers only on lazy kinds.
         if "_lazy" in node:
             assert kind in LAZY_KINDS, f"{kind} carries _lazy but is not a lazy kind"
