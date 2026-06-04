@@ -90,7 +90,8 @@ def indexed_parquet(tmp_path):
 
 @pytest.fixture()
 def bloomy_parquet(tmp_path):
-    """File written with an explicit bloom filter for one column."""
+    """File written with an explicit bloom filter for the ``strings``
+    column, so the ``bloom_filter_header`` opaque-branch paths are live."""
     table = pa.table(
         {
             "strings": pa.array(["aa", "bb", "cc", "dd"]),
@@ -98,17 +99,13 @@ def bloomy_parquet(tmp_path):
         }
     )
     path = tmp_path / "bloomy.parquet"
-    # Use ParquetWriter so we can pass bloom_filter_columns.
-    writer = pq.ParquetWriter(
+    pq.write_table(
+        table,
         path,
-        table.schema,
         compression="snappy",
         write_page_index=True,
+        bloom_filter_options={"strings": True},
     )
-    try:
-        writer.write_table(table)
-    finally:
-        writer.close()
     return path
 
 
@@ -130,6 +127,47 @@ def empty_parquet(tmp_path):
     )
     path = tmp_path / "empty.parquet"
     pq.write_table(table, path, use_dictionary=True)
+    return path
+
+
+@pytest.fixture()
+def empty_nodict_parquet(tmp_path):
+    """A 0-row file written WITHOUT dictionary encoding.
+
+    Here ``dictionary_page_offset`` is ``None`` and ``data_page_offset``
+    is the sentinel ``0`` with ``total_compressed_size == 0`` — the column
+    has no on-disk page bytes at all. The ``column_chunk_data_region``
+    must be omitted entirely rather than placed at offset 0.
+    """
+    table = pa.table(
+        {
+            "ints": pa.array([], type=pa.int32()),
+            "strs": pa.array([], type=pa.string()),
+        }
+    )
+    path = tmp_path / "empty_nodict.parquet"
+    pq.write_table(table, path, use_dictionary=False)
+    return path
+
+
+@pytest.fixture()
+def v2_parquet(tmp_path):
+    """File written with V2 data pages so ``data_page_v2`` nodes and the
+    ``_render_data_page_v2`` path are exercised."""
+    table = pa.table(
+        {
+            "ints": pa.array([1, 2, 3, 4, 5], type=pa.int32()),
+            "strings": pa.array(["a", "b", "c", "d", "e"]),
+        }
+    )
+    path = tmp_path / "v2.parquet"
+    pq.write_table(
+        table,
+        path,
+        data_page_version="2.0",
+        use_dictionary=False,
+        compression="snappy",
+    )
     return path
 
 
@@ -894,7 +932,8 @@ def test_empty_file_layout_no_overlap_at_offset_zero(empty_parquet):
 
 @pytest.mark.parametrize("depth", [1, "all"])
 @pytest.mark.parametrize(
-    "fixture_name", ["small_parquet", "indexed_parquet", "bloomy_parquet"]
+    "fixture_name",
+    ["small_parquet", "indexed_parquet", "bloomy_parquet", "v2_parquet"],
 )
 def test_layout_invariants_across_fixtures(request, fixture_name, depth):
     """Offset-sorted / no-overlap / contiguous gap-fill must hold for
@@ -924,3 +963,106 @@ def test_offset_index_length_defaults_to_zero_when_absent(monkeypatch, indexed_p
         node = _tree_json._offset_index_node(cc)
         assert node["_length"] == 0
         assert isinstance(node["_length"], int)
+
+
+def test_empty_nodict_file_omits_data_region(empty_nodict_parquet):
+    """A 0-row column with no dictionary and no data page (total
+    compressed size 0) must not produce a zero-length
+    ``column_chunk_data_region`` at offset 0 overlapping ``header_magic``;
+    the region is omitted entirely."""
+    with ParquetFile(str(empty_nodict_parquet)) as pf:
+        layout = pf.to_json(view="layout", depth="all")
+        tree = pf.to_json(view="tree", depth="all")
+    _assert_layout_invariants(layout)
+    assert not any(
+        c["_kind"] == "column_chunk_data_region" for c in layout["children"]
+    ), "empty column should contribute no data region"
+    # Each column_chunk (rendered inside footer in layout view) has a null
+    # data_region_ref.
+    ccs = [n for n in _iter_nodes(layout) if n.get("_kind") == "column_chunk"]
+    assert ccs, "expected column_chunk nodes inside footer"
+    assert all(cc["data_region_ref"] is None for cc in ccs)
+    # Tree view still serializes without crashing.
+    _assert_universal_contract(tree, view="tree")
+
+
+def test_bloom_filter_header_present_in_both_views(bloomy_parquet):
+    """The bloom-filter fixture actually writes a bloom filter, so the
+    ``bloom_filter_header`` node appears in both views."""
+    with ParquetFile(str(bloomy_parquet)) as pf:
+        strings_cc = next(
+            cc for cc in pf.row_groups[0].columns if cc.path[-1] == "strings"
+        )
+        assert strings_cc.bloom_filter_offset is not None, (
+            "fixture must write a real bloom filter"
+        )
+        tree = pf.to_json(view="tree", depth="all")
+        layout = pf.to_json(view="layout", depth="all")
+    strings_node = next(
+        cc for cc in tree["row_groups"][0]["columns"] if cc["path"][-1] == "strings"
+    )
+    bf = strings_node["bloom_filter"]
+    assert bf is not None and bf["_kind"] == "bloom_filter_header"
+    assert "bloom_filter_header" in {c["_kind"] for c in layout["children"]}
+
+
+def test_bloom_filter_header_lazy_when_stubbed(bloomy_parquet):
+    """The ``bloom_filter_header`` opaque branch carries ``_lazy: true``
+    when stubbed and drops it when materialized."""
+    with ParquetFile(str(bloomy_parquet)) as pf:
+        shallow = pf.to_json(view="tree", depth=3)
+        deep = pf.to_json(view="tree", depth="all")
+    stub = next(
+        n for n in _iter_nodes(shallow) if n.get("_kind") == "bloom_filter_header"
+    )
+    assert stub.get("_lazy") is True
+    mat = next(n for n in _iter_nodes(deep) if n.get("_kind") == "bloom_filter_header")
+    assert "_lazy" not in mat
+
+
+def test_data_page_v2_contract_and_fields(v2_parquet):
+    """A V2-page file exercises ``_render_data_page_v2`` (V2-only fields)
+    and the ``DATA_PAGE_V2`` ``Page._kind`` branch."""
+    with ParquetFile(str(v2_parquet)) as pf:
+        tree = pf.to_json(view="tree", depth="all")
+        layout = pf.to_json(view="layout", depth="all")
+    _assert_universal_contract(tree, view="tree")
+    _assert_universal_contract(layout, view="layout")
+    v2_nodes = [n for n in _iter_nodes(tree) if n.get("_kind") == "data_page_v2"]
+    assert v2_nodes, "expected data_page_v2 nodes in a V2 file"
+    node = v2_nodes[0]
+    for key in (
+        "page_type",
+        "num_nulls",
+        "num_rows",
+        "is_compressed",
+        "definition_levels_byte_length",
+        "repetition_levels_byte_length",
+    ):
+        assert key in node, f"data_page_v2 missing V2 field {key!r}"
+    assert node["page_type"] == "DATA_PAGE_V2"
+
+
+def test_gap_fill_emits_unknown_nodes_for_gaps():
+    """``_gap_fill`` fills leading, interior, and trailing gaps with
+    ``unknown`` nodes, and ``_render_unknown`` materializes them to system
+    fields only. Real pyarrow files have no gaps, so this is unit-tested
+    directly on synthetic extents."""
+    from parquet_analyzer import _layout, _tree_json
+
+    items = [
+        {"_kind": "footer", "_offset": 10, "_length": 20},
+        {"_kind": "footer_length", "_offset": 50, "_length": 10},
+    ]
+    filled = _layout._gap_fill(items, file_size=100)
+    assert [(n["_kind"], n["_offset"], n["_length"]) for n in filled] == [
+        ("unknown", 0, 10),
+        ("footer", 10, 20),
+        ("unknown", 30, 20),
+        ("footer_length", 50, 10),
+        ("unknown", 60, 40),
+    ]
+    rendered = _tree_json._render(
+        {"_kind": "unknown", "_offset": 0, "_length": 10}, "layout", "all"
+    )
+    assert rendered == {"_kind": "unknown", "_offset": 0, "_length": 10}

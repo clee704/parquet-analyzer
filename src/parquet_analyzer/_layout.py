@@ -45,11 +45,13 @@ def build_file_layout_children(pf: "ParquetFile") -> List[Any]:
     items.append(_tj._trailer_magic_node(pf))
 
     # Per-column-chunk physical regions. Each column may contribute up
-    # to four physical regions: the data region (always present), the
-    # offset index, the column index, and the bloom filter header.
+    # to four physical regions: the data region (present when the column
+    # has on-disk page bytes), the offset index, the column index, and the
+    # bloom filter header.
     for rg_idx, rg in enumerate(pf.row_groups):
         for cc in rg.columns:
-            items.append(_tj._data_region_node(cc, rg_idx))
+            if _tj._has_physical_data_region(cc):
+                items.append(_tj._data_region_node(cc, rg_idx))
             if cc.offset_index_offset is not None:
                 items.append(_tj._offset_index_node(cc))
             if cc.column_index_offset is not None:

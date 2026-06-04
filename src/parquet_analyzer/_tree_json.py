@@ -278,8 +278,10 @@ def _render_column_chunk(cc: "ColumnChunk", view: str, child_depth: Depth) -> di
     else:
         # Layout view: refs (stubs) to the nodes' physical positions; no
         # children array (the data lives elsewhere in the file tree).
-        out["data_region_ref"] = _ref_stub(
-            _data_region_node(cc, _row_group_index_of(cc))
+        out["data_region_ref"] = (
+            _ref_stub(_data_region_node(cc, _row_group_index_of(cc)))
+            if _has_physical_data_region(cc)
+            else None
         )
         out["offset_index_ref"] = (
             _ref_stub(_offset_index_node(cc))
@@ -505,17 +507,29 @@ def _kv_metadata_node(pf: "ParquetFile") -> dict:
     }
 
 
+def _has_physical_data_region(cc: "ColumnChunk") -> bool:
+    """Whether the column chunk has on-disk page bytes.
+
+    True iff it has a truthy dictionary-page or data-page offset. A 0-row
+    column can have neither — ``data_page_offset`` is the required-field
+    sentinel ``0`` and ``dictionary_page_offset`` is ``None`` — in which
+    case there is no ``column_chunk_data_region`` to place (placing a
+    zero-length region at offset 0 would overlap ``header_magic``).
+    """
+    return bool(cc.dictionary_page_offset) or bool(cc.data_page_offset)
+
+
 def _data_region_node(cc: "ColumnChunk", row_group_index: int) -> dict:
     dict_offset = cc.dictionary_page_offset
     data_offset = cc.data_page_offset
     # ``data_page_offset`` is a required thrift field, but pyarrow writes
     # 0 for a 0-row column (no data page); ``dictionary_page_offset`` is
     # optional. A real page can never sit at byte 0 (PAR1 occupies
-    # [0, 4)), so treat any 0/None offset as "absent" and start the region
-    # at the first real page offset. Falling back to ``data_offset`` keeps
-    # the truly-empty case (no pages at all) at its declared offset.
+    # [0, 4)), so the region starts at the first page offset that is > 0.
+    # Callers must gate on ``_has_physical_data_region`` first, which
+    # guarantees at least one such offset.
     page_offsets = [o for o in (dict_offset, data_offset) if o]
-    start = min(page_offsets) if page_offsets else (data_offset or 0)
+    start = min(page_offsets)
     return {
         "_kind": "column_chunk_data_region",
         "_offset": start,
