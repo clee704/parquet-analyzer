@@ -322,6 +322,12 @@ def _render_data_region(node: dict, view: str, child_depth: Depth) -> dict:
 
 def _render_dictionary_page(p: Any, _view: str, _child_depth: Depth) -> dict:
     out = _system_fields(p, "dictionary_page")
+    if isinstance(p, dict):
+        # Synthetic fallback node from ``_dictionary_page_wrapper``: the
+        # writer recorded a ``dictionary_page_offset`` but no dictionary
+        # page header was found (e.g. a 0-value column). There is no
+        # thrift to read, so emit system fields only.
+        return out
     out["page_type"] = "DICTIONARY_PAGE"
     h = p._t.dictionary_page_header
     out["encoding"] = _enum_name(h.encoding, _ENC_NAMES) if h is not None else None
@@ -502,10 +508,14 @@ def _kv_metadata_node(pf: "ParquetFile") -> dict:
 def _data_region_node(cc: "ColumnChunk", row_group_index: int) -> dict:
     dict_offset = cc.dictionary_page_offset
     data_offset = cc.data_page_offset
-    if dict_offset is not None and dict_offset > 0:
-        start = min(dict_offset, data_offset)
-    else:
-        start = data_offset
+    # ``data_page_offset`` is a required thrift field, but pyarrow writes
+    # 0 for a 0-row column (no data page); ``dictionary_page_offset`` is
+    # optional. A real page can never sit at byte 0 (PAR1 occupies
+    # [0, 4)), so treat any 0/None offset as "absent" and start the region
+    # at the first real page offset. Falling back to ``data_offset`` keeps
+    # the truly-empty case (no pages at all) at its declared offset.
+    page_offsets = [o for o in (dict_offset, data_offset) if o]
+    start = min(page_offsets) if page_offsets else (data_offset or 0)
     return {
         "_kind": "column_chunk_data_region",
         "_offset": start,
@@ -520,7 +530,7 @@ def _offset_index_node(cc: "ColumnChunk") -> dict:
     return {
         "_kind": "offset_index",
         "_offset": cc.offset_index_offset,
-        "_length": cc._t.offset_index_length,
+        "_length": cc._t.offset_index_length or 0,
         "_cc": cc,
     }
 

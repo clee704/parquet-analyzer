@@ -112,6 +112,27 @@ def bloomy_parquet(tmp_path):
     return path
 
 
+@pytest.fixture()
+def empty_parquet(tmp_path):
+    """A 0-row dictionary-encoded file.
+
+    pyarrow records ``dictionary_page_offset`` (truthy) but writes no
+    data page, so ``data_page_offset == 0`` and ``ColumnChunk.pages()``
+    returns ``()``. This is the geometry that exposed the
+    ``column_chunk_data_region`` offset-0 overlap and the synthetic
+    dictionary-page render crash.
+    """
+    table = pa.table(
+        {
+            "ints": pa.array([], type=pa.int32()),
+            "strs": pa.array([], type=pa.string()),
+        }
+    )
+    path = tmp_path / "empty.parquet"
+    pq.write_table(table, path, use_dictionary=True)
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Per-kind allowed-key catalog
 # ---------------------------------------------------------------------------
@@ -324,6 +345,23 @@ def _assert_universal_contract(root: dict, *, view: str) -> None:
             assert "_value" not in node, f"branch kind {kind} should not carry _value"
         if not seen_root:
             seen_root = True
+
+
+def _assert_layout_invariants(out: dict) -> None:
+    """Assert the layout-view ``children`` are offset-sorted, free of
+    overlaps, and exactly contiguous (gap-filled) across ``[0, file)``."""
+    children = out["children"]
+    offsets = [c["_offset"] for c in children]
+    assert offsets == sorted(offsets), f"layout children not offset-sorted: {offsets}"
+    assert children[0]["_offset"] == 0, "first layout child must start at offset 0"
+    assert children[-1]["_offset"] + children[-1]["_length"] == out["_length"], (
+        "last layout child must end at file end"
+    )
+    for a, b in zip(children, children[1:]):
+        assert b["_offset"] == a["_offset"] + a["_length"], (
+            f"non-contiguous: {a['_kind']}@{a['_offset']}+{a['_length']} "
+            f"then {b['_kind']}@{b['_offset']} (overlap or unfilled gap)"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -817,3 +855,72 @@ def test_column_chunk_thrift_extents_inside_row_group(small_parquet):
         for cc in rg.columns:
             assert rg._offset <= cc._offset
             assert cc._offset + cc._length <= rg._offset + rg._length
+
+
+# ---------------------------------------------------------------------------
+# Empty / 0-row files (regression: data-region offset-0 overlap + synthetic
+# dictionary-page render crash)
+# ---------------------------------------------------------------------------
+
+
+def test_empty_file_tree_all_does_not_crash(empty_parquet):
+    """A 0-row dictionary column sets ``dictionary_page_offset`` but has
+    no page header; materializing the synthetic dictionary-page fallback
+    must not raise."""
+    with ParquetFile(str(empty_parquet)) as pf:
+        out = pf.to_json()  # default view="tree", depth="all"
+    _assert_universal_contract(out, view="tree")
+    # The dictionary-page child materialized to system fields only.
+    cc = out["row_groups"][0]["columns"][0]
+    dp = cc["dictionary_page"]
+    assert dp is not None
+    assert dp["_kind"] == "dictionary_page"
+    # System fields only — no content keys leaked from a half-rendered node.
+    assert set(dp) == {"_kind", "_offset", "_length"}
+
+
+def test_empty_file_layout_no_overlap_at_offset_zero(empty_parquet):
+    """The ``data_page_offset == 0`` sentinel must not place a
+    ``column_chunk_data_region`` at byte 0 overlapping ``header_magic``."""
+    with ParquetFile(str(empty_parquet)) as pf:
+        out = pf.to_json(view="layout", depth="all")
+    _assert_layout_invariants(out)
+    region = next(
+        c for c in out["children"] if c["_kind"] == "column_chunk_data_region"
+    )
+    # Region starts at the dictionary page (offset 4), never at byte 0.
+    assert region["_offset"] >= 4
+
+
+@pytest.mark.parametrize("depth", [1, "all"])
+@pytest.mark.parametrize(
+    "fixture_name", ["small_parquet", "indexed_parquet", "bloomy_parquet"]
+)
+def test_layout_invariants_across_fixtures(request, fixture_name, depth):
+    """Offset-sorted / no-overlap / contiguous gap-fill must hold for
+    every fixture at both a shallow and a full depth — not just
+    ``small_parquet`` at depth 1."""
+    path = request.getfixturevalue(fixture_name)
+    with ParquetFile(str(path)) as pf:
+        out = pf.to_json(view="layout", depth=depth)
+    _assert_layout_invariants(out)
+
+
+def test_offset_index_length_defaults_to_zero_when_absent(monkeypatch, indexed_parquet):
+    """A writer that records ``offset_index_offset`` without
+    ``offset_index_length`` must still yield an int ``_length`` (0), not
+    ``None`` — otherwise the universal contract and ``_gap_fill``
+    arithmetic break."""
+    from parquet_analyzer import _tree_json
+
+    with ParquetFile(str(indexed_parquet)) as pf:
+        cc = next(
+            c
+            for rg in pf.row_groups
+            for c in rg.columns
+            if c.offset_index_offset is not None
+        )
+        monkeypatch.setattr(cc._t, "offset_index_length", None, raising=False)
+        node = _tree_json._offset_index_node(cc)
+        assert node["_length"] == 0
+        assert isinstance(node["_length"], int)
