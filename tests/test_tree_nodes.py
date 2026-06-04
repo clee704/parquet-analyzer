@@ -915,6 +915,26 @@ def test_empty_file_tree_all_does_not_crash(empty_parquet):
     assert dp["_kind"] == "dictionary_page"
     # System fields only — no content keys leaked from a half-rendered node.
     assert set(dp) == {"_kind", "_offset", "_length"}
+    # The dictionary page has real on-disk bytes; its length must reflect
+    # them (the whole compressed extent), not a fabricated 0.
+    assert dp["_length"] > 0
+
+
+def test_empty_file_layout_data_region_tiled_by_dictionary_page(empty_parquet):
+    """A 0-row dictionary column's data region is covered by its synthetic
+    dictionary-page child: pages() is empty, but the dictionary page's
+    bytes are still accounted for, so the region does not span bytes with
+    no child."""
+    with ParquetFile(str(empty_parquet)) as pf:
+        out = pf.to_json(view="layout", depth="all")
+    region = next(
+        c for c in out["children"] if c["_kind"] == "column_chunk_data_region"
+    )
+    dp = region["dictionary_page"]
+    assert dp is not None and dp["_kind"] == "dictionary_page"
+    # The dictionary page exactly tiles the data region (no uncovered bytes).
+    assert dp["_offset"] == region["_offset"]
+    assert dp["_offset"] + dp["_length"] == region["_offset"] + region["_length"]
 
 
 def test_empty_file_layout_no_overlap_at_offset_zero(empty_parquet):

@@ -315,6 +315,11 @@ def _render_data_region(node: dict, view: str, child_depth: Depth) -> dict:
             dict_page = p
         else:
             data_pages.append(p)
+    if dict_page is None and cc.dictionary_page_offset:
+        # 0-row dictionary column: pages() is empty but the dictionary
+        # page exists on disk. Use the synthetic wrapper so the region's
+        # bytes are still accounted for by a child.
+        dict_page = _dictionary_page_wrapper(cc)
     out["dictionary_page"] = (
         _render(dict_page, view, child_depth) if dict_page is not None else None
     )
@@ -567,7 +572,10 @@ def _dictionary_page_wrapper(cc: "ColumnChunk") -> Any:
 
     A 0-row dictionary column records a ``dictionary_page_offset`` but has
     no dictionary page header (``pages()`` is empty), so fall back to a
-    synthetic stub-only node the renderer can still emit.
+    synthetic node. The dictionary page is then the column's only on-disk
+    page, so its length is the whole ``total_compressed_size`` extent —
+    not 0 — which keeps the ``column_chunk_data_region`` tiled by its
+    child.
     """
     for p in cc.pages():
         if _kind_of(p) == "dictionary_page":
@@ -575,7 +583,7 @@ def _dictionary_page_wrapper(cc: "ColumnChunk") -> Any:
     return {
         "_kind": "dictionary_page",
         "_offset": cc.dictionary_page_offset or 0,
-        "_length": 0,
+        "_length": cc.total_compressed_size,
         "_cc": cc,
     }
 
