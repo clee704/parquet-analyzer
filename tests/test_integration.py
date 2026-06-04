@@ -268,3 +268,18 @@ def test_subcommand_legacy_invocation_still_works(sample_parquet, capsys):
     payload = json.loads(capsys.readouterr().out)
     assert isinstance(payload, list)
     assert payload[0]["name"] == "magic_number"
+
+
+def test_cli_html_output_mode(sample_parquet, capsys):
+    """The --output-mode html CLI path renders an HTML report to stdout."""
+    cli.main([str(sample_parquet), "--output-mode", "html"])
+    out = capsys.readouterr().out
+    assert "<html" in out.lower() or "<table" in out.lower()
+
+
+def test_cli_html_output_to_file(sample_parquet, tmp_path, capsys):
+    """The --output path writes the report to a file instead of stdout."""
+    dest = tmp_path / "report.html"
+    cli.main([str(sample_parquet), "--output-mode", "html", "--output", str(dest)])
+    assert dest.exists()
+    assert "<html" in dest.read_text().lower() or "<table" in dest.read_text().lower()

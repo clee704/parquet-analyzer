@@ -103,12 +103,56 @@ introducing new node kinds.
 
 - `hatch run dev:check` runs format + lint + type-check + tests +
   coverage. PRs should leave it green.
-- Coverage gate is **90%** (enforced in `pyproject.toml`). New code
-  should not regress it.
+- **Coverage is gated per module, not in total** (enforced by
+  `scripts/check_coverage.py`, wired into `dev:check`). Every module
+  must independently meet a **95%** line-coverage floor. A per-module
+  gate is deliberately stricter than a total gate: a well-tested module
+  can't mask an under-tested one by averaging.
+  - New modules are gated automatically at 95% — there is no way to add
+    code that silently escapes the floor.
+  - A module that is legitimately below the floor (legacy code not yet
+    covered) must be listed in `KNOWN_GAPS` in
+    `scripts/check_coverage.py`, pinned to a **baseline that may only
+    ratchet up** and a **tracking issue**. Coverage dropping below a
+    recorded baseline fails the gate. When a gap module reaches 95%, it
+    must be removed from `KNOWN_GAPS`. These entries are tracked,
+    temporary debt — not permanent exemptions.
+- **Tests must assert behavior, not merely execute lines.** Coverage is
+  a floor, not a goal; a test that runs a code path without asserting
+  its observable result (returned value, emitted JSON/tree shape, raised
+  error) does not count as covering it. For the serializer/layout code
+  especially, assert on the emitted structure, not just that it didn't
+  crash.
 - Benchmarks live in `tests/bench/` and are excluded from the
   default test run. Run explicitly with `pytest tests/bench/
   --benchmark-only`. Bench numbers are operator-driven on a single
   machine at a time — there's no CI gating on them.
+
+## Refactoring and tech debt
+
+This codebase does not accept tech debt as a cost of shipping. The
+final state of a change must look like it was designed cleanly from the
+start, not like the path the author took to get there. Before opening a
+PR, refactor within the boundary of what you changed so that **none of
+the following remain**:
+
+- **Dead code** — branches, helpers, or fallbacks that can't execute
+  given how callers now use them. Remove them. If a defensive guard is
+  genuinely needed for malformed input, make it raise (and test it), not
+  fabricate plausible-looking placeholder values.
+- **Untested compatibility branches** — an `if`/`else` added to handle
+  an edge case must have a test that exercises it, or it doesn't belong.
+- **Duplication introduced by the change** — repeated logic across
+  near-identical functions should be factored once the third copy
+  appears, unless a comment justifies why not.
+- **Path-dependent residue** — comments or docstrings describing the
+  development chronology ("originally we…", "for now…", "extremely
+  unusual"), abandoned approaches, or session/review-round framing.
+  Describe the final behavior instead.
+
+This applies to the diff you are submitting, not the whole repository:
+clean up what you touched, and file an issue for pre-existing debt you
+notice but can't fix in scope.
 
 ## Issues
 
