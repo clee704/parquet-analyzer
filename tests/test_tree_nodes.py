@@ -1066,3 +1066,58 @@ def test_gap_fill_emits_unknown_nodes_for_gaps():
         {"_kind": "unknown", "_offset": 0, "_length": 10}, "layout", "all"
     )
     assert rendered == {"_kind": "unknown", "_offset": 0, "_length": 10}
+
+
+# ---------------------------------------------------------------------------
+# Malformed-footer guards (footer-segment / thrift inconsistency)
+# ---------------------------------------------------------------------------
+
+
+def test_row_group_extent_count_mismatch_raises():
+    """A footer segment whose row-group element count disagrees with the
+    parsed thrift is an internal inconsistency and must fail loudly, not
+    fabricate placeholder extents."""
+    from parquet_analyzer.parquet_file import _extract_row_group_extents
+
+    # Segment has no row_groups field (-> 0 elements) but thrift has 2.
+    with pytest.raises(ValueError, match="row-group count mismatch"):
+        _extract_row_group_extents({"value": []}, [object(), object()])
+
+
+def test_column_chunk_extent_missing_row_group_raises():
+    """Requesting column extents for a row-group index the footer segment
+    doesn't contain must raise rather than fabricate placeholders."""
+    from parquet_analyzer.parquet_file import _extract_column_chunk_extents
+
+    with pytest.raises(ValueError, match="missing extents for row group 0"):
+        _extract_column_chunk_extents({"value": []}, 0, [object()])
+
+
+def test_column_chunk_extent_count_mismatch_raises():
+    """A row-group segment whose column count disagrees with the thrift
+    must raise."""
+    from parquet_analyzer.parquet_file import _extract_column_chunk_extents
+
+    footer_segment = {
+        "value": [
+            {
+                "name": "row_groups",
+                "value": [{"name": "rg", "value": [{"name": "columns", "value": []}]}],
+            }
+        ]
+    }
+    # Segment row group 0 has 0 columns, thrift has 1.
+    with pytest.raises(ValueError, match="column-chunk count mismatch"):
+        _extract_column_chunk_extents(footer_segment, 0, [object()])
+
+
+def test_schema_node_missing_schema_raises():
+    """Schema is mandatory per the parquet spec; a footer segment lacking
+    it must fail loudly rather than emit a fabricated zero-length node."""
+    import types
+
+    from parquet_analyzer import _tree_json
+
+    fake_pf = types.SimpleNamespace(_footer_segment={"value": []})
+    with pytest.raises(ValueError, match="missing mandatory schema"):
+        _tree_json._schema_node(fake_pf)

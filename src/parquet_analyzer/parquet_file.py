@@ -48,6 +48,7 @@ from parquet.ttypes import (
 from ._core import (
     _compute_pages,
     _compute_summary,
+    _find_field,
     _parse_footer,
     _walk_chunks_eager,
     fill_gaps,
@@ -269,7 +270,8 @@ class ParquetFile:
             rg_thrifts = self._footer_thrift.row_groups or []
             extents = _extract_row_group_extents(self._footer_segment, rg_thrifts)
             self._row_groups_cache = tuple(
-                RowGroup(self, rg, ext) for rg, ext in zip(rg_thrifts, extents)
+                RowGroup(self, rg, ext, idx)
+                for idx, (rg, ext) in enumerate(zip(rg_thrifts, extents))
             )
         return self._row_groups_cache
 
@@ -416,6 +418,7 @@ class RowGroup:
         parquet_file: "ParquetFile",
         thrift_obj: _ThriftRowGroup,
         extent: tuple[int, int],
+        index: int,
     ) -> None:
         self._pf = parquet_file
         self._t = thrift_obj
@@ -424,6 +427,9 @@ class RowGroup:
         # at construction time from the footer-segment walk so that
         # tree-node access is free.
         self._extent = extent
+        # Position of this row group in the footer's row_groups list;
+        # used to locate its column-chunk extents in the footer segment.
+        self._rg_index = index
         self._columns_cache: tuple[ColumnChunk, ...] | None = None
 
     def __repr__(self) -> str:
@@ -446,7 +452,7 @@ class RowGroup:
         if self._columns_cache is None:
             cc_thrifts = self._t.columns or []
             cc_extents = _extract_column_chunk_extents(
-                self._pf._footer_segment, self._pf._footer_thrift, self, cc_thrifts
+                self._pf._footer_segment, self._rg_index, cc_thrifts
             )
             self._columns_cache = tuple(
                 ColumnChunk(self._pf, self, cc, ext)
@@ -893,33 +899,20 @@ class Page:
 # ---------------------------------------------------------------------------
 
 
-def _find_field(struct_segment: dict, field_name: str) -> dict | None:
-    """Locate a named field child within a struct-typed segment recorded
-    by :class:`OffsetRecordingProtocol`. Returns ``None`` when absent."""
-    for child in struct_segment.get("value", []) or []:
-        if isinstance(child, dict) and child.get("name") == field_name:
-            return child
-    return None
-
-
 def _extract_row_group_extents(
     footer_segment: dict, rg_thrifts: list
 ) -> list[tuple[int, int]]:
     """Return ``(offset, length)`` for each row group's thrift struct
     inside the footer.
 
-    Walks the offset-recorded footer segment to locate the
-    ``row_groups`` list and pull each element's ``offset`` / ``length``.
-    Falls back to a footer-end zero-length placeholder if the segment
-    walk can't find the row-groups field (extremely unusual; would
-    indicate a malformed footer that thrift still parsed somehow).
+    Walks the offset-recorded footer segment to locate the ``row_groups``
+    list and pull each element's ``offset`` / ``length``. Raises
+    ``ValueError`` if the segment's row-group count doesn't match the
+    parsed thrift — an internal inconsistency between the thrift decode
+    and the offset recorder, never expected for a well-formed footer.
     """
     field = _find_field(footer_segment, "row_groups")
-    if field is None:
-        # No row_groups field in segment — fall back to zero-length
-        # placeholders so the tree-node interface still has values.
-        return [(0, 0) for _ in rg_thrifts]
-    elements = field.get("value", []) or []
+    elements = (field.get("value") if field else None) or []
     if len(elements) != len(rg_thrifts):
         raise ValueError(
             f"row-group count mismatch: footer segment has {len(elements)} "
@@ -930,36 +923,26 @@ def _extract_row_group_extents(
 
 def _extract_column_chunk_extents(
     footer_segment: dict,
-    footer_thrift,
-    row_group: "RowGroup",
+    rg_index: int,
     cc_thrifts: list,
 ) -> list[tuple[int, int]]:
     """Return ``(offset, length)`` for each column chunk's thrift struct
-    inside the footer for the given row group.
+    inside the footer, for the row group at ``rg_index``.
 
-    Walks the footer segment to locate the matching row-group element
-    (by index in ``footer_thrift.row_groups``), then its ``columns``
-    list, then each element's ``offset`` / ``length``.
+    Walks the footer segment to the row-group element at ``rg_index``,
+    then its ``columns`` list. Raises ``ValueError`` if the segment lacks
+    that row group or its column count doesn't match the parsed thrift —
+    an internal inconsistency never expected for a well-formed footer.
     """
-    rg_thrifts = footer_thrift.row_groups or []
-    rg_index = None
-    for i, rg_thrift in enumerate(rg_thrifts):
-        if rg_thrift is row_group._t:
-            rg_index = i
-            break
-    if rg_index is None:
-        return [(0, 0) for _ in cc_thrifts]
     rg_field = _find_field(footer_segment, "row_groups")
-    if rg_field is None:
-        return [(0, 0) for _ in cc_thrifts]
-    rg_elements = rg_field.get("value", []) or []
+    rg_elements = (rg_field.get("value") if rg_field else None) or []
     if rg_index >= len(rg_elements):
-        return [(0, 0) for _ in cc_thrifts]
-    rg_element = rg_elements[rg_index]
-    columns_field = _find_field(rg_element, "columns")
-    if columns_field is None:
-        return [(0, 0) for _ in cc_thrifts]
-    cc_elements = columns_field.get("value", []) or []
+        raise ValueError(
+            f"footer segment missing extents for row group {rg_index} "
+            f"(segment has {len(rg_elements)} row groups)"
+        )
+    columns_field = _find_field(rg_elements[rg_index], "columns")
+    cc_elements = (columns_field.get("value") if columns_field else None) or []
     if len(cc_elements) != len(cc_thrifts):
         raise ValueError(
             f"column-chunk count mismatch in row group {rg_index}: "

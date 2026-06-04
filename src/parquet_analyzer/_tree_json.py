@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, Union
 
-from ._core import json_encode, segment_to_json
+from ._core import json_encode, segment_to_json, _find_field
 
 if TYPE_CHECKING:
     from .parquet_file import ColumnChunk, ParquetFile, RowGroup
@@ -384,22 +384,20 @@ def _render_data_page_v2(p: Any, _view: str, _child_depth: Depth) -> dict:
     return out
 
 
-def _render_offset_index(node: dict, _view: str, _child_depth: Depth) -> dict:
-    cc = node["_cc"]
-    cc._read_offset_index()  # observable cost-payment per docs/tree-schema.md
-    return _system_fields(node, "offset_index")
+# Opaque-branch kinds materialize to system fields only (they are opaque
+# in v0), but materialization must pay the underlying thrift read so the
+# cost is observable per docs/tree-schema.md.
+_OPAQUE_READ_METHODS = {
+    "offset_index": "_read_offset_index",
+    "column_index": "_read_column_index",
+    "bloom_filter_header": "_read_bloom_filter_header",
+}
 
 
-def _render_column_index(node: dict, _view: str, _child_depth: Depth) -> dict:
-    cc = node["_cc"]
-    cc._read_column_index()
-    return _system_fields(node, "column_index")
-
-
-def _render_bloom_filter_header(node: dict, _view: str, _child_depth: Depth) -> dict:
-    cc = node["_cc"]
-    cc._read_bloom_filter_header()
-    return _system_fields(node, "bloom_filter_header")
+def _render_opaque_branch(node: dict, _view: str, _child_depth: Depth) -> dict:
+    kind = node["_kind"]
+    getattr(node["_cc"], _OPAQUE_READ_METHODS[kind])()  # observable cost-payment
+    return _system_fields(node, kind)
 
 
 def _render_unknown(node: dict, _view: str, _child_depth: Depth) -> dict:
@@ -421,9 +419,9 @@ _RENDERERS: dict[str, Callable[[Any, str, Depth], dict]] = {
     "dictionary_page": _render_dictionary_page,
     "data_page_v1": _render_data_page_v1,
     "data_page_v2": _render_data_page_v2,
-    "offset_index": _render_offset_index,
-    "column_index": _render_column_index,
-    "bloom_filter_header": _render_bloom_filter_header,
+    "offset_index": _render_opaque_branch,
+    "column_index": _render_opaque_branch,
+    "bloom_filter_header": _render_opaque_branch,
     "unknown": _render_unknown,
 }
 
@@ -469,14 +467,10 @@ def _footer_node(pf: "ParquetFile") -> dict:
 def _schema_node(pf: "ParquetFile") -> dict:
     seg = _find_field(pf._footer_segment, "schema")
     if seg is None:
-        # Schema is mandatory per parquet spec; fall back to a zero-length
-        # placeholder if we ever encounter a file missing it.
-        return {
-            "_kind": "schema",
-            "_offset": pf._footer_offset,
-            "_length": 0,
-            "_value": [],
-        }
+        # Schema is mandatory per the parquet spec; a footer missing it is
+        # an internal inconsistency, so fail loudly rather than fabricate a
+        # zero-length node.
+        raise ValueError("footer segment missing mandatory schema field")
     return {
         "_kind": "schema",
         "_offset": seg["offset"],
@@ -569,13 +563,15 @@ def _bloom_filter_header_node(cc: "ColumnChunk") -> dict:
 
 
 def _dictionary_page_wrapper(cc: "ColumnChunk") -> Any:
-    """Return the wrapper for the dictionary page, walking pages if needed."""
+    """Return the wrapper for the dictionary page, walking pages if needed.
+
+    A 0-row dictionary column records a ``dictionary_page_offset`` but has
+    no dictionary page header (``pages()`` is empty), so fall back to a
+    synthetic stub-only node the renderer can still emit.
+    """
     for p in cc.pages():
         if _kind_of(p) == "dictionary_page":
             return p
-    # Falls through if the writer set dictionary_page_offset but produced
-    # no dictionary page header — extremely unusual. Synthesize a stub-only
-    # dict node so the renderer can still emit _length=0.
     return {
         "_kind": "dictionary_page",
         "_offset": cc.dictionary_page_offset or 0,
@@ -587,16 +583,6 @@ def _dictionary_page_wrapper(cc: "ColumnChunk") -> Any:
 # ---------------------------------------------------------------------------
 # Footer-segment helpers
 # ---------------------------------------------------------------------------
-
-
-def _find_field(struct_segment: dict, field_name: str) -> dict | None:
-    """Locate a named field child within a struct-typed segment from
-    :class:`OffsetRecordingProtocol`. Returns ``None`` when absent
-    (e.g., writers that omit ``key_value_metadata``)."""
-    for child in struct_segment.get("value", []) or []:
-        if isinstance(child, dict) and child.get("name") == field_name:
-            return child
-    return None
 
 
 # ---------------------------------------------------------------------------
