@@ -1290,3 +1290,41 @@ def test_layout_data_region_real_dictionary_page_tiles(indexed_parquet):
     )
     for a, b in zip(children, children[1:]):
         assert b["_offset"] == a["_offset"] + a["_length"], "data region not tiled"
+
+
+def test_pages_reads_dictionary_via_data_page_offset(indexed_parquet):
+    """Older writers point data_page_offset at the dictionary page and
+    leave dictionary_page_offset unset. The page walk must read the
+    dictionary page and continue to the data pages, not stop at it."""
+    with ParquetFile(str(indexed_parquet)) as pf:
+        cc = next(
+            c for rg in pf.row_groups for c in rg.columns if c.dictionary_page_offset
+        )
+        # Baseline: a normal pyarrow chunk has a dict page + data page(s).
+        baseline = [p._kind for p in cc.pages()]
+        assert "dictionary_page" in baseline
+        assert any(k.startswith("data_page") for k in baseline)
+        # Simulate the older-writer layout and re-walk.
+        cc._md.data_page_offset = cc.dictionary_page_offset
+        cc._md.dictionary_page_offset = None
+        cc._pages_cache = None
+        kinds = [p._kind for p in cc.pages()]
+    assert kinds[0] == "dictionary_page", "dictionary page should be read first"
+    assert any(k.startswith("data_page") for k in kinds), (
+        "data pages must not be dropped when the walk starts at the dict page"
+    )
+    assert len(kinds) == len(baseline)
+
+
+def test_column_chunk_statistics_shape(titanic_pf_columns=None):
+    """Pin the current column_chunk statistics shape: a dict carrying
+    null_count and min_value/max_value when the writer included stats. The
+    decoded-scalar representation the doc's worked example shows is tracked
+    separately (see the statistics-decoding follow-up issue)."""
+    with ParquetFile(str(TITANIC)) as pf:
+        out = pf.to_json(view="tree", depth="all")
+    cc = out["row_groups"][0]["columns"][0]
+    stats = cc["statistics"]
+    assert isinstance(stats, dict)
+    assert "null_count" in stats and isinstance(stats["null_count"], int)
+    assert "min_value" in stats and "max_value" in stats

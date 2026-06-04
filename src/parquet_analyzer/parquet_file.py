@@ -762,6 +762,12 @@ class ColumnChunk:
                     num_values_read = page_thrift.data_page_header.num_values
                 elif page_thrift.data_page_header_v2 is not None:
                     num_values_read = page_thrift.data_page_header_v2.num_values
+                elif page_thrift.dictionary_page_header is not None:
+                    # A dictionary page reached via the value-walk — older
+                    # writers point data_page_offset at the dictionary page
+                    # and leave dictionary_page_offset unset. It does not
+                    # count toward num_values; keep walking to the data pages.
+                    num_values_read = 0
                 else:
                     break
                 remaining_values -= num_values_read
