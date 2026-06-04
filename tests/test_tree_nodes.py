@@ -871,8 +871,9 @@ def test_layout_depth_2_triggers_page_header_reads(small_parquet, monkeypatch):
 
 
 def test_depth_all_triggers_opaque_branch_reads(indexed_parquet, monkeypatch):
-    """depth=all materializes offset_index / column_index → their
-    underlying thrift reads must happen."""
+    """depth=all materializes offset_index / column_index → each one's
+    OWN underlying thrift read must happen (a mis-wired _OPAQUE_READ_METHODS
+    entry would leave the specific count at 0)."""
     pf = ParquetFile(str(indexed_parquet))
     try:
         # Ensure the fixture actually has indexes
@@ -883,6 +884,31 @@ def test_depth_all_triggers_opaque_branch_reads(indexed_parquet, monkeypatch):
         pf.to_json(view="tree", depth="all")
         assert counts.get("offset_index", 0) > 0, (
             "depth=all must trigger offset_index reads when present"
+        )
+        assert counts.get("column_index", 0) > 0, (
+            "depth=all must trigger column_index reads via _read_column_index"
+        )
+    finally:
+        pf.close()
+
+
+def test_depth_all_triggers_bloom_filter_read(bloomy_parquet, monkeypatch):
+    """depth=all materializes bloom_filter_header → its own read must run
+    (guards the _OPAQUE_READ_METHODS wiring for bloom_filter_header)."""
+    pf = ParquetFile(str(bloomy_parquet))
+    try:
+        has_bf = any(
+            cc.bloom_filter_offset is not None
+            for rg in pf.row_groups
+            for cc in rg.columns
+        )
+        if not has_bf:
+            pytest.skip("fixture lacks a bloom filter — pyarrow version mismatch")
+        counts = _install_read_probe(monkeypatch)
+        pf.to_json(view="tree", depth="all")
+        assert counts.get("bloom_filter_header", 0) > 0, (
+            "depth=all must trigger bloom_filter_header reads via "
+            "_read_bloom_filter_header"
         )
     finally:
         pf.close()
