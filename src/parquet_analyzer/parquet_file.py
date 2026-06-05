@@ -33,7 +33,9 @@ import logging
 from typing import Any
 
 from parquet.ttypes import (
+    BloomFilterHeader as _ThriftBloomFilterHeader,
     ColumnChunk as _ThriftColumnChunk,
+    ColumnIndex as _ThriftColumnIndex,
     CompressionCodec as _ThriftCodec,
     Encoding as _ThriftEncoding,
     OffsetIndex as _ThriftOffsetIndex,
@@ -46,12 +48,14 @@ from parquet.ttypes import (
 from ._core import (
     _compute_pages,
     _compute_summary,
+    _find_field,
     _parse_footer,
     _walk_chunks_eager,
     fill_gaps,
     read_thrift_segment,
     segment_to_json,
 )
+from ._tree_json import to_json_root as _to_json_root
 
 __all__ = ["ColumnChunk", "Page", "ParquetFile", "RowGroup"]
 
@@ -153,6 +157,38 @@ class ParquetFile:
     def footer_size(self) -> int:
         return self._footer_segment["length"]
 
+    # ----- Tree-node interface (docs/tree-schema.md v0) --------------------
+
+    @property
+    def _kind(self) -> str:
+        return "file"
+
+    @property
+    def _offset(self) -> int:
+        return 0
+
+    @property
+    def _length(self) -> int:
+        return self._file_size
+
+    def to_json(self, *, view: str = "tree", depth: Any = "all") -> dict:
+        """Serialize this node as v0 tree-schema JSON.
+
+        Parameters
+        ----------
+        view : "tree" | "layout"
+            ``tree`` exposes the logical (footer-derived) structure;
+            ``layout`` exposes the physical byte arrangement with
+            ``column_chunk_data_region`` synthesis and ``unknown``
+            gap-fill. See ``docs/tree-schema.md``.
+        depth : int | "all"
+            ``0`` returns the root as a stub; ``N`` materializes
+            ``N`` levels and stubs the rest; ``"all"`` materializes
+            the entire tree (pays all lazy I/O). Defaults to
+            ``"all"``.
+        """
+        return _to_json_root(self, view, depth)
+
     # ----- Footer access ---------------------------------------------------
 
     @property
@@ -231,8 +267,11 @@ class ParquetFile:
     @property
     def row_groups(self) -> tuple["RowGroup", ...]:
         if self._row_groups_cache is None:
+            rg_thrifts = self._footer_thrift.row_groups or []
+            extents = _extract_row_group_extents(self._footer_segment, rg_thrifts)
             self._row_groups_cache = tuple(
-                RowGroup(self, rg) for rg in (self._footer_thrift.row_groups or [])
+                RowGroup(self, rg, ext, idx)
+                for idx, (rg, ext) in enumerate(zip(rg_thrifts, extents))
             )
         return self._row_groups_cache
 
@@ -375,10 +414,22 @@ class RowGroup:
     """
 
     def __init__(
-        self, parquet_file: "ParquetFile", thrift_obj: _ThriftRowGroup
+        self,
+        parquet_file: "ParquetFile",
+        thrift_obj: _ThriftRowGroup,
+        extent: tuple[int, int],
+        index: int,
     ) -> None:
         self._pf = parquet_file
         self._t = thrift_obj
+        # Byte extent of this row-group's thrift struct *inside* the
+        # footer — used for tree-node ``_offset``/``_length``. Captured
+        # at construction time from the footer-segment walk so that
+        # tree-node access is free.
+        self._extent = extent
+        # Position of this row group in the footer's row_groups list;
+        # used to locate its column-chunk extents in the footer segment.
+        self._rg_index = index
         self._columns_cache: tuple[ColumnChunk, ...] | None = None
 
     def __repr__(self) -> str:
@@ -399,10 +450,34 @@ class RowGroup:
     @property
     def columns(self) -> tuple["ColumnChunk", ...]:
         if self._columns_cache is None:
+            cc_thrifts = self._t.columns or []
+            cc_extents = _extract_column_chunk_extents(
+                self._pf._footer_segment, self._rg_index, cc_thrifts
+            )
             self._columns_cache = tuple(
-                ColumnChunk(self._pf, self, cc) for cc in (self._t.columns or [])
+                ColumnChunk(self._pf, self, cc, ext)
+                for cc, ext in zip(cc_thrifts, cc_extents)
             )
         return self._columns_cache
+
+    # ----- Tree-node interface (docs/tree-schema.md v0) --------------------
+
+    @property
+    def _kind(self) -> str:
+        return "row_group"
+
+    @property
+    def _offset(self) -> int:
+        return self._extent[0]
+
+    @property
+    def _length(self) -> int:
+        return self._extent[1]
+
+    def to_json(self, *, view: str = "tree", depth: Any = "all") -> dict:
+        """Serialize this row group as v0 tree-schema JSON. See
+        :meth:`ParquetFile.to_json`."""
+        return _to_json_root(self, view, depth)
 
 
 # ---------------------------------------------------------------------------
@@ -447,13 +522,19 @@ class ColumnChunk:
         parquet_file: "ParquetFile",
         row_group: "RowGroup",
         thrift_obj: _ThriftColumnChunk,
+        extent: tuple[int, int],
     ) -> None:
         self._pf = parquet_file
         self._rg = row_group
         self._t = thrift_obj
         self._md = thrift_obj.meta_data
+        # Byte extent of the column-chunk thrift struct inside the
+        # footer — used for tree-node ``_offset``/``_length``.
+        self._extent = extent
         self._pages_cache: tuple[Page, ...] | None = None
         self._offset_index_cache: _ThriftOffsetIndex | None = None
+        self._column_index_cache: _ThriftColumnIndex | None = None
+        self._bloom_filter_header_cache: _ThriftBloomFilterHeader | None = None
 
     def __repr__(self) -> str:
         return (
@@ -576,6 +657,52 @@ class ColumnChunk:
             self._offset_index_cache = oi
         return self._offset_index_cache
 
+    def _read_column_index(self) -> _ThriftColumnIndex:
+        """Read + cache the ColumnIndex thrift struct for this chunk.
+
+        Private companion to :meth:`_read_offset_index`. The tree-node
+        ``offset_index`` / ``column_index`` / ``bloom_filter_header``
+        kinds are opaque branches in v0 — materialization pays the
+        thrift parse but emits no content fields. A public accessor is
+        tracked in #20 / #21.
+        """
+        if self._t.column_index_offset is None:
+            raise ValueError(
+                f"column chunk {self.path!r} has no ColumnIndex; "
+                "check column_index_offset before calling _read_column_index"
+            )
+        if self._column_index_cache is None:
+            ci, _segment = read_thrift_segment(
+                self._pf._f,
+                self._t.column_index_offset,
+                "column_index",
+                _ThriftColumnIndex,
+            )
+            self._column_index_cache = ci
+        return self._column_index_cache
+
+    def _read_bloom_filter_header(self) -> _ThriftBloomFilterHeader:
+        """Read + cache the BloomFilterHeader thrift struct for this chunk.
+
+        Private companion to :meth:`_read_offset_index` /
+        :meth:`_read_column_index`. The bloom filter body itself is
+        not parsed in v0 — only its header.
+        """
+        if self._md.bloom_filter_offset is None:
+            raise ValueError(
+                f"column chunk {self.path!r} has no BloomFilter; "
+                "check bloom_filter_offset before calling _read_bloom_filter_header"
+            )
+        if self._bloom_filter_header_cache is None:
+            bf, _segment = read_thrift_segment(
+                self._pf._f,
+                self._md.bloom_filter_offset,
+                "bloom_filter_header",
+                _ThriftBloomFilterHeader,
+            )
+            self._bloom_filter_header_cache = bf
+        return self._bloom_filter_header_cache
+
     @property
     def bloom_filter_offset(self) -> int | None:
         return self._md.bloom_filter_offset
@@ -607,12 +734,24 @@ class ColumnChunk:
         """
         if self._pages_cache is None:
             pages: list[Page] = []
-            remaining_values = self._md.num_values
+            f = self._pf._f
+            # The dictionary page (if present) precedes the data pages and
+            # is not counted by num_values, so read it unconditionally —
+            # including for a 0-row column, where the value-walk below never
+            # executes.
             if self._md.dictionary_page_offset:
-                offset = self._md.dictionary_page_offset
+                dict_thrift, dict_segment = read_thrift_segment(
+                    f, self._md.dictionary_page_offset, "page", _ThriftPageHeader
+                )
+                pages.append(Page(self._pf, self, dict_thrift, dict_segment))
+                offset = (
+                    dict_segment["offset"]
+                    + dict_segment["length"]
+                    + dict_thrift.compressed_page_size
+                )
             else:
                 offset = self._md.data_page_offset
-            f = self._pf._f
+            remaining_values = self._md.num_values
             while remaining_values > 0:
                 page_thrift, page_segment = read_thrift_segment(
                     f, offset, "page", _ThriftPageHeader
@@ -624,6 +763,10 @@ class ColumnChunk:
                 elif page_thrift.data_page_header_v2 is not None:
                     num_values_read = page_thrift.data_page_header_v2.num_values
                 elif page_thrift.dictionary_page_header is not None:
+                    # A dictionary page reached via the value-walk — older
+                    # writers point data_page_offset at the dictionary page
+                    # and leave dictionary_page_offset unset. It does not
+                    # count toward num_values; keep walking to the data pages.
                     num_values_read = 0
                 else:
                     break
@@ -631,6 +774,25 @@ class ColumnChunk:
                 offset = page_header_end + page_thrift.compressed_page_size
             self._pages_cache = tuple(pages)
         return self._pages_cache
+
+    # ----- Tree-node interface (docs/tree-schema.md v0) --------------------
+
+    @property
+    def _kind(self) -> str:
+        return "column_chunk"
+
+    @property
+    def _offset(self) -> int:
+        return self._extent[0]
+
+    @property
+    def _length(self) -> int:
+        return self._extent[1]
+
+    def to_json(self, *, view: str = "tree", depth: Any = "all") -> dict:
+        """Serialize this column chunk as v0 tree-schema JSON. See
+        :meth:`ParquetFile.to_json`."""
+        return _to_json_root(self, view, depth)
 
 
 # ---------------------------------------------------------------------------
@@ -713,3 +875,94 @@ class Page:
     def segment(self) -> dict:
         """The offset-recorded page-header segment (raw dict)."""
         return self._segment
+
+    # ----- Tree-node interface (docs/tree-schema.md v0) --------------------
+
+    @property
+    def _kind(self) -> str:
+        # Map the parquet thrift PageType enum to the v0 schema's
+        # page-kind string. INDEX_PAGE (1) is rare/deprecated; v0 has no
+        # dedicated kind, so it falls through to ``data_page_v1`` to
+        # avoid synthesising an unknown — every page in a v0-supported
+        # file is one of dictionary / v1 / v2.
+        t = self._t.type
+        if t == _ThriftPageType.DICTIONARY_PAGE:
+            return "dictionary_page"
+        if t == _ThriftPageType.DATA_PAGE_V2:
+            return "data_page_v2"
+        return "data_page_v1"
+
+    @property
+    def _offset(self) -> int:
+        return self._segment["offset"]
+
+    @property
+    def _length(self) -> int:
+        # ``segment["length"]`` is the header thrift length;
+        # ``compressed_page_size`` is the body length immediately after.
+        # The node covers both per docs/tree-schema.md (page = header +
+        # body).
+        return self._segment["length"] + self._t.compressed_page_size
+
+    def to_json(self, *, view: str = "tree", depth: Any = "all") -> dict:
+        """Serialize this page as v0 tree-schema JSON. See
+        :meth:`ParquetFile.to_json`."""
+        return _to_json_root(self, view, depth)
+
+
+# ---------------------------------------------------------------------------
+# Footer-segment helpers (row-group / column-chunk extent extraction)
+# ---------------------------------------------------------------------------
+
+
+def _extract_row_group_extents(
+    footer_segment: dict, rg_thrifts: list
+) -> list[tuple[int, int]]:
+    """Return ``(offset, length)`` for each row group's thrift struct
+    inside the footer.
+
+    Walks the offset-recorded footer segment to locate the ``row_groups``
+    list and pull each element's ``offset`` / ``length``. Raises
+    ``ValueError`` if the segment's row-group count doesn't match the
+    parsed thrift — an internal inconsistency between the thrift decode
+    and the offset recorder, never expected for a well-formed footer.
+    """
+    field = _find_field(footer_segment, "row_groups")
+    elements = (field.get("value") if field else None) or []
+    if len(elements) != len(rg_thrifts):
+        raise ValueError(
+            f"row-group count mismatch: footer segment has {len(elements)} "
+            f"elements, thrift has {len(rg_thrifts)}"
+        )
+    return [(el["offset"], el["length"]) for el in elements]
+
+
+def _extract_column_chunk_extents(
+    footer_segment: dict,
+    rg_index: int,
+    cc_thrifts: list,
+) -> list[tuple[int, int]]:
+    """Return ``(offset, length)`` for each column chunk's thrift struct
+    inside the footer, for the row group at ``rg_index``.
+
+    Walks the footer segment to the row-group element at ``rg_index``,
+    then its ``columns`` list. Raises ``ValueError`` if the segment lacks
+    that row group or its column count doesn't match the parsed thrift —
+    an internal inconsistency never expected for a well-formed footer.
+    """
+    rg_field = _find_field(footer_segment, "row_groups")
+    rg_elements = (rg_field.get("value") if rg_field else None) or []
+    if rg_index >= len(rg_elements):
+        raise ValueError(
+            f"footer segment missing extents for row group {rg_index} "
+            f"(segment has {len(rg_elements)} row groups)"
+        )
+    columns_field = _find_field(rg_elements[rg_index], "columns")
+    cc_elements = (columns_field.get("value") if columns_field else None) or []
+    if len(cc_elements) != len(cc_thrifts):
+        raise ValueError(
+            f"column-chunk count mismatch in row group {rg_index}: "
+            f"footer segment has {len(cc_elements)} elements, thrift has "
+            f"{len(cc_thrifts)}"
+        )
+    return [(el["offset"], el["length"]) for el in cc_elements]

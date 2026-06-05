@@ -617,6 +617,15 @@ def segment_to_json(segment):
     return segment
 
 
+def _find_field(struct_segment: dict, field_name: str) -> dict | None:
+    """Locate a named field child within a struct-typed segment recorded
+    by the offset-recording protocol. Returns ``None`` when absent."""
+    for child in struct_segment.get("value", []) or []:
+        if isinstance(child, dict) and child.get("name") == field_name:
+            return child
+    return None
+
+
 def _find_footer_segment(segments: Iterable[dict[str, Any]]):
     """Locate the footer segment within a segments list.
 
