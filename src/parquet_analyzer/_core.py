@@ -444,18 +444,48 @@ def read_thrift_segment(f, offset: int, name: str, thrift_class):
     return obj, segment
 
 
-def read_pages(f, column_chunk, segments: list[dict[str, Any]]) -> list[int]:
-    remaining_values = column_chunk.meta_data.num_values
-    # If dictionary page exists, start reading from there
-    # DuckDB writes incorrect data_page_offset when dictionary page exists
-    # https://github.com/duckdb/duckdb/issues/10829
-    if column_chunk.meta_data.dictionary_page_offset:
-        offset = column_chunk.meta_data.dictionary_page_offset
+def _iter_page_headers(f, dictionary_page_offset, data_page_offset, num_values):
+    """Yield ``(page_thrift, page_segment)`` for each page in a column chunk.
+
+    Single source of truth for the per-page header walk shared by the
+    eager segments path (:func:`read_pages`) and the lazy wrapper
+    (``ColumnChunk.pages``).
+
+    The dictionary page (when ``dictionary_page_offset`` is set) precedes
+    the data pages and is not counted by ``num_values``, so it is read
+    unconditionally — including for a 0-row column, where the value-walk
+    below never executes. A dictionary page encountered mid-walk (older
+    writers point ``data_page_offset`` at it and leave
+    ``dictionary_page_offset`` unset) likewise does not count toward
+    ``num_values``; the walk continues to the data pages.
+    """
+    remaining = num_values
+    if dictionary_page_offset:
+        thrift, seg = read_thrift_segment(f, dictionary_page_offset, "page", PageHeader)
+        yield thrift, seg
+        offset = seg["offset"] + seg["length"] + thrift.compressed_page_size
     else:
-        offset = column_chunk.meta_data.data_page_offset
+        offset = data_page_offset
+    while remaining > 0:
+        thrift, seg = read_thrift_segment(f, offset, "page", PageHeader)
+        yield thrift, seg
+        if thrift.data_page_header is not None:
+            remaining -= thrift.data_page_header.num_values
+        elif thrift.data_page_header_v2 is not None:
+            remaining -= thrift.data_page_header_v2.num_values
+        elif thrift.dictionary_page_header is not None:
+            pass  # mid-walk dictionary page; does not consume data values
+        else:
+            break
+        offset = seg["offset"] + seg["length"] + thrift.compressed_page_size
+
+
+def read_pages(f, column_chunk, segments: list[dict[str, Any]]) -> list[int]:
+    md = column_chunk.meta_data
     offsets: list[int] = []
-    while remaining_values > 0:
-        page, page_segment = read_thrift_segment(f, offset, "page", PageHeader)
+    for page, page_segment in _iter_page_headers(
+        f, md.dictionary_page_offset, md.data_page_offset, md.num_values
+    ):
         page_header_end = page_segment["offset"] + page_segment["length"]
         offsets.append(page_segment["offset"])
         segments.append(page_segment)
@@ -466,18 +496,6 @@ def read_pages(f, column_chunk, segments: list[dict[str, Any]]) -> list[int]:
                 "page_data",
             )
         )
-        if page.data_page_header is not None:
-            num_values_read = page.data_page_header.num_values
-        elif page.data_page_header_v2 is not None:
-            num_values_read = page.data_page_header_v2.num_values
-        # Some writers write dictionary page at data_page_offset
-        elif page.dictionary_page_header is not None:
-            # Dictionary page does not consume data values
-            num_values_read = 0
-        else:
-            break
-        remaining_values -= num_values_read
-        offset = page_header_end + page.compressed_page_size
     return offsets
 
 
