@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Per-module coverage gate.
+
+Reads a ``coverage json`` report and enforces a per-module line-coverage
+floor. Unlike a single total gate, this prevents a well-tested module
+from masking an under-tested one: every module must stand on its own.
+
+Usage::
+
+    pytest --cov=parquet_analyzer --cov-report=json
+    python scripts/check_coverage.py coverage.json
+
+Exit status is 0 when every module meets its floor, 1 otherwise (after
+printing a table of the offenders).
+
+Policy
+------
+- ``DEFAULT_FLOOR`` applies to every module that is not excluded, so new
+  modules are gated automatically — there is no way to add code that
+  silently escapes the floor.
+- ``KNOWN_GAPS`` is a short list of modules below the default floor, each
+  pinned to a *baseline* that may only ratchet **up** and a tracking
+  issue. A module whose coverage drops below its recorded baseline fails
+  the gate (coverage regressed). A module that reaches ``DEFAULT_FLOOR``
+  must be removed from ``KNOWN_GAPS``. These entries are tracked,
+  temporary debt — not permanent exemptions.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+
+# Every non-excluded module must meet this line-coverage percentage.
+DEFAULT_FLOOR = 95.0
+
+# Modules below the default floor, pinned to a ratcheting baseline + a
+# tracking issue. floor = the current baseline (coverage may not drop
+# below it); issue = the GitHub issue tracking the work to clear it.
+KNOWN_GAPS: dict[str, dict] = {
+    # Legacy HTML report generator; tracked by issue #28.
+    "parquet_analyzer/_html.py": {"floor": 87.0, "issue": 28},
+}
+
+# Trivial modules with no meaningful logic to test.
+EXCLUDE = {
+    "parquet_analyzer/__init__.py",
+    "parquet_analyzer/__main__.py",
+}
+
+# A module exceeding its KNOWN_GAPS baseline by more than this margin
+# should have its baseline ratcheted up (reported as a warning).
+RATCHET_SLACK = 1.0
+
+
+def _module_key(path: str) -> str:
+    """Normalize a coverage file path to ``parquet_analyzer/<...>.py``."""
+    norm = path.replace("\\", "/")
+    marker = "parquet_analyzer/"
+    idx = norm.find(marker)
+    return norm[idx:] if idx != -1 else norm
+
+
+def evaluate(report: dict) -> tuple[bool, list[dict], list[str]]:
+    """Evaluate a coverage-json report against the per-module policy.
+
+    Returns ``(ok, rows, warnings)`` where ``rows`` is one dict per
+    gated module and ``warnings`` are non-fatal advisories (e.g. a
+    baseline that should be ratcheted up, or a gap that has cleared the
+    default floor).
+    """
+    files = report.get("files", {})
+    rows: list[dict] = []
+    warnings: list[str] = []
+    ok = True
+
+    for path, data in sorted(files.items()):
+        mod = _module_key(path)
+        if mod in EXCLUDE:
+            continue
+        pct = data.get("summary", {}).get("percent_covered")
+        if pct is None:
+            continue
+        gap = KNOWN_GAPS.get(mod)
+        floor = gap["floor"] if gap else DEFAULT_FLOOR
+        passed = pct >= floor
+        rows.append(
+            {
+                "module": mod,
+                "coverage": pct,
+                "floor": floor,
+                "passed": passed,
+                "issue": gap["issue"] if gap else None,
+            }
+        )
+        if not passed:
+            ok = False
+        if gap is not None:
+            if pct >= DEFAULT_FLOOR:
+                warnings.append(
+                    f"{mod} is at {pct:.1f}% (>= {DEFAULT_FLOOR:.0f}% floor) — "
+                    f"remove it from KNOWN_GAPS (issue #{gap['issue']})."
+                )
+            elif pct >= gap["floor"] + RATCHET_SLACK:
+                warnings.append(
+                    f"{mod} improved to {pct:.1f}% — ratchet its KNOWN_GAPS "
+                    f"baseline up from {gap['floor']:.0f}% (issue #{gap['issue']})."
+                )
+
+    return ok, rows, warnings
+
+
+def _format(rows: list[dict], warnings: list[str]) -> str:
+    width = max((len(r["module"]) for r in rows), default=10)
+    lines = [f"{'module':<{width}}  cover   floor  status"]
+    for r in sorted(rows, key=lambda r: (r["passed"], r["module"])):
+        status = "ok" if r["passed"] else "FAIL"
+        note = f"  (known gap, issue #{r['issue']})" if r["issue"] else ""
+        lines.append(
+            f"{r['module']:<{width}}  {r['coverage']:5.1f}  {r['floor']:5.1f}  "
+            f"{status}{note}"
+        )
+    for w in warnings:
+        lines.append(f"warning: {w}")
+    return "\n".join(lines)
+
+
+def main(argv: list[str]) -> int:
+    if len(argv) != 2:
+        print("usage: check_coverage.py <coverage.json>", file=sys.stderr)
+        return 2
+    try:
+        with open(argv[1]) as f:
+            report = json.load(f)
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"error: cannot read coverage report {argv[1]!r}: {exc}", file=sys.stderr)
+        return 2
+
+    ok, rows, warnings = evaluate(report)
+    print(_format(rows, warnings))
+    if not ok:
+        failed = [r["module"] for r in rows if not r["passed"]]
+        print(
+            f"\nper-module coverage gate FAILED for {len(failed)} module(s): "
+            f"{', '.join(failed)}",
+            file=sys.stderr,
+        )
+        print(
+            "Raise coverage to the floor, or (for tracked legacy debt) add a "
+            "KNOWN_GAPS entry with a tracking issue in scripts/check_coverage.py.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"\nper-module coverage gate passed (floor {DEFAULT_FLOOR:.0f}%).")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))

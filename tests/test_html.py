@@ -370,3 +370,41 @@ def test_to_nice_json_and_is_nested_segment():
     assert _html.is_nested_segment(segment_group) is True
     assert _html.is_nested_segment(segment_type_class) is True
     assert _html.is_nested_segment(segment_list) is True
+
+
+# ---------------------------------------------------------------------------
+# End-to-end report generation (the public --output-mode html entry point)
+# ---------------------------------------------------------------------------
+
+
+from pathlib import Path  # noqa: E402
+
+from parquet_analyzer import ParquetFile  # noqa: E402
+
+_TITANIC = Path(__file__).parent / "data" / "titanic.parquet"
+
+
+@pytest.mark.parametrize(
+    "sections",
+    [[], ["segments"], ["schema", "columns", "segments"]],
+)
+def test_generate_html_report_end_to_end(sections):
+    """Render a full report from a real file and assert on the HTML, not
+    just that it doesn't raise. Exercises both the segments and the
+    no-segments branches of generate_html_report."""
+    pf = ParquetFile(str(_TITANIC))
+    try:
+        html = _html.generate_html_report(
+            str(_TITANIC),
+            summary=pf.full_summary,
+            footer=pf.footer,
+            segments=pf.all_segments(),
+            sections=sections,
+        )
+    finally:
+        pf.close()
+    assert isinstance(html, str) and html
+    assert "<html" in html.lower()
+    assert "parquet analyzer" in html.lower()
+    if "segments" in sections:
+        assert "segment" in html.lower()
