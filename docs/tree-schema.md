@@ -120,11 +120,23 @@ the `*_data_region` / `*_magic` / `footer_length` nodes are all
 in-memory and free to access. They appear as stubs in JSON output
 only because the consumer asked for a depth-limited view.
 
+**Caveat — enumerating a `column_chunk`'s pages is not free.** A
+`column_chunk`'s own scalar fields are footer-derived, but emitting
+its `dictionary_page` / `pages` children — even as stubs, which still
+need each page's `_offset`/`_length` — requires walking the column's
+page headers, because page offsets and lengths are not recorded in the
+footer. So materializing a `column_chunk` (tree view) or a
+`column_chunk_data_region` (layout view) pays an O(pages) page-header
+read to discover its page children. The page nodes themselves still
+carry `_lazy: true`; the walk is the cost of learning they exist. (A
+future version may derive page extents from an `offset_index` when
+present, replacing the N header reads with one thrift read — see #30.)
+
 ### `_lazy: true` — genuine I/O needed
 
 A separate marker, `_lazy: true`, is reserved for nodes where
 materializing actually triggers I/O or extra thrift parsing beyond
-the footer parse. v0 has exactly 5 such kinds:
+the footer parse. v0 has exactly 6 such kinds:
 
 - `dictionary_page`, `data_page_v1`, `data_page_v2` — each requires
   reading a page header from disk
@@ -145,6 +157,29 @@ The Python API distinguishes these implicitly — attribute access on
 any node triggers materialization if needed; the cost difference
 between footer-derived and body-accessing nodes is invisible to the
 caller (other than wall time).
+
+### Depth semantics (uniform)
+
+A depth limit truncates the tree at a **single, uniform level**, with
+no per-kind exceptions:
+
+- The root node (what the call is rooted at — `file` for whole-file
+  output) is level 0. `row_group` / `footer` / `header_magic` /
+  `footer_length` / `trailer_magic` are level 1; `column_chunk` and the
+  footer's `schema` / `kv_metadata` are level 2; `dictionary_page` /
+  `pages` / `offset_index` / `column_index` / `bloom_filter` are level 3.
+- `depth=N` (N ≥ 1) materializes every node at levels 0 through N−1 and
+  emits every node at level N as a stub.
+- `depth=0` emits the root itself as a stub (only system fields, plus the
+  root's `$schema`).
+- `depth="all"` materializes the entire tree (no stubs); `_lazy` markers
+  are dropped because the corresponding I/O is paid.
+
+The rule is **uniform across siblings**: at a given depth, either all of
+a node's children are materialized or all are stubbed — never a mix. In
+particular `footer` and `row_groups` (both level-1 children of `file`)
+are materialized together at `depth ≥ 2` and stubbed together at
+`depth = 1`; the worked examples below follow this rule.
 
 ## Two views: `tree` and `layout`
 
@@ -271,6 +306,19 @@ Logical children:
   unreferenced byte ranges).
 
 `_offset` = 0, `_length` = file size.
+
+**`row_groups` appears under both `file` and `footer` (tree view).**
+In tree view, the `row_groups[]` array is a named child of `file`
+(above) as a navigation shortcut, AND a named child of `footer` (where
+the RowGroup thrifts physically live). The same `row_group` nodes are
+reachable at both `file.row_groups` and `file.footer.row_groups`, with
+identical `_offset`/`_length`. This duplication is intentional in v0 —
+the `file.row_groups` shortcut is the common access path and saves
+consumers a hop through `footer` — but it means a consumer walking the
+whole tree sees row groups twice and must dedupe. A future version may
+replace the `file` shortcut with a `$ref` to `footer.row_groups`; that
+tradeoff is tracked in #26. (Layout view has no such duplication: row
+groups appear only inside `footer`.)
 
 ### `header_magic` (leaf)
 
@@ -412,7 +460,7 @@ range within the footer.
 | `compressed_size` | int | `total_compressed_size`; size of the on-disk data region |
 | `uncompressed_size` | int | `total_uncompressed_size` |
 | `data_page_offset` | int | start of first data page on disk |
-| `dictionary_page_offset` | int \| null | start of dictionary page on disk if present |
+| `dictionary_page_offset` | int \| null | the raw `ColumnMetaData.dictionary_page_offset` thrift value — start of the dictionary page on disk, or `null` when the writer omitted the field. **Note:** some older writers leave this `null` while still writing a dictionary page (reached via `data_page_offset`); in that case the `dictionary_page` child is populated even though this scalar is `null`. The field is surfaced verbatim (a cheap footer value); the `dictionary_page` child is authoritative for the on-disk location. See #32. |
 | `file_offset` | int | **deprecated** per [PARQUET-2139](https://github.com/apache/parquet-format/pull/440); historically unreliable ("in many cases, the ColumnMetaData at this location is wrong"). Modern writers set this to 0. Surfaced verbatim from the thrift but do not dereference. |
 | `statistics` | object \| null | parsed `ColumnMetaData.statistics` if present |
 
@@ -608,6 +656,13 @@ Also deferred:
 
 ### Tree view, shallow (`tree --depth 2`)
 
+At `depth 2`, level-0 (`file`) and all of level-1 are materialized;
+level-2 nodes (`column_chunk`, and the footer's `schema` /
+`kv_metadata` / `row_groups`) are stubs. Note `footer` is materialized
+here — uniformly with its level-1 sibling `row_groups`, per the depth
+rule above — and that `row_groups` appears twice: materialized under
+`file` and stubbed under `footer` (the documented v0 duplication).
+
 ```json
 {
   "$schema": "parquet-analyzer/v2/tree",
@@ -631,8 +686,20 @@ Also deferred:
       ]
     }
   ],
-  "footer": {"_kind": "footer", "_offset": 38843, "_length": 1162},
-  "footer_length": {"_kind": "footer_length", "_offset": 39997, "_length": 4, "_value": 1162},
+  "footer": {
+    "_kind": "footer",
+    "_offset": 38843,
+    "_length": 1162,
+    "version": 2,
+    "num_rows": 891,
+    "created_by": "parquet-cpp-arrow version 14.0.0",
+    "schema": {"_kind": "schema", "_offset": 38846, "_length": 193},
+    "kv_metadata": {"_kind": "kv_metadata", "_offset": 39960, "_length": 45},
+    "row_groups": [
+      {"_kind": "row_group", "_offset": 38990, "_length": 850}
+    ]
+  },
+  "footer_length": {"_kind": "footer_length", "_offset": 40005, "_length": 4, "_value": 1162},
   "trailer_magic": {"_kind": "trailer_magic", "_offset": 40009, "_length": 4, "_value": "PAR1"}
 }
 ```
@@ -680,6 +747,12 @@ the footer, not the on-disk data extent.
 
 ### Layout view, shallow (`layout --depth 1`)
 
+At `depth 1`, `file` is materialized and its physical children are
+stubs — a byte map (each child's `_kind`/`_offset`/`_length`) without
+materializing content. Go to `depth 2` to materialize each child (a
+`column_chunk_data_region`'s `chunk_ref` / `row_group_index` / page
+stubs, the footer's fields, etc.).
+
 ```json
 {
   "$schema": "parquet-analyzer/v2/layout",
@@ -688,23 +761,21 @@ the footer, not the on-disk data extent.
   "_length": 40013,
   "path": "example.parquet",
   "children": [
-    {"_kind": "header_magic", "_offset": 0, "_length": 4, "_value": "PAR1"},
-    {"_kind": "column_chunk_data_region", "_offset": 4, "_length": 4357,
-     "chunk_ref": {"_kind": "column_chunk", "_offset": 38990, "_length": 70}},
-    {"_kind": "column_chunk_data_region", "_offset": 4361, "_length": 1051,
-     "chunk_ref": {"_kind": "column_chunk", "_offset": 39060, "_length": 70}},
-    // ... more column_chunk_data_regions ...
+    {"_kind": "header_magic", "_offset": 0, "_length": 4},
+    {"_kind": "column_chunk_data_region", "_offset": 4, "_length": 4357},
+    {"_kind": "column_chunk_data_region", "_offset": 4361, "_length": 1051},
     {"_kind": "unknown", "_offset": 38500, "_length": 343},
     {"_kind": "footer", "_offset": 38843, "_length": 1162},
-    {"_kind": "footer_length", "_offset": 39997, "_length": 4, "_value": 1162},
-    {"_kind": "trailer_magic", "_offset": 40009, "_length": 4, "_value": "PAR1"}
+    {"_kind": "footer_length", "_offset": 40005, "_length": 4},
+    {"_kind": "trailer_magic", "_offset": 40009, "_length": 4}
   ]
 }
 ```
 
-(The `unknown` node at offset 38500 above is hypothetical — would
-appear if a writer left unreferenced bytes between data and
-footer.)
+(The example elides the `column_chunk_data_region`s between offset 5412
+and the `unknown` node for brevity. The `unknown` node at offset 38500
+is hypothetical — it would appear only if a writer left unreferenced
+bytes between the data and the footer.)
 
 ### Layout view, materialized data region
 
@@ -727,7 +798,7 @@ footer.)
 ### Leaf
 
 ```json
-{"_kind": "footer_length", "_offset": 39997, "_length": 4, "_value": 1162}
+{"_kind": "footer_length", "_offset": 40005, "_length": 4, "_value": 1162}
 ```
 
 ## How this doc grows
