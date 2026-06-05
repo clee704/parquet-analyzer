@@ -115,6 +115,18 @@ class ParquetFile:
         self._eager_column_offset_map: dict | None = None
         self._full_summary_cache: dict | None = None
         self._all_pages_cache: list[dict] | None = None
+        self._stat_type_map_cache: dict | None = None
+
+    @property
+    def _stat_type_map(self) -> dict:
+        """Per-leaf statistics type descriptors (``path -> {logical,
+        converted, scale}``), built once from the footer schema and cached.
+        Used by the tree serializer to decode column/page statistics."""
+        if self._stat_type_map_cache is None:
+            from ._core import column_stat_types
+
+            self._stat_type_map_cache = column_stat_types(self.footer["schema"])
+        return self._stat_type_map_cache
 
     def close(self) -> None:
         """Close the underlying file handle.
