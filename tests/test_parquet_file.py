@@ -688,15 +688,24 @@ def test_offset_index_none_when_absent(tmp_path):
 
 
 def test_page_matches_pages_index(many_pages_parquet):
+    """page(i) via OffsetIndex direct-seek returns the same page as the
+    walk for EVERY index — the cache is cleared first so this actually
+    exercises the index-to-OffsetIndex-location mapping (incl. the
+    dictionary off-by-one) rather than returning the cached walked object."""
     with ParquetFile(str(many_pages_parquet)) as pf:
         cc = pf.row_groups[0].columns[0]
-        pages = cc.pages()
-        assert len(pages) >= 3
-        for i in range(len(pages)):
-            assert cc.page(i)._offset == pages[i]._offset
-            assert cc.page(i)._kind == pages[i]._kind
-        # negative indexing
-        assert cc.page(-1)._offset == pages[-1]._offset
+        # Independent ground truth from the walk.
+        walked = [(p._offset, p._kind) for p in cc.pages()]
+        assert len(walked) >= 3 and cc.has_offset_index
+        # Drop the cache so page(i) goes through _page_via_offset_index.
+        cc._pages_cache = None
+        for i in range(len(walked)):
+            p = cc.page(i)
+            assert (p._offset, p._kind) == walked[i], (
+                f"page({i}) direct-seek = ({p._offset}, {p._kind}); walk = {walked[i]}"
+            )
+        cc._pages_cache = None
+        assert cc.page(-1)._offset == walked[-1][0]
 
 
 def test_page_out_of_range_raises(small_parquet):
@@ -758,9 +767,14 @@ def test_page_walks_when_no_offset_index(tmp_path):
     with ParquetFile(str(path)) as pf:
         cc = pf.row_groups[0].columns[0]
         assert not cc.has_offset_index
-        pages = cc.pages()
-        # page(index) falls back to the walked list and stays correct.
-        assert cc.page(len(pages) - 1)._offset == pages[-1]._offset
+        walked = [p._offset for p in cc.pages()]
+        assert len(walked) >= 3
+        # With no OffsetIndex, page(i) must fall back to the walk and index
+        # correctly. Clear the cache so the fallback path is exercised
+        # freshly rather than returning the already-materialized object.
+        cc._pages_cache = None
+        for i in (0, 1, len(walked) - 1):
+            assert cc.page(i)._offset == walked[i]
 
 
 def test_segments_include_dictionary_page_for_zero_row_column(tmp_path):
