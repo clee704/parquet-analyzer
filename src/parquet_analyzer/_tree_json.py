@@ -25,7 +25,6 @@ from ._core import (
     json_encode,
     segment_to_json,
     _find_field,
-    column_logical_types as _column_logical_types,
     json_safe_stat_value as _json_safe_stat_value,
 )
 
@@ -613,12 +612,13 @@ def _ref_stub_from_wrapper(node: Any, kind: str) -> dict:
     }
 
 
-def _column_logical_type(cc: "ColumnChunk") -> dict | None:
-    """The ``logicalType`` dict for ``cc``'s leaf column, or ``None``."""
-    return _column_logical_types(cc._pf.footer["schema"]).get(tuple(cc.path))
+def _column_stat_info(cc: "ColumnChunk") -> dict:
+    """The statistics type descriptor (``{logical, converted, scale}``) for
+    ``cc``'s leaf column, from the file's cached schema-type map."""
+    return cc._pf._stat_type_map.get(tuple(cc.path)) or {}
 
 
-def _build_statistics(stats: Any, physical_type: str, logical_type: dict | None) -> Any:
+def _build_statistics(stats: Any, physical_type: str, info: dict) -> Any:
     """Build the v0 statistics object from a thrift ``Statistics``:
     ``null_count`` / ``distinct_count`` plus decoded ``min_value`` /
     ``max_value`` scalars. The deprecated ``min`` / ``max`` byte fields are
@@ -626,6 +626,9 @@ def _build_statistics(stats: Any, physical_type: str, logical_type: dict | None)
     only the deprecated fields."""
     if stats is None:
         return None
+    logical = info.get("logical")
+    converted = info.get("converted")
+    scale = info.get("scale") or 0
     out: dict[str, Any] = {}
     if stats.null_count is not None:
         out["null_count"] = stats.null_count
@@ -634,16 +637,20 @@ def _build_statistics(stats: Any, physical_type: str, logical_type: dict | None)
     min_raw = stats.min_value if stats.min_value is not None else stats.min
     max_raw = stats.max_value if stats.max_value is not None else stats.max
     if min_raw is not None:
-        out["min_value"] = _json_safe_stat_value(min_raw, physical_type, logical_type)
+        out["min_value"] = _json_safe_stat_value(
+            min_raw, physical_type, logical, converted, scale
+        )
     if max_raw is not None:
-        out["max_value"] = _json_safe_stat_value(max_raw, physical_type, logical_type)
+        out["max_value"] = _json_safe_stat_value(
+            max_raw, physical_type, logical, converted, scale
+        )
     return out or None
 
 
 def _column_chunk_statistics(cc: "ColumnChunk") -> Any:
     """Statistics for ``cc`` with decoded ``min_value``/``max_value``.
     ``None`` when the writer omitted statistics."""
-    return _build_statistics(cc._md.statistics, cc.type, _column_logical_type(cc))
+    return _build_statistics(cc._md.statistics, cc.type, _column_stat_info(cc))
 
 
 def _page_statistics(header: Any, page: Any) -> Any:
@@ -653,7 +660,7 @@ def _page_statistics(header: Any, page: Any) -> Any:
     if stats is None:
         return None
     cc = page._cc
-    return _build_statistics(stats, cc.type, _column_logical_type(cc))
+    return _build_statistics(stats, cc.type, _column_stat_info(cc))
 
 
 def _make_json_safe(value: Any) -> Any:

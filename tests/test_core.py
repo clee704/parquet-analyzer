@@ -751,6 +751,15 @@ def test_decode_stat_value_decimal():
     ) == Decimal("4.56")
 
 
+def test_decode_stat_value_legacy_converted_decimal():
+    """Legacy writers mark DECIMAL via converted_type + a separate scale,
+    not logicalType. The kernel honors that form too."""
+    raw = (123).to_bytes(4, "little", signed=True)
+    assert core.decode_stat_value(
+        raw, "INT32", None, converted_type="DECIMAL", scale=2
+    ) == Decimal("1.23")
+
+
 def test_decode_stat_value_byte_array_passthrough():
     assert core.decode_stat_value(b"hello", "BYTE_ARRAY", None) == b"hello"
 
@@ -760,36 +769,67 @@ def test_json_safe_stat_value():
         core.json_safe_stat_value((7).to_bytes(4, "little", signed=True), "INT32", None)
         == 7
     )
-    # BYTE_ARRAY: UTF-8 text when decodable, else hex.
+    # BYTE_ARRAY of unknown type: UTF-8 when decodable, else hex.
     assert core.json_safe_stat_value(b"female", "BYTE_ARRAY", None) == "female"
     assert core.json_safe_stat_value(b"\x00\xff", "BYTE_ARRAY", None) == "00ff"
-    # DECIMAL -> lossless string.
+    # DECIMAL -> lossless string (logical and legacy converted forms).
     raw = (123).to_bytes(4, "little", signed=True)
     assert core.json_safe_stat_value(raw, "INT32", {"DECIMAL": {"scale": 2}}) == "1.23"
+    assert (
+        core.json_safe_stat_value(raw, "INT32", None, converted_type="DECIMAL", scale=2)
+        == "1.23"
+    )
 
 
-def test_column_logical_types_flat():
+def test_json_safe_stat_value_string_type_truncated():
+    """A column known to be STRING decodes as (lossy) UTF-8 text even when
+    the stat bytes are truncated mid-codepoint — not shown as hex."""
+    truncated = "\u263a".encode("utf-8")[:2]  # ☺ is 3 bytes; keep 2
+    out = core.json_safe_stat_value(truncated, "BYTE_ARRAY", {"STRING": {}})
+    assert isinstance(out, str)
+    # Same via legacy converted_type=UTF8.
+    out2 = core.json_safe_stat_value(
+        truncated, "BYTE_ARRAY", None, converted_type="UTF8"
+    )
+    assert isinstance(out2, str)
+
+
+def test_column_stat_types_flat():
     schema = [
         {"name": "schema", "num_children": 2, "type": None},
-        {"name": "s", "type": "BYTE_ARRAY", "logicalType": {"STRING": {}}},
-        {"name": "n", "type": "INT32"},  # no logicalType -> excluded
+        {
+            "name": "s",
+            "type": "BYTE_ARRAY",
+            "converted_type": "UTF8",
+            "logicalType": {"STRING": {}},
+        },
+        {"name": "n", "type": "INT32"},
     ]
-    assert core.column_logical_types(schema) == {("s",): {"STRING": {}}}
-
-
-def test_column_logical_types_nested():
-    schema = [
-        {"name": "schema", "num_children": 1, "type": None},
-        {"name": "g", "num_children": 1, "type": None},
-        {"name": "x", "type": "INT64", "logicalType": {"INTEGER": {"bitWidth": 64}}},
-    ]
-    assert core.column_logical_types(schema) == {
-        ("g", "x"): {"INTEGER": {"bitWidth": 64}}
+    assert core.column_stat_types(schema) == {
+        ("s",): {"logical": {"STRING": {}}, "converted": "UTF8", "scale": 0},
+        ("n",): {"logical": None, "converted": None, "scale": 0},
     }
 
 
-def test_column_logical_types_empty():
-    assert core.column_logical_types([]) == {}
+def test_column_stat_types_nested_and_decimal_scale():
+    schema = [
+        {"name": "schema", "num_children": 1, "type": None},
+        {"name": "g", "num_children": 1, "type": None},
+        {
+            "name": "x",
+            "type": "FIXED_LEN_BYTE_ARRAY",
+            "converted_type": "DECIMAL",
+            "scale": 2,
+            "precision": 5,
+        },
+    ]
+    assert core.column_stat_types(schema) == {
+        ("g", "x"): {"logical": None, "converted": "DECIMAL", "scale": 2},
+    }
+
+
+def test_column_stat_types_empty():
+    assert core.column_stat_types([]) == {}
 
 
 def test_html_decode_stats_value_delegates_to_core():

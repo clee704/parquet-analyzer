@@ -645,15 +645,35 @@ def _find_field(struct_segment: dict, field_name: str) -> dict | None:
     return None
 
 
-def decode_stat_value(binary_value, type_str: str, logical_type: dict | None) -> Any:
+def _stat_is_decimal(logical_type: dict | None, converted_type: str | None) -> bool:
+    return (
+        bool(logical_type and "DECIMAL" in logical_type) or converted_type == "DECIMAL"
+    )
+
+
+def _stat_is_string(logical_type: dict | None, converted_type: str | None) -> bool:
+    if logical_type and ("STRING" in logical_type or "ENUM" in logical_type):
+        return True
+    return converted_type in ("UTF8", "ENUM")
+
+
+def decode_stat_value(
+    binary_value,
+    type_str: str,
+    logical_type: dict | None,
+    converted_type: str | None = None,
+    scale: int = 0,
+) -> Any:
     """Decode a raw parquet statistics min/max value to its typed Python
     value: ``int`` / ``float`` / ``bool`` / :class:`~decimal.Decimal`, or
     the raw ``bytes`` for ``BYTE_ARRAY`` / ``FIXED_LEN_BYTE_ARRAY`` (which
-    have no single canonical scalar form). Shared kernel used both by the
-    HTML report (display formatting) and by :func:`json_safe_stat_value`
-    (the tree serializer)."""
-    if logical_type is not None and "DECIMAL" in logical_type:
-        scale = logical_type["DECIMAL"].get("scale", 0)
+    have no single canonical scalar form). DECIMAL is recognized via the
+    ``logicalType`` (modern) or ``converted_type``/``scale`` (legacy
+    parquet-mr / Spark / Hive / Impala) form. Shared kernel used by the
+    HTML report and by :func:`json_safe_stat_value` (the tree serializer)."""
+    if _stat_is_decimal(logical_type, converted_type):
+        if logical_type and "DECIMAL" in logical_type:
+            scale = logical_type["DECIMAL"].get("scale", 0)
         if type_str == "FIXED_LEN_BYTE_ARRAY":
             int_value = int.from_bytes(binary_value, byteorder="big", signed=True)
             return Decimal(int_value).scaleb(-scale)
@@ -671,15 +691,27 @@ def decode_stat_value(binary_value, type_str: str, logical_type: dict | None) ->
     return binary_value
 
 
-def json_safe_stat_value(binary_value, type_str: str, logical_type: dict | None) -> Any:
+def json_safe_stat_value(
+    binary_value,
+    type_str: str,
+    logical_type: dict | None,
+    converted_type: str | None = None,
+    scale: int = 0,
+) -> Any:
     """Decode a raw statistics value to a JSON-safe scalar: numerics as
     ``int`` / ``float`` / ``bool``, ``DECIMAL`` as a lossless string, and
-    ``BYTE_ARRAY`` / ``FIXED_LEN_BYTE_ARRAY`` as UTF-8 text when decodable
-    (the common string case) else a hex string."""
-    decoded = decode_stat_value(binary_value, type_str, logical_type)
+    byte values by type: known string columns (``STRING``/``ENUM`` logical
+    or ``UTF8``/``ENUM`` converted) as UTF-8 text (lossy-decoding any
+    truncated trailing bytes, which parquet stats commonly have), other
+    byte values as UTF-8 when they decode cleanly else a hex string."""
+    decoded = decode_stat_value(
+        binary_value, type_str, logical_type, converted_type, scale
+    )
     if isinstance(decoded, Decimal):
         return str(decoded)
     if isinstance(decoded, (bytes, bytearray)):
+        if _stat_is_string(logical_type, converted_type):
+            return decoded.decode("utf-8", errors="replace")
         try:
             return decoded.decode("utf-8")
         except UnicodeDecodeError:
@@ -687,10 +719,12 @@ def json_safe_stat_value(binary_value, type_str: str, logical_type: dict | None)
     return decoded
 
 
-def column_logical_types(schema_list: list[dict]) -> dict[tuple[str, ...], dict]:
-    """Map each leaf column's path tuple to its ``logicalType`` dict, for
-    columns that declare one. Walks the flattened pre-order schema list
-    (``footer["schema"]``); the root element is excluded from paths."""
+def column_stat_types(schema_list: list[dict]) -> dict[tuple[str, ...], dict]:
+    """Map each leaf column's path tuple to a small type descriptor —
+    ``{"logical": logicalType|None, "converted": converted_type|None,
+    "scale": int}`` — used to decode that column's statistics. Walks the
+    flattened pre-order schema list (``footer["schema"]``); the root
+    element is excluded from paths."""
     result: dict[tuple[str, ...], dict] = {}
     pos = [1]  # element 0 is the root; its children are the top-level fields
 
@@ -703,9 +737,11 @@ def column_logical_types(schema_list: list[dict]) -> dict[tuple[str, ...], dict]
             for _ in range(nchild):
                 consume(new_prefix)
         else:
-            logical = el.get("logicalType")
-            if logical:
-                result[tuple(new_prefix)] = logical
+            result[tuple(new_prefix)] = {
+                "logical": el.get("logicalType"),
+                "converted": el.get("converted_type"),
+                "scale": el.get("scale") or 0,
+            }
 
     if not schema_list:
         return result

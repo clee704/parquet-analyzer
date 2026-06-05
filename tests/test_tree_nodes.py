@@ -1421,6 +1421,6 @@ def test_statistics_fallback_to_deprecated_min_max():
         min=(5).to_bytes(4, "little", signed=True),
         max=(9).to_bytes(4, "little", signed=True),
     )
-    out = _tree_json._build_statistics(stats, "INT32", None)
+    out = _tree_json._build_statistics(stats, "INT32", {})
     assert out == {"null_count": 0, "min_value": 5, "max_value": 9}
     assert "min" not in out and "max" not in out
