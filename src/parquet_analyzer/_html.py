@@ -3,7 +3,6 @@ import logging
 import pathlib
 import struct
 from dataclasses import dataclass
-from decimal import Decimal
 from typing import Any, Tuple
 
 from jinja2 import Environment, PackageLoader, select_autoescape
@@ -589,27 +588,11 @@ def format_logical_type(logical_type: dict[str, Any]) -> str:
 
 
 def decode_stats_value(binary_value, type_str: str, logical_type: dict | None) -> Any:
-    if logical_type is not None and "DECIMAL" in logical_type:
-        scale = logical_type["DECIMAL"].get("scale", 0)
-        if type_str == "FIXED_LEN_BYTE_ARRAY":
-            int_value = int.from_bytes(binary_value, byteorder="big", signed=True)
-            return Decimal(int_value).scaleb(-scale)
-        if type_str == "INT32" or type_str == "INT64":
-            int_value = int.from_bytes(binary_value, byteorder="little", signed=True)
-            return Decimal(int_value).scaleb(-scale)
-    if type_str == "INT32" or type_str == "INT64":
-        int_value = int.from_bytes(binary_value, byteorder="little", signed=True)
-        return int_value
-    if type_str == "FLOAT":
-        float_value = struct.unpack("<f", binary_value)[0]
-        return float_value
-    if type_str == "DOUBLE":
-        double_value = struct.unpack("<d", binary_value)[0]
-        return double_value
-    if type_str == "BOOLEAN":
-        bool_value = bool(int.from_bytes(binary_value, byteorder="little"))
-        return bool_value
-    return binary_value
+    # Thin wrapper over the shared kernel in _core (kept for the HTML
+    # report's existing callers/tests).
+    from ._core import decode_stat_value
+
+    return decode_stat_value(binary_value, type_str, logical_type)
 
 
 def encode_stats_value(

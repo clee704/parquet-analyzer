@@ -1342,11 +1342,10 @@ def test_pages_reads_dictionary_via_data_page_offset(indexed_parquet):
     assert len(kinds) == len(baseline)
 
 
-def test_column_chunk_statistics_shape(titanic_pf_columns=None):
-    """Pin the current column_chunk statistics shape: a dict carrying
-    null_count and min_value/max_value when the writer included stats. The
-    decoded-scalar representation the doc's worked example shows is tracked
-    separately (see the statistics-decoding follow-up issue)."""
+def test_column_chunk_statistics_shape():
+    """column_chunk statistics carry null_count and DECODED scalar
+    min_value/max_value — not raw thrift byte objects — and no longer
+    include the deprecated min/max byte fields (#31)."""
     with ParquetFile(str(TITANIC)) as pf:
         out = pf.to_json(view="tree", depth="all")
     cc = out["row_groups"][0]["columns"][0]
@@ -1354,3 +1353,74 @@ def test_column_chunk_statistics_shape(titanic_pf_columns=None):
     assert isinstance(stats, dict)
     assert "null_count" in stats and isinstance(stats["null_count"], int)
     assert "min_value" in stats and "max_value" in stats
+    # Decoded scalars, not the raw {"type":"binary","value":[...]} thrift form.
+    for key in ("min_value", "max_value"):
+        assert not isinstance(stats[key], dict), f"{key} should be a decoded scalar"
+    # Deprecated min/max byte fields are dropped.
+    assert "min" not in stats and "max" not in stats
+
+
+def test_statistics_decoded_by_type():
+    """min_value/max_value decode to typed scalars per the column's
+    physical/logical type: ints, floats, UTF-8 strings, DECIMAL as a
+    lossless string, and non-text binary as a hex string."""
+    import decimal as _decimal
+
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    table = pa.table(
+        {
+            "s": pa.array(["female", "male", "female"]),
+            "n": pa.array([1, 2, 3], type=pa.int32()),
+            "f": pa.array([1.5, 2.5, 3.5]),
+            "dec": pa.array(
+                [
+                    _decimal.Decimal("1.23"),
+                    _decimal.Decimal("4.56"),
+                    _decimal.Decimal("0.01"),
+                ],
+                type=pa.decimal128(5, 2),
+            ),
+            "b": pa.array([b"\x00\xff", b"\x01\x02", b"\xab\xcd"], type=pa.binary()),
+        }
+    )
+    import tempfile
+    import os
+
+    path = os.path.join(tempfile.mkdtemp(), "typed.parquet")
+    pq.write_table(table, path, write_statistics=True)
+    with ParquetFile(path) as pf:
+        out = pf.to_json(view="tree", depth="all")
+    by_name = {
+        ".".join(c["path"]): c["statistics"] for c in out["row_groups"][0]["columns"]
+    }
+    assert by_name["s"]["min_value"] == "female" and by_name["s"]["max_value"] == "male"
+    assert by_name["n"]["min_value"] == 1 and by_name["n"]["max_value"] == 3
+    assert by_name["f"]["min_value"] == 1.5 and by_name["f"]["max_value"] == 3.5
+    assert (
+        by_name["dec"]["min_value"] == "0.01" and by_name["dec"]["max_value"] == "4.56"
+    )
+    # non-UTF-8 binary -> hex string
+    assert all(isinstance(by_name["b"][k], str) for k in ("min_value", "max_value"))
+    int(by_name["b"]["min_value"], 16)  # parses as hex
+
+
+def test_statistics_fallback_to_deprecated_min_max():
+    """Older writers set only the deprecated min/max byte fields (not
+    min_value/max_value). _build_statistics decodes from them as a fallback
+    while still emitting the modern min_value/max_value keys."""
+    from types import SimpleNamespace
+
+    from parquet_analyzer import _tree_json
+
+    stats = SimpleNamespace(
+        null_count=0,
+        distinct_count=None,
+        min_value=None,
+        max_value=None,
+        min=(5).to_bytes(4, "little", signed=True),
+        max=(9).to_bytes(4, "little", signed=True),
+    )
+    out = _tree_json._build_statistics(stats, "INT32", None)
+    assert out == {"null_count": 0, "min_value": 5, "max_value": 9}
+    assert "min" not in out and "max" not in out

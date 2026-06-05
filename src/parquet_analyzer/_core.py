@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import struct
+from decimal import Decimal
 from typing import Any, Iterable, Optional, Tuple
 
 from thrift.protocol import TCompactProtocol, TProtocol  # type: ignore
@@ -642,6 +643,75 @@ def _find_field(struct_segment: dict, field_name: str) -> dict | None:
         if isinstance(child, dict) and child.get("name") == field_name:
             return child
     return None
+
+
+def decode_stat_value(binary_value, type_str: str, logical_type: dict | None) -> Any:
+    """Decode a raw parquet statistics min/max value to its typed Python
+    value: ``int`` / ``float`` / ``bool`` / :class:`~decimal.Decimal`, or
+    the raw ``bytes`` for ``BYTE_ARRAY`` / ``FIXED_LEN_BYTE_ARRAY`` (which
+    have no single canonical scalar form). Shared kernel used both by the
+    HTML report (display formatting) and by :func:`json_safe_stat_value`
+    (the tree serializer)."""
+    if logical_type is not None and "DECIMAL" in logical_type:
+        scale = logical_type["DECIMAL"].get("scale", 0)
+        if type_str == "FIXED_LEN_BYTE_ARRAY":
+            int_value = int.from_bytes(binary_value, byteorder="big", signed=True)
+            return Decimal(int_value).scaleb(-scale)
+        if type_str == "INT32" or type_str == "INT64":
+            int_value = int.from_bytes(binary_value, byteorder="little", signed=True)
+            return Decimal(int_value).scaleb(-scale)
+    if type_str == "INT32" or type_str == "INT64":
+        return int.from_bytes(binary_value, byteorder="little", signed=True)
+    if type_str == "FLOAT":
+        return struct.unpack("<f", binary_value)[0]
+    if type_str == "DOUBLE":
+        return struct.unpack("<d", binary_value)[0]
+    if type_str == "BOOLEAN":
+        return bool(int.from_bytes(binary_value, byteorder="little"))
+    return binary_value
+
+
+def json_safe_stat_value(binary_value, type_str: str, logical_type: dict | None) -> Any:
+    """Decode a raw statistics value to a JSON-safe scalar: numerics as
+    ``int`` / ``float`` / ``bool``, ``DECIMAL`` as a lossless string, and
+    ``BYTE_ARRAY`` / ``FIXED_LEN_BYTE_ARRAY`` as UTF-8 text when decodable
+    (the common string case) else a hex string."""
+    decoded = decode_stat_value(binary_value, type_str, logical_type)
+    if isinstance(decoded, Decimal):
+        return str(decoded)
+    if isinstance(decoded, (bytes, bytearray)):
+        try:
+            return decoded.decode("utf-8")
+        except UnicodeDecodeError:
+            return decoded.hex()
+    return decoded
+
+
+def column_logical_types(schema_list: list[dict]) -> dict[tuple[str, ...], dict]:
+    """Map each leaf column's path tuple to its ``logicalType`` dict, for
+    columns that declare one. Walks the flattened pre-order schema list
+    (``footer["schema"]``); the root element is excluded from paths."""
+    result: dict[tuple[str, ...], dict] = {}
+    pos = [1]  # element 0 is the root; its children are the top-level fields
+
+    def consume(prefix: list[str]) -> None:
+        el = schema_list[pos[0]]
+        pos[0] += 1
+        new_prefix = prefix + [str(el.get("name"))]
+        nchild = el.get("num_children") or 0
+        if nchild:
+            for _ in range(nchild):
+                consume(new_prefix)
+        else:
+            logical = el.get("logicalType")
+            if logical:
+                result[tuple(new_prefix)] = logical
+
+    if not schema_list:
+        return result
+    for _ in range(schema_list[0].get("num_children") or 0):
+        consume([])
+    return result
 
 
 def _find_footer_segment(segments: Iterable[dict[str, Any]]):

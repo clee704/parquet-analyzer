@@ -715,3 +715,85 @@ def test_parquet_file_invalid_footer(tmp_path):
 
     with pytest.raises(ValueError, match="missing PAR1 footer"):
         ParquetFile(str(target))
+
+
+# ---------------------------------------------------------------------------
+# Statistics decoding (shared kernel used by _html + the tree serializer)
+# ---------------------------------------------------------------------------
+
+
+from decimal import Decimal  # noqa: E402
+
+
+def test_decode_stat_value_numeric_types():
+    assert (
+        core.decode_stat_value((1).to_bytes(4, "little", signed=True), "INT32", None)
+        == 1
+    )
+    assert (
+        core.decode_stat_value((-5).to_bytes(8, "little", signed=True), "INT64", None)
+        == -5
+    )
+    assert core.decode_stat_value(struct.pack("<f", 1.5), "FLOAT", None) == 1.5
+    assert core.decode_stat_value(struct.pack("<d", 2.5), "DOUBLE", None) == 2.5
+    assert core.decode_stat_value(b"\x01", "BOOLEAN", None) is True
+    assert core.decode_stat_value(b"\x00", "BOOLEAN", None) is False
+
+
+def test_decode_stat_value_decimal():
+    raw_int = (123).to_bytes(4, "little", signed=True)
+    assert core.decode_stat_value(
+        raw_int, "INT32", {"DECIMAL": {"scale": 2}}
+    ) == Decimal("1.23")
+    raw_flba = (456).to_bytes(2, "big", signed=True)
+    assert core.decode_stat_value(
+        raw_flba, "FIXED_LEN_BYTE_ARRAY", {"DECIMAL": {"scale": 2}}
+    ) == Decimal("4.56")
+
+
+def test_decode_stat_value_byte_array_passthrough():
+    assert core.decode_stat_value(b"hello", "BYTE_ARRAY", None) == b"hello"
+
+
+def test_json_safe_stat_value():
+    assert (
+        core.json_safe_stat_value((7).to_bytes(4, "little", signed=True), "INT32", None)
+        == 7
+    )
+    # BYTE_ARRAY: UTF-8 text when decodable, else hex.
+    assert core.json_safe_stat_value(b"female", "BYTE_ARRAY", None) == "female"
+    assert core.json_safe_stat_value(b"\x00\xff", "BYTE_ARRAY", None) == "00ff"
+    # DECIMAL -> lossless string.
+    raw = (123).to_bytes(4, "little", signed=True)
+    assert core.json_safe_stat_value(raw, "INT32", {"DECIMAL": {"scale": 2}}) == "1.23"
+
+
+def test_column_logical_types_flat():
+    schema = [
+        {"name": "schema", "num_children": 2, "type": None},
+        {"name": "s", "type": "BYTE_ARRAY", "logicalType": {"STRING": {}}},
+        {"name": "n", "type": "INT32"},  # no logicalType -> excluded
+    ]
+    assert core.column_logical_types(schema) == {("s",): {"STRING": {}}}
+
+
+def test_column_logical_types_nested():
+    schema = [
+        {"name": "schema", "num_children": 1, "type": None},
+        {"name": "g", "num_children": 1, "type": None},
+        {"name": "x", "type": "INT64", "logicalType": {"INTEGER": {"bitWidth": 64}}},
+    ]
+    assert core.column_logical_types(schema) == {
+        ("g", "x"): {"INTEGER": {"bitWidth": 64}}
+    }
+
+
+def test_column_logical_types_empty():
+    assert core.column_logical_types([]) == {}
+
+
+def test_html_decode_stats_value_delegates_to_core():
+    from parquet_analyzer import _html
+
+    raw = (42).to_bytes(4, "little", signed=True)
+    assert _html.decode_stats_value(raw, "INT32", None) == 42

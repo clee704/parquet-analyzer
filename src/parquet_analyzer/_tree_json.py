@@ -21,7 +21,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, Union
 
-from ._core import json_encode, segment_to_json, _find_field
+from ._core import (
+    json_encode,
+    segment_to_json,
+    _find_field,
+    column_logical_types as _column_logical_types,
+    json_safe_stat_value as _json_safe_stat_value,
+)
 
 if TYPE_CHECKING:
     from .parquet_file import ColumnChunk, ParquetFile, RowGroup
@@ -339,7 +345,7 @@ def _render_data_page_v1(p: Any, _view: str, _child_depth: Depth) -> dict:
     out["repetition_level_encoding"] = (
         _enum_name(h.repetition_level_encoding, _ENC_NAMES) if h is not None else None
     )
-    out["statistics"] = _page_statistics(h)
+    out["statistics"] = _page_statistics(h, p)
     out["crc"] = p._t.crc
     return out
 
@@ -361,7 +367,7 @@ def _render_data_page_v2(p: Any, _view: str, _child_depth: Depth) -> dict:
     out["repetition_levels_byte_length"] = (
         h.repetition_levels_byte_length if h is not None else 0
     )
-    out["statistics"] = _page_statistics(h)
+    out["statistics"] = _page_statistics(h, p)
     out["crc"] = p._t.crc
     return out
 
@@ -607,38 +613,47 @@ def _ref_stub_from_wrapper(node: Any, kind: str) -> dict:
     }
 
 
-def _column_chunk_statistics(cc: "ColumnChunk") -> Any:
-    """Pull statistics for ``cc`` from ``pf.footer`` (the JSON-decoded
-    footer dict). Returns ``None`` when the writer omitted statistics."""
-    rg_idx = _row_group_index_of(cc)
-    col_idx = _column_position(cc)
-    footer = cc._pf.footer
-    rgs = footer.get("row_groups") or []
-    if rg_idx >= len(rgs):
-        return None
-    cols = rgs[rg_idx].get("columns") or []
-    if col_idx >= len(cols):
-        return None
-    md = cols[col_idx].get("meta_data") or {}
-    stats = md.get("statistics")
-    return _make_json_safe(stats) if stats is not None else None
+def _column_logical_type(cc: "ColumnChunk") -> dict | None:
+    """The ``logicalType`` dict for ``cc``'s leaf column, or ``None``."""
+    return _column_logical_types(cc._pf.footer["schema"]).get(tuple(cc.path))
 
 
-def _page_statistics(header: Any) -> Any:
-    """Convert a thrift ``Statistics`` object into a JSON-safe dict."""
-    stats = getattr(header, "statistics", None) if header is not None else None
+def _build_statistics(stats: Any, physical_type: str, logical_type: dict | None) -> Any:
+    """Build the v0 statistics object from a thrift ``Statistics``:
+    ``null_count`` / ``distinct_count`` plus decoded ``min_value`` /
+    ``max_value`` scalars. The deprecated ``min`` / ``max`` byte fields are
+    dropped, but used as a fallback source for the value when a writer set
+    only the deprecated fields."""
     if stats is None:
         return None
     out: dict[str, Any] = {}
-    for attr in ("max", "min", "max_value", "min_value"):
-        v = getattr(stats, attr, None)
-        if v is not None:
-            out[attr] = _make_json_safe(v)
-    for attr in ("null_count", "distinct_count"):
-        v = getattr(stats, attr, None)
-        if v is not None:
-            out[attr] = v
+    if stats.null_count is not None:
+        out["null_count"] = stats.null_count
+    if stats.distinct_count is not None:
+        out["distinct_count"] = stats.distinct_count
+    min_raw = stats.min_value if stats.min_value is not None else stats.min
+    max_raw = stats.max_value if stats.max_value is not None else stats.max
+    if min_raw is not None:
+        out["min_value"] = _json_safe_stat_value(min_raw, physical_type, logical_type)
+    if max_raw is not None:
+        out["max_value"] = _json_safe_stat_value(max_raw, physical_type, logical_type)
     return out or None
+
+
+def _column_chunk_statistics(cc: "ColumnChunk") -> Any:
+    """Statistics for ``cc`` with decoded ``min_value``/``max_value``.
+    ``None`` when the writer omitted statistics."""
+    return _build_statistics(cc._md.statistics, cc.type, _column_logical_type(cc))
+
+
+def _page_statistics(header: Any, page: Any) -> Any:
+    """Statistics for one page (from its header), decoded against the
+    owning column's type. ``None`` when the page carries no statistics."""
+    stats = getattr(header, "statistics", None) if header is not None else None
+    if stats is None:
+        return None
+    cc = page._cc
+    return _build_statistics(stats, cc.type, _column_logical_type(cc))
 
 
 def _make_json_safe(value: Any) -> Any:
