@@ -49,6 +49,7 @@ from ._core import (
     _compute_pages,
     _compute_summary,
     _find_field,
+    _iter_page_headers,
     _parse_footer,
     _walk_chunks_eager,
     fill_gaps,
@@ -630,17 +631,28 @@ class ColumnChunk:
             return data_pages + dict_page
         return len(self.pages())
 
+    @property
+    def offset_index(self) -> "_ThriftOffsetIndex | None":
+        """The parsed OffsetIndex thrift for this chunk, or ``None`` when
+        the chunk has no OffsetIndex.
+
+        Public companion to :attr:`has_offset_index` and the private
+        reader, returning ``None`` rather than raising when absent. The
+        OffsetIndex records per-data-page byte offsets, compressed sizes,
+        and first-row indices (it does not include the dictionary page);
+        :meth:`page` uses it to seek without walking.
+        """
+        if not self.has_offset_index:
+            return None
+        return self._read_offset_index()
+
     def _read_offset_index(self) -> _ThriftOffsetIndex:
         """Read + cache the OffsetIndex thrift struct for this chunk.
 
         Caller must check :attr:`has_offset_index` first; this raises
         ``ValueError`` if the chunk has none. The cached object is
-        returned on subsequent calls.
-
-        A public ``offset_index`` property exposing this object is tracked
-        in #20 / #21 (the tree-model and page-subcommand work); for now
-        the accessor stays private since the only consumer is
-        :attr:`num_pages`.
+        returned on subsequent calls. The public :attr:`offset_index`
+        property wraps this and returns ``None`` instead of raising.
         """
         if self._t.offset_index_offset is None:
             raise ValueError(
@@ -733,47 +745,53 @@ class ColumnChunk:
         (``raw_bytes`` / ``decompress`` / ``decode``) is tracked in #21.
         """
         if self._pages_cache is None:
-            pages: list[Page] = []
-            f = self._pf._f
-            # The dictionary page (if present) precedes the data pages and
-            # is not counted by num_values, so read it unconditionally —
-            # including for a 0-row column, where the value-walk below never
-            # executes.
-            if self._md.dictionary_page_offset:
-                dict_thrift, dict_segment = read_thrift_segment(
-                    f, self._md.dictionary_page_offset, "page", _ThriftPageHeader
+            self._pages_cache = tuple(
+                Page(self._pf, self, thrift, segment)
+                for thrift, segment in _iter_page_headers(
+                    self._pf._f,
+                    self._md.dictionary_page_offset,
+                    self._md.data_page_offset,
+                    self._md.num_values,
                 )
-                pages.append(Page(self._pf, self, dict_thrift, dict_segment))
-                offset = (
-                    dict_segment["offset"]
-                    + dict_segment["length"]
-                    + dict_thrift.compressed_page_size
-                )
-            else:
-                offset = self._md.data_page_offset
-            remaining_values = self._md.num_values
-            while remaining_values > 0:
-                page_thrift, page_segment = read_thrift_segment(
-                    f, offset, "page", _ThriftPageHeader
-                )
-                pages.append(Page(self._pf, self, page_thrift, page_segment))
-                page_header_end = page_segment["offset"] + page_segment["length"]
-                if page_thrift.data_page_header is not None:
-                    num_values_read = page_thrift.data_page_header.num_values
-                elif page_thrift.data_page_header_v2 is not None:
-                    num_values_read = page_thrift.data_page_header_v2.num_values
-                elif page_thrift.dictionary_page_header is not None:
-                    # A dictionary page reached via the value-walk — older
-                    # writers point data_page_offset at the dictionary page
-                    # and leave dictionary_page_offset unset. It does not
-                    # count toward num_values; keep walking to the data pages.
-                    num_values_read = 0
-                else:
-                    break
-                remaining_values -= num_values_read
-                offset = page_header_end + page_thrift.compressed_page_size
-            self._pages_cache = tuple(pages)
+            )
         return self._pages_cache
+
+    def page(self, index: int) -> "Page":
+        """Return the ``index``-th page (a :class:`Page`), supporting
+        negative indices. Random-access counterpart to :meth:`pages`.
+
+        When :attr:`has_offset_index` is ``True``, seeks directly to the
+        requested page via the OffsetIndex (one small thrift parse + one
+        page-header read) — no full page-header walk. Otherwise it indexes
+        the walked list (materializing it once). Page 0 is the dictionary
+        page when one is present, matching :meth:`pages` ordering.
+        """
+        n = self.num_pages
+        if index < 0:
+            index += n
+        if not 0 <= index < n:
+            raise IndexError(f"page index out of range: {index} (chunk has {n} pages)")
+        if self._pages_cache is not None:
+            return self._pages_cache[index]
+        if self.has_offset_index:
+            return self._page_via_offset_index(index)
+        return self.pages()[index]
+
+    def _page_via_offset_index(self, index: int) -> "Page":
+        """Direct-seek the ``index``-th page using the OffsetIndex. The
+        OffsetIndex tracks only data pages, so page 0 is the dictionary
+        page (when present) and data page ``i`` is OffsetIndex entry ``i``
+        (offset by 1 when a dictionary page leads)."""
+        has_dict = bool(self._md.dictionary_page_offset)
+        if has_dict and index == 0:
+            offset = self._md.dictionary_page_offset
+        else:
+            loc_index = index - 1 if has_dict else index
+            offset = self._read_offset_index().page_locations[loc_index].offset
+        thrift, segment = read_thrift_segment(
+            self._pf._f, offset, "page", _ThriftPageHeader
+        )
+        return Page(self._pf, self, thrift, segment)
 
     # ----- Tree-node interface (docs/tree-schema.md v0) --------------------
 

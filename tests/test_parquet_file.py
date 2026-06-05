@@ -80,6 +80,23 @@ def nested_row_groups_parquet(tmp_path):
     return path
 
 
+@pytest.fixture()
+def many_pages_parquet(tmp_path):
+    """A single chunk with a dictionary page + several data pages and an
+    OffsetIndex, for random-access / direct-seek tests."""
+    table = pa.table({"x": pa.array(list(range(5000)), type=pa.int32())})
+    path = tmp_path / "many.parquet"
+    pq.write_table(
+        table,
+        path,
+        row_group_size=5000,
+        use_dictionary=True,
+        write_page_index=True,
+        data_page_size=512,
+    )
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Construction / lifecycle
 # ---------------------------------------------------------------------------
@@ -641,3 +658,136 @@ def test_all_segments_caches_result(small_parquet):
         assert first is second
     finally:
         pf.close()
+
+
+# ---------------------------------------------------------------------------
+# Public offset_index accessor + page(index) random access (Slice 4a step 3)
+# ---------------------------------------------------------------------------
+
+
+def test_offset_index_returns_parsed_when_present(nested_row_groups_parquet):
+    with ParquetFile(str(nested_row_groups_parquet)) as pf:
+        cc = pf.row_groups[0].columns[0]
+        assert cc.has_offset_index
+        oi = cc.offset_index
+        assert oi is not None
+        assert oi.page_locations is not None and len(oi.page_locations) >= 1
+
+
+def test_offset_index_none_when_absent(tmp_path):
+    path = tmp_path / "nooi.parquet"
+    pq.write_table(
+        pa.table({"x": pa.array([1, 2, 3], type=pa.int32())}),
+        path,
+        write_page_index=False,
+    )
+    with ParquetFile(str(path)) as pf:
+        cc = pf.row_groups[0].columns[0]
+        assert not cc.has_offset_index
+        assert cc.offset_index is None
+
+
+def test_page_matches_pages_index(many_pages_parquet):
+    with ParquetFile(str(many_pages_parquet)) as pf:
+        cc = pf.row_groups[0].columns[0]
+        pages = cc.pages()
+        assert len(pages) >= 3
+        for i in range(len(pages)):
+            assert cc.page(i)._offset == pages[i]._offset
+            assert cc.page(i)._kind == pages[i]._kind
+        # negative indexing
+        assert cc.page(-1)._offset == pages[-1]._offset
+
+
+def test_page_out_of_range_raises(small_parquet):
+    with ParquetFile(str(small_parquet)) as pf:
+        cc = pf.row_groups[0].columns[0]
+        n = cc.num_pages
+        with pytest.raises(IndexError):
+            cc.page(n)
+        with pytest.raises(IndexError):
+            cc.page(-n - 1)
+
+
+def test_page_direct_seek_via_offset_index_does_not_walk(many_pages_parquet):
+    """page(index) on a chunk with an OffsetIndex seeks directly — reading
+    one page header, not walking every prior page."""
+    from parquet_analyzer import _core, parquet_file as _pf_module
+
+    pf = ParquetFile(str(many_pages_parquet))
+    try:
+        cc = pf.row_groups[0].columns[0]
+        n = cc.num_pages
+        assert n >= 3 and cc.has_offset_index
+        expected_offset = cc.pages()[-1]._offset  # ground truth via walk
+
+        page_reads = 0
+        original = _core.read_thrift_segment
+
+        def counting(f, offset, name, thrift_class):
+            nonlocal page_reads
+            if name == "page":
+                page_reads += 1
+            return original(f, offset, name, thrift_class)
+
+        # Fresh chunk so the pages() cache isn't reused.
+        cc2 = pf.row_groups[0].columns[0]
+        cc2._pages_cache = None
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(_core, "read_thrift_segment", counting)
+            mp.setattr(_pf_module, "read_thrift_segment", counting)
+            last = cc2.page(n - 1)
+
+        assert page_reads == 1, (
+            f"page(last) via OffsetIndex read {page_reads} headers; "
+            "direct-seek should read exactly 1"
+        )
+        assert last._offset == expected_offset
+    finally:
+        pf.close()
+
+
+def test_page_walks_when_no_offset_index(tmp_path):
+    path = tmp_path / "nooi_multi.parquet"
+    pq.write_table(
+        pa.table({"x": pa.array(list(range(2000)), type=pa.int32())}),
+        path,
+        write_page_index=False,
+        data_page_size=512,
+    )
+    with ParquetFile(str(path)) as pf:
+        cc = pf.row_groups[0].columns[0]
+        assert not cc.has_offset_index
+        pages = cc.pages()
+        # page(index) falls back to the walked list and stays correct.
+        assert cc.page(len(pages) - 1)._offset == pages[-1]._offset
+
+
+def test_segments_include_dictionary_page_for_zero_row_column(tmp_path):
+    """The consolidated page walk reads a 0-row column's dictionary page in
+    the eager segments path too (previously skipped because the value-walk
+    never ran)."""
+    path = tmp_path / "empty.parquet"
+    pq.write_table(
+        pa.table({"x": pa.array([], type=pa.int32())}), path, use_dictionary=True
+    )
+    with ParquetFile(str(path)) as pf:
+        cc = pf.row_groups[0].columns[0]
+        assert cc.dictionary_page_offset and cc.num_values == 0
+        page_segments = [s for s in pf.all_segments() if s.get("name") == "page"]
+        assert len(page_segments) == 1, (
+            "0-row dict column's page must appear in segments"
+        )
+
+
+def test_page_zero_direct_seek_returns_dictionary_page(many_pages_parquet):
+    """page(0) via OffsetIndex direct-seek returns the dictionary page —
+    the OffsetIndex doesn't index it, so index 0 seeks to
+    dictionary_page_offset directly."""
+    with ParquetFile(str(many_pages_parquet)) as pf:
+        cc = pf.row_groups[0].columns[0]
+        assert cc.has_offset_index and cc.dictionary_page_offset
+        cc._pages_cache = None  # force the direct-seek path
+        p0 = cc.page(0)
+        assert p0._kind == "dictionary_page"
+        assert p0._offset == cc.dictionary_page_offset
