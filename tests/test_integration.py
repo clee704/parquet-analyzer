@@ -223,6 +223,68 @@ def test_subcommand_column_show_end_to_end(sample_parquet, capsys):
     assert len(payload["row_groups"]) == 1
 
 
+@pytest.fixture()
+def multi_rg_parquet(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    table = pa.table(
+        {
+            "id": pa.array(list(range(40))),
+            "name": pa.array([f"n{i}" for i in range(40)]),
+        }
+    )
+    path = tmp_path / "multi.parquet"
+    pq.write_table(table, path, row_group_size=10)  # 4 row groups × 2 columns
+    return path
+
+
+def _resolve_kind_name(path, navpath):
+    """Resolve a show navigation path and return (kind, column display name)."""
+    from parquet_analyzer import _navigate
+
+    with ParquetFile(str(path)) as pf:
+        node, kind, _ = _navigate.resolve(pf, navpath, walk_pages=False)
+        name = ".".join(node.path) if kind == "column_chunk" else None
+    return kind, name
+
+
+def test_rowgroup_list_items_carry_show_path(multi_rg_parquet, capsys):
+    cli.main(["rowgroup", "list", str(multi_rg_parquet)])
+    items = json.loads(capsys.readouterr().out)["items"]
+    assert [i["_path"] for i in items] == [f"row_groups/{i}" for i in range(4)]
+
+
+def test_column_list_items_carry_resolvable_show_path(multi_rg_parquet, capsys):
+    cli.main(["column", "list", str(multi_rg_parquet)])
+    items = json.loads(capsys.readouterr().out)["items"]
+    # Every item's _path resolves via show to the very column it describes.
+    for item in items:
+        kind, name = _resolve_kind_name(multi_rg_parquet, item["_path"])
+        assert kind == "column_chunk"
+        assert name == item["column"]
+    # Index-based path for row group 2, column 1 (the "name" column).
+    assert {"row_groups/2/columns/1"} <= {i["_path"] for i in items}
+
+
+def test_rowgroup_show_carries_show_paths(multi_rg_parquet, capsys):
+    cli.main(["rowgroup", "show", str(multi_rg_parquet), "--row-group", "2"])
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["_path"] == "row_groups/2"
+    assert [c["_path"] for c in payload["columns"]] == [
+        "row_groups/2/columns/0",
+        "row_groups/2/columns/1",
+    ]
+
+
+def test_column_show_entries_carry_show_paths(multi_rg_parquet, capsys):
+    cli.main(["column", "show", str(multi_rg_parquet), "--column", "name"])
+    payload = json.loads(capsys.readouterr().out)
+    # One entry per row group; "name" is column index 1 in each.
+    assert [e["_path"] for e in payload["row_groups"]] == [
+        f"row_groups/{i}/columns/1" for i in range(4)
+    ]
+
+
 def test_subcommand_column_show_no_offset_index_marks_pages_unknown(
     sample_parquet, capsys
 ):

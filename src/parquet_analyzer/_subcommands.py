@@ -221,6 +221,7 @@ def _all_column_paths(footer: dict) -> list[tuple[str, ...]]:
 
 def _column_chunk_summary(
     rg_index: int,
+    col_index: int,
     footer_column: dict,
     cc_wrapper: Any | None = None,
 ) -> dict:
@@ -246,6 +247,10 @@ def _column_chunk_summary(
     that the footer records. Without an OffsetIndex, computing the count
     requires walking page headers; the v1 contract forbids that, so we
     report ``num_pages: null`` / ``num_pages_known: false`` instead.
+
+    ``_path`` is the canonical ``show`` navigation path for this chunk
+    (``row_groups/<rg_index>/columns/<col_index>``) — feed it to ``show``
+    to drill into the column's pages.
     """
     md = footer_column["meta_data"]
     path = tuple(md["path_in_schema"])
@@ -276,6 +281,7 @@ def _column_chunk_summary(
 
     out: dict[str, Any] = {
         "row_group": rg_index,
+        "_path": f"row_groups/{rg_index}/columns/{col_index}",
         "column": _path_display(path),
         "path": list(path),
         "type": md.get("type"),
@@ -460,6 +466,9 @@ def _row_group_summary(rg_index: int, footer_rg: dict) -> dict:
       ``RowGroup.total_byte_size``).
     * ``total_compressed_size`` — computed sum of
       ``ColumnChunk.meta_data.total_compressed_size`` across the rg.
+
+    ``_path`` is the canonical ``show`` navigation path for this row group
+    (``row_groups/<i>``) — feed it to ``show`` to drill in.
     """
     cols = footer_rg.get("columns", [])
     total_compressed = sum(
@@ -467,6 +476,7 @@ def _row_group_summary(rg_index: int, footer_rg: dict) -> dict:
     )
     return {
         "row_group": rg_index,
+        "_path": f"row_groups/{rg_index}",
         "num_rows": footer_rg.get("num_rows"),
         "file_offset": footer_rg.get("file_offset"),
         "total_byte_size": footer_rg.get("total_byte_size"),
@@ -503,8 +513,10 @@ def handle_rowgroup_show(args: argparse.Namespace) -> None:
 
         rg_wrapper = pf.row_groups[args.row_group]
         columns = [
-            _column_chunk_summary(args.row_group, footer_cc, cc_wrapper)
-            for footer_cc, cc_wrapper in zip(rg.get("columns", []), rg_wrapper.columns)
+            _column_chunk_summary(args.row_group, col_idx, footer_cc, cc_wrapper)
+            for col_idx, (footer_cc, cc_wrapper) in enumerate(
+                zip(rg.get("columns", []), rg_wrapper.columns)
+            )
         ]
 
     payload = {
@@ -536,10 +548,12 @@ def handle_column_list(args: argparse.Namespace) -> None:
         for rg_idx in rg_indices:
             footer_rg = footer["row_groups"][rg_idx]
             rg_wrapper = pf.row_groups[rg_idx]
-            for footer_cc, cc_wrapper in zip(
-                footer_rg.get("columns", []), rg_wrapper.columns
+            for col_idx, (footer_cc, cc_wrapper) in enumerate(
+                zip(footer_rg.get("columns", []), rg_wrapper.columns)
             ):
-                items.append(_column_chunk_summary(rg_idx, footer_cc, cc_wrapper))
+                items.append(
+                    _column_chunk_summary(rg_idx, col_idx, footer_cc, cc_wrapper)
+                )
     payload = _wrap_list(items, args.limit, "column-list")
     if args.row_group is not None:
         payload["row_group"] = args.row_group
@@ -588,10 +602,14 @@ def handle_column_show(args: argparse.Namespace) -> None:
             rg_wrapper = pf.row_groups[rg_idx]
             # Locate the same column chunk in the wrapper list. Matching by
             # path tuple is safe because parquet guarantees one chunk per
-            # path per row group.
-            cc_wrapper = next((c for c in rg_wrapper.columns if c.path == path), None)
+            # path per row group; its position is the column index used in
+            # the navigation _path.
+            col_idx, cc_wrapper = next(
+                ((i, c) for i, c in enumerate(rg_wrapper.columns) if c.path == path),
+                (0, None),
+            )
             row_group_details.append(
-                _column_chunk_summary(rg_idx, footer_cc, cc_wrapper)
+                _column_chunk_summary(rg_idx, col_idx, footer_cc, cc_wrapper)
             )
 
     # Aggregates across matched row groups. All footer-derived (sum of
