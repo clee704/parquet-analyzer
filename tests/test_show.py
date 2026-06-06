@@ -229,6 +229,68 @@ def many_pages(tmp_path):
     return p
 
 
+@pytest.fixture()
+def indexed_dict_multipage(tmp_path):
+    """OffsetIndex column with a dictionary page AND many data pages."""
+    p = tmp_path / "idm.parquet"
+    pq.write_table(
+        pa.table({"s": pa.array([f"s{i % 50}" for i in range(100_000)])}),
+        p,
+        data_page_size=512,
+        use_dictionary=True,
+        write_page_index=True,
+    )
+    return p
+
+
+@pytest.fixture()
+def no_index_dict(tmp_path):
+    """A dictionary page but NO OffsetIndex (withheld-listing path)."""
+    p = tmp_path / "nid.parquet"
+    pq.write_table(
+        pa.table({"s": pa.array([f"s{i % 50}" for i in range(2000)])}),
+        p,
+        use_dictionary=True,
+    )
+    return p
+
+
+def test_show_limit_excludes_dict_page_from_count(indexed_dict_multipage):
+    """The dictionary page is always shown separately and is NOT subject to
+    --limit, so children_shown counts only the (capped) data pages and never
+    exceeds the limit (regression for the dict-page off-by-one)."""
+    with ParquetFile(str(indexed_dict_multipage)) as pf:
+        cc = pf.row_groups[0].columns[0]
+        assert cc.dictionary_page_offset, "fixture should have a dictionary page"
+        data_pages = cc.num_pages - 1  # minus the dict page
+        out = render(pf, "row_groups/0/columns/0", walk_pages=False, limit=3)
+    assert data_pages > 3, "fixture should have more than 3 data pages"
+    assert out["dictionary_page"] is not None
+    assert out["dictionary_page"]["_path"] == "row_groups/0/columns/0/pages/0"
+    nav = out["_navigation"]
+    assert nav["children_shown"] == 3  # <= limit, dict not counted
+    assert nav["children_total"] == data_pages
+    assert nav["children_truncated"] is True
+    assert len(out["pages"]) == 3
+
+
+def test_show_withheld_path_shows_dict_stub(no_index_dict):
+    """A no-OffsetIndex column that has a dictionary page shows the dict stub
+    (footer-derived extent) rather than a misleading null, while the data-page
+    listing stays withheld."""
+    with ParquetFile(str(no_index_dict)) as pf:
+        cc = pf.row_groups[0].columns[0]
+        assert not cc.has_offset_index and cc.dictionary_page_offset
+        expected_len = cc.data_page_offset - cc.dictionary_page_offset
+        out = render(pf, "row_groups/0/columns/0", walk_pages=False)
+    dp = out["dictionary_page"]
+    assert dp is not None
+    assert dp["_kind"] == "dictionary_page"
+    assert dp["_offset"] == cc.dictionary_page_offset
+    assert dp["_length"] == expected_len
+    assert out["pages"]["_walk_required"] is True
+
+
 def test_show_limit_caps_page_listing(many_pages):
     with ParquetFile(str(many_pages)) as pf:
         total = pf.row_groups[0].columns[0].num_pages

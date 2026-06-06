@@ -178,7 +178,7 @@ def _render_column_show(cc: Any, base: str, walk_pages: bool, limit: int) -> dic
     out = _column_chunk_content(cc)
     if cc.has_offset_index or walk_pages:
         dict_json, pages_json = _render_pages(cc, "tree", 0)
-        total = len(pages_json) + (1 if dict_json is not None else 0)
+        # Page 0 is the dictionary page when present; data pages follow.
         idx = 0
         if dict_json is not None:
             dict_json["_path"] = f"{base}/pages/{idx}"
@@ -187,20 +187,24 @@ def _render_column_show(cc: Any, base: str, walk_pages: bool, limit: int) -> dic
             stub["_path"] = f"{base}/pages/{idx}"
             idx += 1
         out["dictionary_page"] = dict_json
-        if limit > 0 and len(pages_json) > limit:
+        # --limit caps the (potentially huge) data-page listing. The
+        # dictionary page is a single, always-shown child — not part of the
+        # capped listing — so children_* describe the data pages only,
+        # keeping children_shown <= limit (as for row groups / columns).
+        total = len(pages_json)
+        if limit > 0 and total > limit:
             out["pages"] = pages_json[:limit]
             truncated = True
         else:
             out["pages"] = pages_json
             truncated = False
-        shown = len(out["pages"]) + (1 if dict_json is not None else 0)
         out["_listing"] = {
             "children_total": total,
-            "children_shown": shown,
+            "children_shown": len(out["pages"]),
             "children_truncated": truncated,
         }
     else:
-        out["dictionary_page"] = None
+        out["dictionary_page"] = _withheld_dict_stub(cc, base)
         out["pages"] = {
             "_walk_required": True,
             "reason": "no OffsetIndex",
@@ -216,6 +220,23 @@ def _render_column_show(cc: Any, base: str, walk_pages: bool, limit: int) -> dic
         }
     out.update(render_tree_index_children(cc, 0))
     return out
+
+
+def _withheld_dict_stub(cc: Any, base: str) -> dict | None:
+    """The dictionary-page stub on the no-OffsetIndex path. Its extent is
+    footer-derivable — ``[dictionary_page_offset, data_page_offset)`` is, by
+    the column-chunk layout, exactly the dictionary page — so it is shown
+    even when the data-page listing is withheld (reporting ``null`` here
+    would be indistinguishable from a column that has no dictionary page)."""
+    if not cc.dictionary_page_offset:
+        return None
+    return {
+        "_kind": "dictionary_page",
+        "_offset": cc.dictionary_page_offset,
+        "_length": cc.data_page_offset - cc.dictionary_page_offset,
+        "_lazy": True,
+        "_path": f"{base}/pages/0",
+    }
 
 
 def _list_children(
