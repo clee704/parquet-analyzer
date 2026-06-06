@@ -40,9 +40,14 @@ SCHEMA_URI_LAYOUT = "parquet-analyzer/v2/layout"
 # Kinds where materialization requires page-header parsing or extra
 # thrift parsing beyond the footer parse — these carry ``_lazy: true``
 # when emitted as stubs. See docs/tree-schema.md §"_lazy: true".
+#
+# ``data_page`` is the generic, version-agnostic kind used for a data
+# page at the stub level (its ``data_page_v1`` / ``data_page_v2`` version
+# is only known once the header is read, i.e. on materialization).
 LAZY_KINDS = frozenset(
     {
         "dictionary_page",
+        "data_page",
         "data_page_v1",
         "data_page_v2",
         "offset_index",
@@ -255,11 +260,7 @@ def _render_column_chunk(cc: "ColumnChunk", view: str, child_depth: Depth) -> di
     if view == "tree":
         # Tree view: page kinds + opaque branches as named children; no
         # data_region (per docs/tree-schema.md). null when absent.
-        dict_page, data_pages = _split_pages(cc)
-        out["dictionary_page"] = (
-            _render(dict_page, view, child_depth) if dict_page is not None else None
-        )
-        out["pages"] = [_render(p, view, child_depth) for p in data_pages]
+        out["dictionary_page"], out["pages"] = _render_pages(cc, view, child_depth)
         out["offset_index"] = (
             _render(_offset_index_node(cc), view, child_depth)
             if cc.offset_index_offset is not None
@@ -307,11 +308,7 @@ def _render_data_region(node: dict, view: str, child_depth: Depth) -> dict:
     out["chunk_ref"] = _ref_stub_from_wrapper(cc, "column_chunk")
     out["row_group_index"] = node["_row_group_index"]
     out["column_position_in_row_group"] = node["_column_position_in_row_group"]
-    dict_page, data_pages = _split_pages(cc)
-    out["dictionary_page"] = (
-        _render(dict_page, view, child_depth) if dict_page is not None else None
-    )
-    out["pages"] = [_render(p, view, child_depth) for p in data_pages]
+    out["dictionary_page"], out["pages"] = _render_pages(cc, view, child_depth)
     return out
 
 
@@ -565,6 +562,71 @@ def _split_pages(cc: "ColumnChunk") -> tuple[Any, list]:
         else:
             data_pages.append(p)
     return dict_page, data_pages
+
+
+def _render_pages(
+    cc: "ColumnChunk", view: str, child_depth: Depth
+) -> tuple[dict | None, list[dict]]:
+    """Return ``(dictionary_page_json, [page_json, ...])`` for a column
+    chunk's pages, shared by the tree ``column_chunk`` and the layout
+    ``column_chunk_data_region`` renderers.
+
+    When the pages are only being stubbed (``child_depth == 0``), the
+    OffsetIndex-derived stubs (:meth:`ColumnChunk.page_stubs`) are used
+    when available — enumerating the pages without reading any per-page
+    header, which is what keeps *listing* a column's pages cheap (#30).
+    When the column has no OffsetIndex, the only source of page extents is
+    a full header walk, so the stubs fall back to that walk. (The
+    no-OffsetIndex "walk required" affordance — listing without any walk —
+    is introduced with the ``show`` navigation verb; the tree/layout
+    serializer here keeps the walk fallback.)
+
+    When descending into the pages (``child_depth > 0``), the headers are
+    required to render the page bodies regardless, so the walk is inherent.
+
+    At the stub level a data page carries the generic ``data_page`` kind;
+    the ``data_page_v1`` / ``data_page_v2`` distinction is a
+    materialized-only detail (it is read from the header).
+    """
+    if _is_stub_level(child_depth):
+        stubs = cc.page_stubs()
+        if stubs is not None:
+            dict_json = next(
+                (_page_stub_json(s) for s in stubs if s.kind == "dictionary_page"),
+                None,
+            )
+            pages_json = [_page_stub_json(s) for s in stubs if s.kind == "data_page"]
+            return dict_json, pages_json
+        dict_page, data_pages = _split_pages(cc)
+        dict_json = _walked_page_stub_json(dict_page) if dict_page is not None else None
+        return dict_json, [_walked_page_stub_json(p) for p in data_pages]
+    dict_page, data_pages = _split_pages(cc)
+    dict_json = _render(dict_page, view, child_depth) if dict_page is not None else None
+    return dict_json, [_render(p, view, child_depth) for p in data_pages]
+
+
+def _page_stub_json(stub: Any) -> dict:
+    """JSON stub for an OffsetIndex-derived :class:`PageStub`."""
+    return {
+        "_kind": stub.kind,
+        "_offset": stub.offset,
+        "_length": stub.length,
+        "_lazy": True,
+    }
+
+
+def _walked_page_stub_json(page: Any) -> dict:
+    """JSON stub for a walked :class:`Page`. Data pages collapse to the
+    generic ``data_page`` kind so a stub-level page kind is uniform
+    whether it came from the OffsetIndex or a header walk; the specific
+    version stays a materialized-only detail."""
+    kind = "dictionary_page" if _kind_of(page) == "dictionary_page" else "data_page"
+    return {
+        "_kind": kind,
+        "_offset": _offset_of(page),
+        "_length": _length_of(page),
+        "_lazy": True,
+    }
 
 
 # ---------------------------------------------------------------------------

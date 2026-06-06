@@ -89,6 +89,24 @@ def indexed_parquet(tmp_path):
 
 
 @pytest.fixture()
+def indexed_nodict_parquet(tmp_path):
+    """File with an OffsetIndex but NO dictionary page (use_dictionary=False
+    + write_page_index=True), so page_stubs() exercises the OffsetIndex
+    fast path with no dictionary-page stub."""
+    table = pa.table({"ints": pa.array(list(range(20)), type=pa.int32())})
+    path = tmp_path / "indexed_nodict.parquet"
+    pq.write_table(
+        table,
+        path,
+        row_group_size=10,
+        use_dictionary=False,
+        write_page_index=True,
+        compression="snappy",
+    )
+    return path
+
+
+@pytest.fixture()
 def bloomy_parquet(tmp_path):
     """File written with an explicit bloom filter for the ``strings``
     column, so the ``bloom_filter_header`` opaque-branch paths are live."""
@@ -311,6 +329,9 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
     "column_index": {"_kind", "_offset", "_length"},
     "bloom_filter_header": {"_kind", "_offset", "_length"},
     "unknown": {"_kind", "_offset", "_length"},
+    # Generic data-page kind used at the stub level (the v1/v2 version is a
+    # materialized-only detail). Stub-only: never carries content fields.
+    "data_page": {"_kind", "_offset", "_length"},
 }
 
 
@@ -391,6 +412,7 @@ REQUIRED_MATERIALIZED_KEYS: dict[str, set[str]] = {
 
 LAZY_KINDS = {
     "dictionary_page",
+    "data_page",
     "data_page_v1",
     "data_page_v2",
     "offset_index",
@@ -914,23 +936,194 @@ def test_depth_all_triggers_bloom_filter_read(bloomy_parquet, monkeypatch):
         pf.close()
 
 
-def test_offset_index_stub_does_not_trigger_read(indexed_parquet, monkeypatch):
-    """offset_index emitted as a stub (column_chunk materialized but
-    deeper levels stubbed) must NOT trigger the read."""
+def test_offset_index_file_lists_pages_via_index_not_walk(indexed_parquet, monkeypatch):
+    """#30: on a file with an OffsetIndex, listing a column's pages
+    (column_chunk materialized, pages stubbed) must enumerate them via the
+    OffsetIndex (cheap) and NOT by walking the per-page headers."""
     pf = ParquetFile(str(indexed_parquet))
     try:
         has_oi = any(cc.has_offset_index for rg in pf.row_groups for cc in rg.columns)
         if not has_oi:
             pytest.skip("fixture lacks offset_index")
         counts = _install_read_probe(monkeypatch)
-        # depth=3 = file→rg(L1)→cc(L2 materialized)→offset_index(L3 stub)
+        # depth=3 = file→rg(L1)→cc(L2 materialized)→pages(L3 stubs)
         pf.to_json(view="tree", depth=3)
-        assert counts.get("offset_index", 0) == 0, (
-            f"offset_index stub triggered {counts.get('offset_index', 0)} "
-            "reads; should be 0"
+        assert counts.get("page", 0) == 0, (
+            f"listing pages walked {counts.get('page', 0)} page headers; the "
+            "OffsetIndex fast path must read none"
+        )
+        assert counts.get("offset_index", 0) > 0, (
+            "page listing must read the OffsetIndex to enumerate page stubs"
         )
     finally:
         pf.close()
+
+
+# ---------------------------------------------------------------------------
+# Page stubs (#30) — list a column's pages without walking page headers
+# ---------------------------------------------------------------------------
+
+
+def test_page_stubs_no_dictionary_when_absent(indexed_nodict_parquet):
+    """OffsetIndex present but no dictionary page: page_stubs() yields only
+    data-page stubs (no dictionary_page stub), matching materialized pages."""
+    with ParquetFile(str(indexed_nodict_parquet)) as pf:
+        exercised = False
+        for rg in pf.row_groups:
+            for cc in rg.columns:
+                stubs = cc.page_stubs()
+                assert stubs is not None
+                assert cc._md.dictionary_page_offset is None
+                assert all(s.kind == "data_page" for s in stubs)
+                pages = cc.pages()
+                assert len(stubs) == len(pages)
+                for stub, page in zip(stubs, pages):
+                    assert stub.offset == page._offset
+                    assert stub.length == page._length
+                exercised = True
+        assert exercised
+
+
+def test_page_stubs_none_without_offset_index(small_parquet):
+    """A column with no OffsetIndex cannot enumerate pages cheaply, so
+    page_stubs() returns None (the caller must walk or show an affordance)."""
+    with ParquetFile(str(small_parquet)) as pf:
+        for rg in pf.row_groups:
+            for cc in rg.columns:
+                assert not cc.has_offset_index
+                assert cc.page_stubs() is None
+
+
+def test_page_stubs_match_materialized_pages(indexed_parquet):
+    """page_stubs() extents/kinds match the materialized pages() exactly —
+    validating the dictionary-page arithmetic and the OffsetIndex-derived
+    data-page extents against the real page headers."""
+    with ParquetFile(str(indexed_parquet)) as pf:
+        checked_dict = False
+        checked_data = False
+        for rg in pf.row_groups:
+            for cc in rg.columns:
+                stubs = cc.page_stubs()
+                if stubs is None:
+                    continue
+                pages = cc.pages()
+                assert len(stubs) == len(pages)
+                for stub, page in zip(stubs, pages):
+                    assert stub.offset == page._offset
+                    assert stub.length == page._length
+                    if page._kind == "dictionary_page":
+                        assert stub.kind == "dictionary_page"
+                        assert stub.first_row_index is None
+                        checked_dict = True
+                    else:
+                        # Stub kind is the generic data_page; the version
+                        # (v1/v2) is only on the materialized page.
+                        assert stub.kind == "data_page"
+                        assert stub.first_row_index is not None
+                        checked_data = True
+        assert checked_data, "fixture exercised no data-page stubs"
+        assert checked_dict, "fixture exercised no dictionary-page stub"
+
+
+def test_page_stubs_dict_extent_matches_offset_index(indexed_parquet):
+    """The dictionary-page stub's data-page boundary equals the first data
+    page's offset from the OffsetIndex (the arithmetic extent is exact)."""
+    with ParquetFile(str(indexed_parquet)) as pf:
+        for rg in pf.row_groups:
+            for cc in rg.columns:
+                stubs = cc.page_stubs()
+                if stubs is None or stubs[0].kind != "dictionary_page":
+                    continue
+                first_data = next(s for s in stubs if s.kind == "data_page")
+                dict_stub = stubs[0]
+                assert dict_stub.offset + dict_stub.length == first_data.offset
+
+
+def test_page_stubs_no_per_page_header_reads(indexed_parquet, monkeypatch):
+    """Building page_stubs() reads the OffsetIndex but NOT any per-page
+    header — the cost is independent of the page count."""
+    pf = ParquetFile(str(indexed_parquet))
+    try:
+        counts = _install_read_probe(monkeypatch)
+        for rg in pf.row_groups:
+            for cc in rg.columns:
+                cc.page_stubs()
+        assert counts.get("page", 0) == 0, (
+            f"page_stubs() read {counts.get('page', 0)} page headers; must read none"
+        )
+    finally:
+        pf.close()
+
+
+def test_stub_data_pages_use_generic_kind_offset_index(indexed_parquet):
+    """At the stub level, data pages carry the generic ``data_page`` kind
+    (OffsetIndex fast path)."""
+    with ParquetFile(str(indexed_parquet)) as pf:
+        out = pf.to_json(view="tree", depth=3)
+    saw_data_page = False
+    for rg in out["row_groups"]:
+        for cc in rg["columns"]:
+            for page in cc["pages"]:
+                assert page["_kind"] == "data_page", page
+                saw_data_page = True
+            if cc["dictionary_page"] is not None:
+                assert cc["dictionary_page"]["_kind"] == "dictionary_page"
+    assert saw_data_page
+
+
+def test_stub_data_pages_use_generic_kind_walk_fallback(small_parquet):
+    """Stub-level data pages are generic ``data_page`` even on the
+    no-OffsetIndex walk fallback — the contract is uniform across paths."""
+    with ParquetFile(str(small_parquet)) as pf:
+        out = pf.to_json(view="tree", depth=3)
+    saw_data_page = False
+    for rg in out["row_groups"]:
+        for cc in rg["columns"]:
+            for page in cc["pages"]:
+                assert page["_kind"] == "data_page", page
+                saw_data_page = True
+    assert saw_data_page
+
+
+def test_materialized_pages_keep_specific_version_kind(v2_parquet):
+    """The v1/v2 distinction survives on MATERIALIZED page nodes — only the
+    stub level is generic."""
+    with ParquetFile(str(v2_parquet)) as pf:
+        out = pf.to_json(view="tree", depth="all")
+    kinds = {
+        page["_kind"]
+        for rg in out["row_groups"]
+        for cc in rg["columns"]
+        for page in cc["pages"]
+    }
+    assert "data_page_v2" in kinds, kinds
+    assert "data_page" not in kinds, "materialized pages must not use the generic kind"
+
+
+def test_layout_data_region_pages_contiguous_with_offset_index(indexed_parquet):
+    """The OffsetIndex-derived page stubs tile the data region exactly
+    (dictionary page + data pages, offset-contiguous) — validating the
+    cheap-path extents against the physical layout."""
+    with ParquetFile(str(indexed_parquet)) as pf:
+        has_oi = any(cc.has_offset_index for rg in pf.row_groups for cc in rg.columns)
+        if not has_oi:
+            pytest.skip("fixture lacks offset_index")
+        out = pf.to_json(view="layout", depth=2)
+    checked = False
+    for region in out["children"]:
+        if region["_kind"] != "column_chunk_data_region":
+            continue
+        page_nodes = []
+        if region["dictionary_page"] is not None:
+            page_nodes.append(region["dictionary_page"])
+        page_nodes.extend(region["pages"])
+        page_nodes.sort(key=lambda p: p["_offset"])
+        for a, b in zip(page_nodes, page_nodes[1:]):
+            assert a["_offset"] + a["_length"] == b["_offset"], (
+                f"non-contiguous pages in data region: {a} then {b}"
+            )
+            checked = True
+    assert checked, "no multi-page data region exercised"
 
 
 # ---------------------------------------------------------------------------
