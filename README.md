@@ -53,10 +53,12 @@ python -m parquet_analyzer example.parquet
 ## Subcommands
 
 The verb-noun surface answers one question per invocation and is built for
-chaining with `jq` and consumption by AI agents. All eight subcommands listed
-here are **footer-only** — they do not walk page headers or read page
-bodies. Page-level subcommands (`page list / header / extract / decode`) land
-in a future release.
+chaining with `jq` and consumption by AI agents. The eight verb-noun
+subcommands listed here are **footer-only** — they do not walk page headers
+or read page bodies. A ninth verb, [`show`](#show--path-addressed-navigation),
+offers path-addressed tree navigation (also bounded — it never walks page
+headers unless you pass `--walk-pages`). Page-level subcommands (`page list /
+header / extract / decode`) land in a future release.
 
 ### Conventions
 
@@ -229,6 +231,57 @@ chunk; `total_compressed_size` already includes the dictionary). Together
 these let an AI agent issue `read(chunk_offset, chunk_length)` against
 the file and get the entire compressed chunk bytes without re-parsing the
 footer.
+
+### `show` — path-addressed navigation
+
+`show FILE [PATH]` renders the node at `PATH` plus its immediate children
+as stubs, each annotated with the canonical path to descend into it. You
+explore the file like a map, one bounded step at a time, by extending the
+path along the `row_groups → columns → pages` spine:
+
+```bash
+parquet-analyzer show data.parquet                              # file: row groups (stubs)
+parquet-analyzer show data.parquet row_groups/0                  # that group: columns (stubs)
+parquet-analyzer show data.parquet row_groups/0/columns/3        # column metadata + stats; pages (stubs)
+parquet-analyzer show data.parquet row_groups/0/columns/3/pages/5  # that page (direct-seek)
+```
+
+Paths are **canonical and index-based**. Each child stub carries a `_path`
+to feed back into the next `show`, columns also carry their display `name`,
+and a `_navigation` block reports the current `path`, its `parent`, and the
+node `kind` — so a caller (human or agent) never has to construct a path by
+hand:
+
+```jsonc
+{
+  "$schema": "parquet-analyzer/v1/show",
+  "_kind": "row_group", "_offset": 620, "_length": 210, "num_rows": 10,
+  "columns": [
+    {"_kind": "column_chunk", "_offset": 622, "_length": 112,
+     "_path": "row_groups/0/columns/0", "name": "id"}
+  ],
+  "_navigation": {"path": "row_groups/0", "parent": "", "kind": "row_group"}
+}
+```
+
+**Listing a column's pages never forces a page-header walk.** With an
+OffsetIndex the pages are listed from it (one small read, independent of
+page count). Without one, the listing is withheld behind an explicit
+`--walk-pages` opt-in, and `show` reports a `_walk_required` affordance
+instead of paying an O(pages) walk:
+
+```jsonc
+"pages": {"_walk_required": true, "reason": "no OffsetIndex",
+          "hint": "re-run with '.../pages/<n> --walk-pages' ..."}
+```
+
+`--walk-pages` enables listing/addressing pages of such a column (it reads
+every page header). A column can have many thousands of pages, so the child
+listing is capped by **`--limit N`** (default 100; `0` lists all); the
+`_navigation` block reports `children_total` / `children_shown` /
+`children_truncated`, and truncation only bounds the *listing* — every child
+stays addressable by its index. `show` is tree-structured; the verb-noun
+subcommands above remain the way to get flat, aggregated views.
 
 ### Schema-version discovery
 

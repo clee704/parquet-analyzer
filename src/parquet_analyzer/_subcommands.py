@@ -36,6 +36,7 @@ import sys
 from typing import Any, Callable, Iterable, Sequence
 
 from ._core import json_encode
+from . import _navigate
 from .parquet_file import ParquetFile
 
 logger = logging.getLogger(__name__)
@@ -47,7 +48,7 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_BASE = "parquet-analyzer/v1"
 
-SUBCOMMAND_VERBS: frozenset[str] = frozenset({"file", "rowgroup", "column"})
+SUBCOMMAND_VERBS: frozenset[str] = frozenset({"file", "rowgroup", "column", "show"})
 
 
 def _schema_uri(command: str) -> str:
@@ -57,7 +58,7 @@ def _schema_uri(command: str) -> str:
 # Mapping from (verb, noun) → schema name. Single source of truth so the
 # `--schema-version` short-circuit and the per-handler ``$schema`` field
 # can never drift apart.
-SCHEMAS: dict[tuple[str, str], str] = {
+SCHEMAS: dict[tuple[str, str | None], str] = {
     ("file", "summary"): "file-summary",
     ("file", "kv"): "file-kv",
     ("file", "schema"): "file-schema",
@@ -66,6 +67,7 @@ SCHEMAS: dict[tuple[str, str], str] = {
     ("rowgroup", "show"): "rowgroup-show",
     ("column", "list"): "column-list",
     ("column", "show"): "column-show",
+    ("show", None): "show",
 }
 
 
@@ -618,7 +620,19 @@ def handle_column_show(args: argparse.Namespace) -> None:
     _emit_json(payload, args.output)
 
 
-HANDLERS: dict[tuple[str, str], Callable[[argparse.Namespace], None]] = {
+def handle_show(args: argparse.Namespace) -> None:
+    with ParquetFile(args.path) as pf:
+        try:
+            rendered = _navigate.render(
+                pf, args.navpath, walk_pages=args.walk_pages, limit=args.limit
+            )
+        except _navigate.NavigationError as exc:
+            raise CliError(exc.code, exc.message, exc.fix) from exc
+    payload = {"$schema": _schema_uri("show"), **rendered}
+    _emit_json(payload, args.output)
+
+
+HANDLERS: dict[tuple[str, str | None], Callable[[argparse.Namespace], None]] = {
     ("file", "summary"): handle_file_summary,
     ("file", "kv"): handle_file_kv,
     ("file", "schema"): handle_file_schema,
@@ -627,6 +641,7 @@ HANDLERS: dict[tuple[str, str], Callable[[argparse.Namespace], None]] = {
     ("rowgroup", "show"): handle_rowgroup_show,
     ("column", "list"): handle_column_list,
     ("column", "show"): handle_column_show,
+    ("show", None): handle_show,
 }
 
 
@@ -756,6 +771,36 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
         help="restrict to this row group (0-based); default: all row groups",
     )
 
+    # --- show (path-addressed navigation) --------------------------------
+    show_parser = verb_subparsers.add_parser(
+        "show",
+        help="navigate the file as a tree: show a node and its children as "
+        "stubs with paths to descend into",
+    )
+    show_parser.set_defaults(noun=None)
+    _add_common_options(show_parser)
+    show_parser.add_argument(
+        "navpath",
+        nargs="?",
+        default="",
+        help="navigation path along the row_groups/columns/pages spine, e.g. "
+        "'row_groups/0/columns/3'; default: the file root",
+    )
+    show_parser.add_argument(
+        "--walk-pages",
+        action="store_true",
+        help="allow listing/addressing a column's pages when the file has no "
+        "OffsetIndex (reads every page header)",
+    )
+    show_parser.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="cap how many child stubs are listed (a column can have many "
+        "thousands of pages); 0 lists all. Truncation is reported in "
+        "_navigation; every child stays addressable by index regardless.",
+    )
+
     return parser
 
 
@@ -764,14 +809,23 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
+def _command_label(args: argparse.Namespace) -> str:
+    """The ``verb noun`` (or just ``verb`` for a nounless verb like ``show``)
+    label used in error messages and ``fix`` commands."""
+    return (
+        args.verb if getattr(args, "noun", None) is None else f"{args.verb} {args.noun}"
+    )
+
+
 def _validate_required_for_run(args: argparse.Namespace) -> None:
     """Enforce per-subcommand required args that we made optional for the
     sake of ``--schema-version`` (which short-circuits before running)."""
+    cmd = _command_label(args)
     if args.path is None:
         raise CliError(
             code="missing_argument",
-            message=f"{args.verb} {args.noun}: <path> is required",
-            fix=f"parquet-analyzer {args.verb} {args.noun} <path>",
+            message=f"{cmd}: <path> is required",
+            fix=f"parquet-analyzer {cmd} <path>",
         )
 
     if (args.verb, args.noun) == ("rowgroup", "show") and args.row_group is None:
@@ -826,7 +880,7 @@ def run_subcommand(argv: Sequence[str]) -> int:
             CliError(
                 code="file_not_found",
                 message=str(exc),
-                fix=f"check the path and re-run: parquet-analyzer {args.verb} {args.noun} <path>",
+                fix=f"check the path and re-run: parquet-analyzer {_command_label(args)} <path>",
             )
         )
         return 1
