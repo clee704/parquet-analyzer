@@ -186,6 +186,71 @@ The checkpoint operates on the diff you are submitting, not the whole
 repository: clean up what you touched, and file an issue for
 pre-existing debt you notice but can't fix in scope.
 
+## Dogfooding
+
+Tests prove the code does what the tests assert. They do **not** tell you
+whether the tool is actually good to use — fast enough at scale, and
+pleasant to drive. Those only show up when you use it the way a user
+would. This codebase has twice been redirected by dogfooding that unit
+tests sailed past: a feature that passed every test was scrapped because
+driving it on a multi-GB file exposed a hidden cost cliff and a leaky
+abstraction, and a navigation command that passed every test dumped a
+474 KB wall of JSON for a single step on a real file. Neither was
+visible from the small fixtures the tests use.
+
+So dogfooding is a **recurring checkpoint**, the behavioral counterpart
+to the refactoring checkpoint above.
+
+### The dogfooding checkpoint
+
+Run this **before completing any change that affects how the tool
+behaves** — a new or changed subcommand, flag, output shape, performance
+characteristic, or user-facing library API. (Pure-internal refactors,
+docs, and test-only changes are exempt, though a quick sanity run is
+cheap insurance.) It is a standing step, not something to do only when
+something feels off.
+
+The checkpoint is three moves:
+
+1. **Drive it like a user.** Run the actual commands — chain them the
+   way a real exploration would, read the output, follow the affordances.
+   Don't settle for the unit tests having passed.
+2. **On realistic data.** Small fixtures hide the problems that matter.
+   Exercise the change on inputs that stress it: large / GB-scale files
+   where performance is in play, and the edge-case shapes relevant to
+   the change (e.g. files with and without an OffsetIndex, high page
+   counts, wide schemas, empty or single-row files). Generate them if
+   you don't have them, and **clean up large artifacts afterward.**
+3. **Evaluate performance *and* UX, then decide per finding.** Time the
+   operations that should be fast and confirm they are — and confirm the
+   cost model is honest (no hidden cliff, no work that scales with the
+   wrong dimension). Equally, judge the experience: is the output
+   readable and appropriately sized, are the affordances clear, is
+   anything surprising or awkward? For each finding — **fix now or defer
+   by issue**, the same rule as the refactoring checkpoint. There is no
+   "leave it".
+
+**Record the outcome in the PR.** The pull-request template has a
+Dogfooding section: name the scenarios you exercised (files, sizes,
+edge cases), the perf you observed, the UX assessment, and what you
+fixed or deferred. "Exercised X and Y; perf and UX are good; nothing to
+fix" is a valid outcome — but it must be stated, with the scenarios
+named, so the claim is grounded and auditable. A bare "dogfooded it" is
+not enough.
+
+Be honest about scope and cost. If a number looks good, say where it
+came from; if a win is smaller or narrower than expected, say so rather
+than overselling it. Grounding every claim in something you actually
+observed is the whole point of the checkpoint.
+
+**A material fix is unreviewed code.** When the checkpoint makes you
+*change* code rather than just confirm it's fine, that change went in
+after your normal review pass. If it is material — new logic, a new
+flag, a behavior or output-shape change, not a one-line tweak — put it
+back through your review process (e.g. the self-review loop) before
+merging. The sequence is dogfooding finding → fix → **re-review** → ship,
+not finding → fix → ship.
+
 ## Issues
 
 - Issue titles should describe the work; same rule as PRs.
