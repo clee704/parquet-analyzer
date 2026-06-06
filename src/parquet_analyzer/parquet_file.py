@@ -46,6 +46,7 @@ from parquet.ttypes import (
     Type as _ThriftType,
 )
 
+from . import _footer_cache
 from ._core import (
     _compute_pages,
     _compute_summary,
@@ -84,26 +85,30 @@ class ParquetFile:
 
     Args:
         path: filesystem path to a parquet file.
+        use_cache: when True (default), the parsed footer is served from /
+            saved to the on-disk footer cache for large footers (see
+            :mod:`parquet_analyzer._footer_cache`). Set False to always
+            parse and never touch the cache.
 
     Raises:
         ValueError: if the file is missing the ``PAR1`` header or trailer
             magic, or the footer thrift cannot be parsed.
     """
 
-    def __init__(self, path: str) -> None:
+    def __init__(self, path: str, *, use_cache: bool = True) -> None:
         self._path = path
         self._f = open(path, "rb")
         try:
             self._f.seek(0, 2)
             self._file_size = self._f.tell()
-
+            parsed = self._load_footer(use_cache)
             (
                 self._footer_thrift,
                 self._footer_segment,
                 self._footer_offset,
                 self._header_magic_segment,
                 self._trailer_segments,
-            ) = _parse_footer(self._f, self._file_size)
+            ) = parsed
         except Exception:
             self._f.close()
             raise
@@ -117,6 +122,33 @@ class ParquetFile:
         self._full_summary_cache: dict | None = None
         self._all_pages_cache: list[dict] | None = None
         self._stat_type_map_cache: dict | None = None
+
+    def _load_footer(self, use_cache: bool) -> tuple:
+        """Return the parsed-footer 5-tuple, served from the on-disk footer
+        cache when available and re-parsed (and saved) otherwise.
+
+        The cache is content-addressed on the footer bytes, so a hit is only
+        ever served for a byte-identical footer; any read/unpickle failure
+        falls through to a normal parse.
+        """
+        if not (use_cache and _footer_cache.enabled()):
+            return _parse_footer(self._f, self._file_size)
+        footer_bytes = _footer_cache.read_footer_bytes(self._f, self._file_size)
+        key = (
+            _footer_cache.compute_key(self._file_size, footer_bytes)
+            if footer_bytes is not None
+            else None
+        )
+        if key is not None:
+            cached = _footer_cache.load(key)
+            if cached is not None:
+                return cached
+        parsed = _parse_footer(self._f, self._file_size)
+        if key is not None:
+            _footer_cache.store(
+                key, parsed, _footer_cache.column_chunk_count(parsed[0])
+            )
+        return parsed
 
     @property
     def _stat_type_map(self) -> dict:
