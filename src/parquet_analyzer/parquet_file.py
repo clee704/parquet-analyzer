@@ -30,6 +30,7 @@ Typical usage::
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import Any
 
 from parquet.ttypes import (
@@ -520,6 +521,37 @@ _CODEC_NAMES = _enum_name_map(_ThriftCodec)
 _PAGE_TYPE_NAMES = _enum_name_map(_ThriftPageType)
 
 
+@dataclass(frozen=True)
+class PageStub:
+    """Lightweight descriptor of a single page, obtained WITHOUT reading
+    the page's thrift header.
+
+    Produced by :meth:`ColumnChunk.page_stubs` from the OffsetIndex (data
+    pages) and the column-metadata offsets (dictionary page). It carries
+    only what is knowable cheaply — the page's byte extent and, for data
+    pages, the index of its first row. The page *version* and per-page
+    header details are deliberately absent: recovering them requires
+    reading the header, which is exactly what stub enumeration avoids. So
+    ``kind`` is the generic ``"data_page"`` (or ``"dictionary_page"``);
+    the specific ``data_page_v1`` / ``data_page_v2`` distinction appears
+    only on a materialized :class:`Page`.
+    """
+
+    kind: str
+    """``"dictionary_page"`` or the generic ``"data_page"``."""
+
+    offset: int
+    """Absolute file offset of the page (start of its header)."""
+
+    length: int
+    """Full page extent in bytes (header + body), matching
+    :attr:`Page._length`."""
+
+    first_row_index: int | None
+    """Row index (within the row group) of the page's first row, from the
+    OffsetIndex. ``None`` for the dictionary page (which has no rows)."""
+
+
 class ColumnChunk:
     """Lazy wrapper around a single column chunk's metadata.
 
@@ -767,6 +799,60 @@ class ColumnChunk:
                 )
             )
         return self._pages_cache
+
+    def page_stubs(self) -> tuple["PageStub", ...] | None:
+        """Enumerate this chunk's pages as lightweight :class:`PageStub`
+        descriptors WITHOUT walking the per-page thrift headers.
+
+        Returns ``None`` when the chunk has no OffsetIndex
+        (:attr:`has_offset_index` is ``False``). The OffsetIndex is the
+        only source of per-data-page extents short of a full header walk,
+        so without it the pages cannot be enumerated cheaply; the caller
+        then chooses to either walk (:meth:`pages`) or surface a "walk
+        required" affordance.
+
+        When an OffsetIndex is present the cost is one OffsetIndex parse
+        (cached) and **no per-page header reads** — independent of the
+        page count. This is the fast path that lets a column's pages be
+        *listed* cheaply (#30):
+
+        - The dictionary-page extent is computed from the column-metadata
+          offsets. ``[dictionary_page_offset, data_page_offset)`` is, by
+          the parquet column-chunk layout, exactly the dictionary page (it
+          is written immediately before the first data page), so no read
+          is needed.
+        - Each data-page extent comes from an OffsetIndex ``PageLocation``;
+          its ``compressed_page_size`` includes the page header per the
+          parquet spec, so it matches the materialized :attr:`Page._length`.
+
+        The enumeration covers the dictionary page (when present) and the
+        data pages. INDEX_PAGE — deprecated and not written by any encoder
+        that also writes an OffsetIndex — is not separately represented.
+        """
+        if not self.has_offset_index:
+            return None
+        oi = self._read_offset_index()
+        stubs: list[PageStub] = []
+        if self._md.dictionary_page_offset:
+            dict_offset = self._md.dictionary_page_offset
+            stubs.append(
+                PageStub(
+                    kind="dictionary_page",
+                    offset=dict_offset,
+                    length=self._md.data_page_offset - dict_offset,
+                    first_row_index=None,
+                )
+            )
+        for loc in oi.page_locations or []:
+            stubs.append(
+                PageStub(
+                    kind="data_page",
+                    offset=loc.offset,
+                    length=loc.compressed_page_size,
+                    first_row_index=loc.first_row_index,
+                )
+            )
+        return tuple(stubs)
 
     def page(self, index: int) -> "Page":
         """Return the ``index``-th page (a :class:`Page`), supporting

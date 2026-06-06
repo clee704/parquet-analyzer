@@ -120,35 +120,55 @@ the `*_data_region` / `*_magic` / `footer_length` nodes are all
 in-memory and free to access. They appear as stubs in JSON output
 only because the consumer asked for a depth-limited view.
 
-**Caveat — enumerating a `column_chunk`'s pages is not free.** A
-`column_chunk`'s own scalar fields are footer-derived, but emitting
-its `dictionary_page` / `pages` children — even as stubs, which still
-need each page's `_offset`/`_length` — requires walking the column's
-page headers, because page offsets and lengths are not recorded in the
-footer. So materializing a `column_chunk` (tree view) or a
-`column_chunk_data_region` (layout view) pays an O(pages) page-header
-read to discover its page children. The page nodes themselves still
-carry `_lazy: true`; the walk is the cost of learning they exist. (A
-future version may derive page extents from an `offset_index` when
-present, replacing the N header reads with one thrift read — see #30.)
+**Caveat — enumerating a `column_chunk`'s pages.** A `column_chunk`'s
+own scalar fields are footer-derived, but emitting its `dictionary_page`
+/ `pages` children — even as stubs, which still need each page's
+`_offset`/`_length` — requires the per-page extents, which the footer
+does not record. There are two cases:
+
+- **With an `offset_index`** (written by most modern encoders), the page
+  extents come from that one small thrift: listing a column's pages costs
+  a single `offset_index` read and **no per-page header reads**,
+  independent of the page count. The dictionary-page extent is derived
+  from the column-metadata offsets (`[dictionary_page_offset,
+  data_page_offset)` is exactly the dictionary page). This is the fast
+  path (#30).
+- **Without an `offset_index`**, the only source of page extents is the
+  per-page header stream, so materializing a `column_chunk` (tree view)
+  or a `column_chunk_data_region` (layout view) pays an O(pages)
+  page-header walk to discover its page children.
+
+Either way the page nodes carry `_lazy: true`. At the stub level a data
+page uses the generic `data_page` kind (see below) — its `_offset` /
+`_length` are known, but its version is not.
 
 ### `_lazy: true` — genuine I/O needed
 
 A separate marker, `_lazy: true`, is reserved for nodes where
 materializing actually triggers I/O or extra thrift parsing beyond
-the footer parse. v0 has exactly 6 such kinds:
+the footer parse:
 
-- `dictionary_page`, `data_page_v1`, `data_page_v2` — each requires
-  reading a page header from disk
-- `offset_index`, `column_index`, `bloom_filter_header` — each
-  requires reading + parsing an extra thrift from disk
+- `dictionary_page`, `data_page` — a page reached without reading its
+  header (its `_offset`/`_length` came from an `offset_index` or a
+  header walk). `data_page` is the **generic, version-agnostic** stub
+  kind: at the stub level a data page's `data_page_v1` / `data_page_v2`
+  version is not yet known, because it lives in the page header the stub
+  did not read.
+- `data_page_v1`, `data_page_v2` — a **materialized** data page, whose
+  version was read from its header.
+- `offset_index`, `column_index`, `bloom_filter_header` — each requires
+  reading + parsing an extra thrift from disk.
 
 When these nodes appear as stubs in JSON output, they carry
 `_lazy: true` to signal the materialization cost:
 
 ```json
-{"_kind": "data_page_v1", "_offset": 24276, "_length": 481, "_lazy": true}
+{"_kind": "data_page", "_offset": 24276, "_length": 481, "_lazy": true}
 ```
+
+A data page is therefore `data_page` when stubbed and `data_page_v1` /
+`data_page_v2` when materialized — the version is a materialized-only
+detail. The other lazy kinds keep the same kind string in both forms.
 
 Without `_lazy: true`, a stub is just a depth-truncation indicator
 (no I/O cost to materialize).
@@ -469,7 +489,7 @@ Logical children:
 | Name | Kind | Multiplicity | Physically contained? |
 |---|---|---|---|
 | `dictionary_page` | `dictionary_page` | 0 or 1 | no |
-| `pages` | `data_page_v1` \| `data_page_v2` | 0+ (array) | no |
+| `pages` | `data_page` (stub) / `data_page_v1` \| `data_page_v2` (materialized) | 0+ (array) | no |
 | `data_region` | `column_chunk_data_region` | view-specific (see below) | no |
 | `offset_index` | `offset_index` | 0 or 1 | no |
 | `column_index` | `column_index` | 0 or 1 | no |
@@ -513,7 +533,7 @@ Logical children:
 | Name | Kind | Multiplicity | Physically contained? |
 |---|---|---|---|
 | `dictionary_page` | `dictionary_page` | 0 or 1 | yes |
-| `pages` | `data_page_v1` \| `data_page_v2` | 0+ (array) | yes |
+| `pages` | `data_page` (stub) / `data_page_v1` \| `data_page_v2` (materialized) | 0+ (array) | yes |
 
 No `_value`.
 
@@ -733,7 +753,7 @@ the footer, not the on-disk data extent.
   "statistics": {"min_value": "female", "max_value": "male", "null_count": 0},
   "dictionary_page": {"_kind": "dictionary_page", "_offset": 24256, "_length": 20, "_lazy": true},
   "pages": [
-    {"_kind": "data_page_v1", "_offset": 24276, "_length": 481, "_lazy": true}
+    {"_kind": "data_page", "_offset": 24276, "_length": 481, "_lazy": true}
   ],
   "offset_index": null,
   "column_index": null,
@@ -790,7 +810,7 @@ bytes between the data and the footer.)
   "column_position_in_row_group": 5,
   "dictionary_page": {"_kind": "dictionary_page", "_offset": 24256, "_length": 20, "_lazy": true},
   "pages": [
-    {"_kind": "data_page_v1", "_offset": 24276, "_length": 481, "_lazy": true}
+    {"_kind": "data_page", "_offset": 24276, "_length": 481, "_lazy": true}
   ]
 }
 ```
