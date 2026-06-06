@@ -293,14 +293,27 @@ def test_decode_is_cached(tmp_path):
     assert page.decode() is page.decode()
 
 
-def test_all_null_page_has_no_values(tmp_path):
+@pytest.mark.parametrize("use_dictionary", [False, True])
+def test_all_null_page_has_no_values(tmp_path, use_dictionary):
     table = pa.table({"x": pa.array([None, None, None], type=pa.int32())})
-    path = _write(tmp_path / "allnull.parquet", table, use_dictionary=False)
+    path = _write(
+        tmp_path / f"allnull-{use_dictionary}.parquet",
+        table,
+        use_dictionary=use_dictionary,
+    )
     pf = ParquetFile(str(path))
-    decoded = _data_pages(_col(pf, "x"))[0].decode()
+    cc = _col(pf, "x")
+    decoded = _data_pages(cc)[0].decode()
     assert decoded.num_nulls == 3
     assert decoded.values == []
-    assert decoded.dictionary_indices is None
+    if use_dictionary:
+        # A dictionary-encoded all-null page still resolves its (empty)
+        # dictionary; the index stream is simply empty.
+        assert decoded.encoding == "RLE_DICTIONARY"
+        assert decoded.dictionary_indices == []
+        assert cc.dictionary() == []
+    else:
+        assert decoded.dictionary_indices is None
 
 
 # ---------------------------------------------------------------------------
