@@ -463,6 +463,46 @@ for page in cc.pages():
 
 `columnchunk.pages()` walks only that one chunk's page headers (cached after first call) — much cheaper than the full-file walk. `num_pages` is even cheaper when an OffsetIndex is present (SNPW always writes one; pyarrow does when `write_page_index=True`; older parquet-mr files often don't).
 
+### Decoding page bodies
+
+Each `Page` decodes its own body on demand — levels and values — without
+walking the rest of the file:
+
+```python
+cc = pf.row_groups[0].columns[0]
+page = cc.page(1)                 # seeks via the OffsetIndex when present
+
+decoded = page.decode()           # a DecodedPage (cached on the page)
+decoded.values                    # decoded NON-NULL values, physical form
+decoded.definition_levels         # per-value def levels (length num_values)
+decoded.repetition_levels         # per-value rep levels
+decoded.num_nulls                 # V2: from the header; V1: from def levels
+decoded.dictionary_indices        # raw indices for a dict-encoded page, else None
+
+# Convenience shortcuts:
+page.physical_values()            # == decoded.values
+page.definition_levels()
+page.repetition_levels()
+page.raw_body()                   # the on-disk body bytes (no decode)
+
+# The chunk's dictionary (decoded once, cached) when it has a dictionary page:
+cc.dictionary()                   # list of physical values, or None
+cc.max_definition_level           # schema-derived, cheap
+cc.max_repetition_level
+```
+
+`values` holds only the **non-null** values from the page's values section
+(length `num_values - num_nulls`); the nulls live in the definition levels —
+this is the on-disk shape, not a reassembled column. V1 (length-prefixed
+levels inside the compressed body) and V2 (uncompressed levels ahead of an
+optionally-compressed values section) are handled transparently, as are the
+`PLAIN`, `PLAIN_DICTIONARY`, and `RLE_DICTIONARY` encodings (dictionary
+indices are resolved through the chunk's dictionary page). An out-of-scope
+encoding, an undecompressable codec, or a non-data page raises a typed
+`PageDecodeError` subclass (`UnsupportedEncodingError`,
+`UnsupportedCodecError`, `UnsupportedPageTypeError`, `MissingDictionaryError`)
+carrying a stable `.code`.
+
 ### Full eager walk (legacy shape)
 
 When you genuinely need the complete byte-range view of every structural element:
@@ -503,44 +543,38 @@ from parquet_analyzer.decoders import (
 | `decode_v1_level_block(data, offset, max_level, num_values)` | V1-data-page helper that handles the 4-byte little-endian length prefix in front of each level block. Returns `(levels, new_offset)`. V2 data pages store level byte lengths in the page header instead — for those, slice the bytes yourself and call `decode_levels` directly. |
 | `decode_plain(data, parquet_type, num_values, type_length=None)` | Decode `PLAIN`-encoded values. Supported types: `BOOLEAN`, `INT32`, `INT64`, `INT96`, `FLOAT`, `DOUBLE`, `BYTE_ARRAY`, `FIXED_LEN_BYTE_ARRAY` (`type_length` required). `INT96` is returned as 12-byte `bytes` — interpretation is the caller's responsibility. |
 
-End-to-end example — decode the indices of a dictionary-encoded V1 data page and recover the original values:
+End-to-end example — decode the indices of a dictionary-encoded V1 data page
+and recover the original values. For most callers, `Page.decode()` (above)
+does exactly this; reach for the raw decoders only when you need a custom
+decode path. The byte ranges come from the public `Page` API:
 
 ```python
-from parquet_analyzer import parse_parquet_file
+from parquet_analyzer import ParquetFile
 from parquet_analyzer.decoders import (
     decompress, decode_v1_level_block, decode_rle_bitpacked_hybrid, decode_plain,
 )
 
-segments, _ = parse_parquet_file("example.parquet")
-file_bytes = open("example.parquet", "rb").read()
+pf = ParquetFile("example.parquet")
+cc = pf.row_groups[0].columns[0]            # a dict-encoded BYTE_ARRAY column
+dict_page = next(p for p in cc.pages() if p._kind == "dictionary_page")
+data_page = cc.page(cc.num_pages - 1)
 
-# Find the dictionary page and the data page from `segments`
-# (offset/length are recorded on each "page_data" segment).
-dict_seg = ...  # the page_data segment for the DICTIONARY_PAGE
-data_seg = ...  # the page_data segment for the DATA_PAGE
+# Dictionary entries are PLAIN values of the column's physical type.
+dict_raw = decompress(dict_page.raw_body(), cc.codec, dict_page.uncompressed_size)
+dict_values = decode_plain(dict_raw, cc.type, dict_page.num_values)
 
-# Dictionary entries are PLAIN BYTE_ARRAY values.
-dict_raw = decompress(
-    file_bytes[dict_seg["offset"]:dict_seg["offset"] + dict_seg["length"]],
-    "SNAPPY",
-    dict_uncompressed_size,
+# V1 data page layout: [4-byte LE def-level block length][def-level RLE stream]
+#                      [1-byte indices bit-width][indices RLE/bit-packed stream]
+raw = decompress(data_page.raw_body(), cc.codec, data_page.uncompressed_size)
+def_levels, after_def = decode_v1_level_block(
+    raw, 0, cc.max_definition_level, data_page.num_values
 )
-dict_values = decode_plain(dict_raw, "BYTE_ARRAY", num_dict_values)
-
-# Data page layout: [4-byte LE def-level block length][def-level RLE stream]
-#                   [1-byte indices bit-width][indices RLE/bit-packed-hybrid stream]
-raw = decompress(
-    file_bytes[data_seg["offset"]:data_seg["offset"] + data_seg["length"]],
-    "SNAPPY",
-    data_uncompressed_size,
-)
-def_levels, after_def = decode_v1_level_block(raw, 0, max_level=1, num_values=num_values)
 indices_bit_width = raw[after_def]
 
-# In V1 dict-encoded pages, the indices stream contains entries only for
+# In dict-encoded pages, the indices stream contains entries only for
 # non-null rows (nulls are represented in the def-level stream above and
 # carry no value). So the index count is `num_non_null`, NOT `num_values`.
-num_non_null = sum(def_levels)
+num_non_null = sum(1 for d in def_levels if d == cc.max_definition_level)
 indices, stats = decode_rle_bitpacked_hybrid(
     raw[after_def + 1:], indices_bit_width, num_non_null,
 )
@@ -548,7 +582,10 @@ print(f"RLE runs: {stats.rle_run_count}, bit-packed runs: {stats.bit_packed_run_
 
 # Reassemble nulls into the final value list using the def-level stream.
 it = iter(indices)
-values = [dict_values[next(it)] if d == 1 else None for d in def_levels]
+values = [
+    dict_values[next(it)] if d == cc.max_definition_level else None
+    for d in def_levels
+]
 ```
 
 Gotchas worth knowing:

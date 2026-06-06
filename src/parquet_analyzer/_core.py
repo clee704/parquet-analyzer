@@ -750,6 +750,51 @@ def column_stat_types(schema_list: list[dict]) -> dict[tuple[str, ...], dict]:
     return result
 
 
+def column_decode_info(schema_list: list[dict]) -> dict[tuple[str, ...], dict]:
+    """Map each leaf column's path tuple to the descriptor needed to decode
+    its page bodies — ``{"max_def": int, "max_rep": int, "type_length":
+    int|None}``.
+
+    ``max_def`` / ``max_rep`` are the column's maximum definition and
+    repetition levels, computed per the parquet spec by walking the
+    flattened pre-order schema list (``footer["schema"]``) and counting
+    ancestors by repetition type: every ``OPTIONAL`` or ``REPEATED``
+    ancestor (the leaf included) adds 1 to ``max_def``; every ``REPEATED``
+    ancestor adds 1 to ``max_rep``. The root element is excluded from
+    paths and contributes nothing. ``type_length`` carries the
+    ``FIXED_LEN_BYTE_ARRAY`` width (``None`` for other physical types),
+    which :func:`parquet_analyzer.decoders.decode_plain` requires.
+    """
+    result: dict[tuple[str, ...], dict] = {}
+    pos = [1]  # element 0 is the root; its children are the top-level fields
+
+    def consume(prefix: list[str], max_def: int, max_rep: int) -> None:
+        el = schema_list[pos[0]]
+        pos[0] += 1
+        rep_type = el.get("repetition_type")
+        if rep_type in ("OPTIONAL", "REPEATED"):
+            max_def += 1
+        if rep_type == "REPEATED":
+            max_rep += 1
+        new_prefix = prefix + [str(el.get("name"))]
+        nchild = el.get("num_children") or 0
+        if nchild:
+            for _ in range(nchild):
+                consume(new_prefix, max_def, max_rep)
+        else:
+            result[tuple(new_prefix)] = {
+                "max_def": max_def,
+                "max_rep": max_rep,
+                "type_length": el.get("type_length"),
+            }
+
+    if not schema_list:
+        return result
+    for _ in range(schema_list[0].get("num_children") or 0):
+        consume([], 0, 0)
+    return result
+
+
 def _find_footer_segment(segments: Iterable[dict[str, Any]]):
     """Locate the footer segment within a segments list.
 

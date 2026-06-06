@@ -54,15 +54,189 @@ from ._core import (
     _iter_page_headers,
     _parse_footer,
     _walk_chunks_eager,
+    column_decode_info,
     fill_gaps,
     read_thrift_segment,
     segment_to_json,
 )
+from .decoders import (
+    DecodeStats,
+    decode_levels,
+    decode_plain,
+    decode_rle_bitpacked_hybrid,
+    decode_v1_level_block,
+    decompress,
+)
 from ._tree_json import to_json_root as _to_json_root
 
-__all__ = ["ColumnChunk", "Page", "ParquetFile", "RowGroup"]
+__all__ = [
+    "ColumnChunk",
+    "DecodedPage",
+    "MissingDictionaryError",
+    "Page",
+    "PageDecodeError",
+    "ParquetFile",
+    "RowGroup",
+    "UnsupportedCodecError",
+    "UnsupportedEncodingError",
+    "UnsupportedPageTypeError",
+]
 
 logger = logging.getLogger(__name__)
+
+# Value encodings the body decoder supports (issue #21 scope). Other
+# encodings (DELTA_*, BYTE_STREAM_SPLIT, ...) are deferred to #14 and raise
+# a clean :class:`UnsupportedEncodingError`.
+_DICTIONARY_ENCODINGS = frozenset({"PLAIN_DICTIONARY", "RLE_DICTIONARY"})
+
+
+# ---------------------------------------------------------------------------
+# Body-decode errors
+# ---------------------------------------------------------------------------
+
+
+class PageDecodeError(Exception):
+    """Base class for the page-body decode errors.
+
+    Each subclass carries a stable ``code`` string so a CLI layer can map it
+    onto the JSON error contract (e.g. ``{"error": "encoding_not_supported",
+    ...}``) without matching on the message text.
+    """
+
+    code = "page_decode_failed"
+
+
+class UnsupportedEncodingError(PageDecodeError):
+    """A value or level encoding outside the #21 decode scope (PLAIN,
+    PLAIN_DICTIONARY, RLE_DICTIONARY for values; RLE for levels)."""
+
+    code = "encoding_not_supported"
+
+    def __init__(self, encoding: str, *, context: str = "values") -> None:
+        self.encoding = encoding
+        self.context = context
+        super().__init__(
+            f"{context} encoding {encoding!r} is not supported; this decoder "
+            "handles PLAIN, PLAIN_DICTIONARY, and RLE_DICTIONARY values with "
+            "RLE-encoded levels"
+        )
+
+
+class UnsupportedCodecError(PageDecodeError):
+    """A compression codec this build cannot decompress (e.g. LZO, BROTLI),
+    surfaced as a body-decode error rather than the decoder layer's
+    ``NotImplementedError``."""
+
+    code = "codec_not_supported"
+
+    def __init__(self, codec: str) -> None:
+        self.codec = codec
+        super().__init__(f"compression codec {codec!r} is not supported")
+
+
+class UnsupportedPageTypeError(PageDecodeError):
+    """Body decode was requested on a page that is not a V1/V2 data page
+    (e.g. an INDEX_PAGE, or a dictionary page asked to decode as data)."""
+
+    code = "page_type_not_supported"
+
+    def __init__(self, page_type: str) -> None:
+        self.page_type = page_type
+        super().__init__(
+            f"cannot decode a {page_type} as a data page (only DATA_PAGE / "
+            "DATA_PAGE_V2 carry decodable values + levels)"
+        )
+
+
+class MissingDictionaryError(PageDecodeError):
+    """A dictionary-encoded data page whose column chunk has no decodable
+    dictionary page — the indices cannot be resolved to values."""
+
+    code = "missing_dictionary"
+
+    def __init__(self, path: tuple[str, ...]) -> None:
+        self.path = path
+        super().__init__(
+            f"column chunk {list(path)!r} has a dictionary-encoded data page "
+            "but no dictionary page to resolve its indices"
+        )
+
+
+def _decompress(data: bytes, codec: str, uncompressed_size: int) -> bytes:
+    """:func:`parquet_analyzer.decoders.decompress` with the decoder layer's
+    ``NotImplementedError`` (unsupported/unknown codec) re-raised as
+    :class:`UnsupportedCodecError`, keeping the body-decode error surface
+    self-contained."""
+    try:
+        return decompress(data, codec, uncompressed_size)
+    except NotImplementedError as exc:
+        raise UnsupportedCodecError(codec) from exc
+
+
+def _dictionary_lookup(dictionary: list, index: int, path: tuple[str, ...]) -> Any:
+    """Resolve a dictionary index to its value, raising a clear
+    ``ValueError`` (not a bare ``IndexError``) when a page's index falls
+    outside the decoded dictionary — a corrupt or truncated dictionary."""
+    if not 0 <= index < len(dictionary):
+        raise ValueError(
+            f"column chunk {list(path)!r}: dictionary index {index} out of "
+            f"range for a dictionary of {len(dictionary)} entries"
+        )
+    return dictionary[index]
+
+
+@dataclass
+class DecodedPage:
+    """The decoded body of a single V1/V2 data page.
+
+    Faithful to the page's on-disk sections: ``values`` holds the
+    **non-null** values from the page's values section (length
+    ``num_values - num_nulls``), and the nulls are represented by the
+    definition levels — this is the on-disk shape, not a reassembled
+    logical column (reinserting ``None`` for nulls, and assembling repeated
+    columns, are reader-level concerns left to a higher layer).
+
+    Returned by :meth:`Page.decode` and cached on the page; treat the lists
+    as read-only.
+    """
+
+    encoding: str
+    """Value encoding of the page (``PLAIN`` / ``PLAIN_DICTIONARY`` /
+    ``RLE_DICTIONARY``)."""
+
+    num_values: int
+    """Total values in the page including nulls (from the page header)."""
+
+    num_nulls: int
+    """Number of nulls (V2: from the header; V1: counted from the
+    definition levels)."""
+
+    repetition_levels: list[int]
+    """Per-value repetition levels (length ``num_values``); ``[0] * n`` for a
+    non-repeated column (``max_repetition_level == 0``)."""
+
+    definition_levels: list[int]
+    """Per-value definition levels (length ``num_values``); ``[0] * n`` for a
+    required column (``max_definition_level == 0``). A value is null when its
+    definition level is below the column's ``max_definition_level``."""
+
+    values: list[Any]
+    """The decoded non-null values, in physical-type form (``bytes`` for
+    ``BYTE_ARRAY`` / ``FIXED_LEN_BYTE_ARRAY`` / ``INT96``)."""
+
+    dictionary_indices: list[int] | None
+    """Raw dictionary indices for a dictionary-encoded page (before
+    resolving through the dictionary); ``None`` for a PLAIN page."""
+
+    index_stats: DecodeStats | None
+    """RLE/bit-packed run classification of the dictionary indices; ``None``
+    for a PLAIN page."""
+
+    values_body_offset: int
+    """Byte offset where the values section starts — within the
+    *decompressed* page body for a V1 page (whose levels live inside the
+    compressed body), or within the on-disk page body for a V2 page (whose
+    levels are stored uncompressed ahead of the values)."""
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +296,7 @@ class ParquetFile:
         self._full_summary_cache: dict | None = None
         self._all_pages_cache: list[dict] | None = None
         self._stat_type_map_cache: dict | None = None
+        self._decode_info_map_cache: dict | None = None
 
     def _load_footer(self, use_cache: bool) -> tuple:
         """Return the parsed-footer 5-tuple, served from the on-disk footer
@@ -160,6 +335,17 @@ class ParquetFile:
 
             self._stat_type_map_cache = column_stat_types(self.footer["schema"])
         return self._stat_type_map_cache
+
+    @property
+    def _decode_info_map(self) -> dict:
+        """Per-leaf body-decode descriptors (``path -> {max_def, max_rep,
+        type_length}``), built once from the footer schema and cached. Used
+        by :class:`ColumnChunk` / :class:`Page` to decode page bodies (level
+        skipping needs the max levels; ``FIXED_LEN_BYTE_ARRAY`` decode needs
+        ``type_length``)."""
+        if self._decode_info_map_cache is None:
+            self._decode_info_map_cache = column_decode_info(self.footer["schema"])
+        return self._decode_info_map_cache
 
     def close(self) -> None:
         """Close the underlying file handle.
@@ -612,6 +798,9 @@ class ColumnChunk:
         self._offset_index_cache: _ThriftOffsetIndex | None = None
         self._column_index_cache: _ThriftColumnIndex | None = None
         self._bloom_filter_header_cache: _ThriftBloomFilterHeader | None = None
+        self._decode_info_cache: dict | None = None
+        self._dictionary_cache: list[Any] | None = None
+        self._dictionary_computed: bool = False
 
     def __repr__(self) -> str:
         return (
@@ -669,10 +858,10 @@ class ColumnChunk:
     def has_offset_index(self) -> bool:
         """Whether this chunk has an OffsetIndex thrift struct in the file.
 
-        When ``True``, :attr:`num_pages` (and the future ``page(index)``
-        accessor tracked in #21) can serve queries via a single small
-        thrift parse without walking every page header — typically 50-200
-        bytes per page entry in the OffsetIndex.
+        When ``True``, :attr:`num_pages` and the :meth:`page` random-access
+        accessor can serve queries via a single small thrift parse without
+        walking every page header — typically 50-200 bytes per page entry
+        in the OffsetIndex.
 
         SNPW (Spark Native Parquet Writer) writes OffsetIndex on every
         column chunk; pyarrow writes it when ``write_page_index=True`` is
@@ -809,6 +998,91 @@ class ColumnChunk:
         """
         return self._md.statistics
 
+    # ----- Body-decode descriptors (schema-derived, cheap) -----------------
+
+    @property
+    def _decode_info(self) -> dict:
+        """This chunk's leaf-column decode descriptor (``{max_def, max_rep,
+        type_length}``) from the file's cached schema walk. Raises
+        ``ValueError`` when the path is absent — an internal inconsistency
+        between the column metadata and the schema, never expected for a
+        well-formed file."""
+        if self._decode_info_cache is None:
+            info = self._pf._decode_info_map.get(self.path)
+            if info is None:
+                raise ValueError(
+                    f"column chunk {list(self.path)!r} has no matching schema "
+                    "leaf; cannot derive definition/repetition levels"
+                )
+            self._decode_info_cache = info
+        return self._decode_info_cache
+
+    @property
+    def max_definition_level(self) -> int:
+        """Maximum definition level for this column (0 for a ``REQUIRED``
+        column). Equals the number of ``OPTIONAL``/``REPEATED`` ancestors
+        including the leaf — the bit budget the definition-level stream
+        packs against, and the threshold a value's definition level must
+        reach to be non-null."""
+        return self._decode_info["max_def"]
+
+    @property
+    def max_repetition_level(self) -> int:
+        """Maximum repetition level for this column (0 for a flat, i.e.
+        non-repeated, column). Equals the number of ``REPEATED`` ancestors
+        including the leaf."""
+        return self._decode_info["max_rep"]
+
+    @property
+    def type_length(self) -> int | None:
+        """Fixed width in bytes for a ``FIXED_LEN_BYTE_ARRAY`` column,
+        ``None`` for every other physical type. Required to PLAIN-decode
+        ``FIXED_LEN_BYTE_ARRAY`` values."""
+        return self._decode_info["type_length"]
+
+    def dictionary(self) -> list[Any] | None:
+        """Decode + cache this chunk's dictionary page, returning the
+        dictionary entries as a list of physical-type values, or ``None``
+        when the chunk has no dictionary page.
+
+        Resolution prefers the footer's ``dictionary_page_offset`` (one
+        page-header read), falling back to scanning the walked page headers
+        for a ``DICTIONARY_PAGE`` — older writers point ``data_page_offset``
+        at the dictionary and leave ``dictionary_page_offset`` unset (see
+        :func:`parquet_analyzer._core._iter_page_headers`). The decoded list
+        is cached on the chunk so repeated data-page decodes in the same
+        chunk pay the dictionary read once.
+        """
+        if not self._dictionary_computed:
+            dict_page = self._find_dictionary_page()
+            self._dictionary_cache = (
+                dict_page._decode_dictionary_entries()
+                if dict_page is not None
+                else None
+            )
+            self._dictionary_computed = True
+        return self._dictionary_cache
+
+    def _find_dictionary_page(self) -> "Page | None":
+        """Locate this chunk's dictionary page as a :class:`Page`, or
+        ``None``. Uses the footer offset when present, else scans the walked
+        page headers."""
+        if self._md.dictionary_page_offset:
+            thrift, segment = read_thrift_segment(
+                self._pf._f, self._md.dictionary_page_offset, "page", _ThriftPageHeader
+            )
+            if thrift.dictionary_page_header is None:
+                raise ValueError(
+                    f"column chunk {list(self.path)!r} dictionary_page_offset "
+                    f"{self._md.dictionary_page_offset} does not point at a "
+                    "dictionary page"
+                )
+            return Page(self._pf, self, thrift, segment)
+        for p in self.pages():
+            if p._t.dictionary_page_header is not None:
+                return p
+        return None
+
     # ----- Page-header walking (per-chunk lazy boundary) -------------------
 
     def pages(self) -> tuple["Page", ...]:
@@ -817,8 +1091,9 @@ class ColumnChunk:
 
         Per-chunk page walking is cheap because it only touches one
         column's pages, not the whole file. Page bodies are NOT read —
-        only the per-page Thrift header is parsed. Body access
-        (``raw_bytes`` / ``decompress`` / ``decode``) is tracked in #21.
+        only the per-page Thrift header is parsed. Page body access and
+        decode is available on each :class:`Page` (:meth:`Page.decode` and
+        friends), read lazily on demand.
         """
         if self._pages_cache is None:
             self._pages_cache = tuple(
@@ -962,15 +1237,14 @@ class ColumnChunk:
 
 
 class Page:
-    """Lazy wrapper around a single page's metadata.
+    """Lazy wrapper around a single page's metadata and body.
 
-    Constructed by :meth:`ColumnChunk.pages`. All properties are
-    header-derived (cheap, no body reads).
-
-    Page body access (``raw_bytes()``, ``decompressed_bytes()``,
-    ``decode_values()``) is tracked in #21 — it wires the existing
-    decoder primitives in :mod:`parquet_analyzer.decoders` to a CLI
-    verb. Adding it later will not change any of the properties below.
+    Constructed by :meth:`ColumnChunk.pages`. The header-derived properties
+    (``type``, ``encoding``, ``num_values``, ``offset``, sizes) are cheap.
+    Body access — :meth:`raw_body`, :meth:`decode`, :meth:`definition_levels`,
+    :meth:`repetition_levels`, :meth:`physical_values` — reads (and decodes)
+    the page body from disk on demand and caches the decoded result on the
+    page.
     """
 
     def __init__(
@@ -984,6 +1258,7 @@ class Page:
         self._cc = column_chunk
         self._t = thrift_obj
         self._segment = segment
+        self._decoded_cache: DecodedPage | None = None
 
     def __repr__(self) -> str:
         return (
@@ -1036,6 +1311,216 @@ class Page:
     def segment(self) -> dict:
         """The offset-recorded page-header segment (raw dict)."""
         return self._segment
+
+    # ----- Body access + decode (issue #21) --------------------------------
+
+    @property
+    def body_offset(self) -> int:
+        """Absolute file offset of the page body (immediately after the page
+        header thrift)."""
+        return self._segment["offset"] + self._segment["length"]
+
+    def raw_body(self) -> bytes:
+        """Read and return the page's on-disk body bytes (the
+        ``compressed_page_size`` bytes immediately after the page header).
+
+        These are the bytes as written: for a compressed page that is the
+        compressed form (for a V2 page only the values section is
+        compressed; the levels are stored uncompressed at the front). No
+        decoding is performed.
+        """
+        self._pf._f.seek(self.body_offset)
+        return self._pf._f.read(self._t.compressed_page_size)
+
+    def decode(self) -> DecodedPage:
+        """Decode this data page's body — levels and non-null values — and
+        cache the :class:`DecodedPage` result.
+
+        Dispatches on page version (V1 levels are length-prefixed inside the
+        compressed body; V2 levels are uncompressed in header-declared byte
+        ranges ahead of an optionally-compressed values section) and on value
+        encoding (PLAIN, or a dictionary encoding resolved through
+        :meth:`ColumnChunk.dictionary`).
+
+        Raises:
+            UnsupportedPageTypeError: the page is not a V1/V2 data page.
+            UnsupportedEncodingError: the value encoding (or a V1 level
+                encoding) is outside the supported set.
+            UnsupportedCodecError: the page's codec cannot be decompressed.
+            MissingDictionaryError: a dictionary-encoded page whose chunk has
+                no dictionary page.
+        """
+        if self._decoded_cache is None:
+            if self._t.data_page_header is not None:
+                self._decoded_cache = self._decode_v1()
+            elif self._t.data_page_header_v2 is not None:
+                self._decoded_cache = self._decode_v2()
+            else:
+                raise UnsupportedPageTypeError(self.type)
+        return self._decoded_cache
+
+    def definition_levels(self) -> list[int]:
+        """Per-value definition levels (length :attr:`num_values`). ``[0] *
+        n`` for a required column. See :class:`DecodedPage`."""
+        return self.decode().definition_levels
+
+    def repetition_levels(self) -> list[int]:
+        """Per-value repetition levels (length :attr:`num_values`). ``[0] *
+        n`` for a non-repeated column. See :class:`DecodedPage`."""
+        return self.decode().repetition_levels
+
+    def physical_values(self) -> list[Any]:
+        """The decoded **non-null** values of this data page in physical-type
+        form (``bytes`` for ``BYTE_ARRAY`` / ``FIXED_LEN_BYTE_ARRAY`` /
+        ``INT96``). Length is ``num_values - num_nulls``; the nulls are
+        carried by :meth:`definition_levels`. See :class:`DecodedPage`."""
+        return self.decode().values
+
+    def _decode_v1(self) -> DecodedPage:
+        """Decode a V1 data page: decompress the whole body, then read the
+        repetition and definition level blocks (each ``[4-byte LE len][RLE]``,
+        present only when the column's max level is > 0) followed by the
+        encoded values."""
+        h = self._t.data_page_header
+        cc = self._cc
+        num_values = h.num_values
+        max_rep = cc.max_repetition_level
+        max_def = cc.max_definition_level
+        self._require_rle_level_encoding(h.repetition_level_encoding, max_rep, "rep")
+        self._require_rle_level_encoding(h.definition_level_encoding, max_def, "def")
+
+        body = _decompress(self.raw_body(), cc.codec, self._t.uncompressed_page_size)
+        rep_levels, offset = decode_v1_level_block(body, 0, max_rep, num_values)
+        def_levels, offset = decode_v1_level_block(body, offset, max_def, num_values)
+        num_nulls = sum(1 for d in def_levels if d < max_def)
+        return self._decode_values(
+            encoding_value=h.encoding,
+            values_buf=body[offset:],
+            num_values=num_values,
+            num_nulls=num_nulls,
+            rep_levels=rep_levels,
+            def_levels=def_levels,
+            values_body_offset=offset,
+        )
+
+    def _decode_v2(self) -> DecodedPage:
+        """Decode a V2 data page: the repetition and definition level streams
+        are stored uncompressed at the front of the body in header-declared
+        byte lengths; only the trailing values section is (optionally)
+        compressed."""
+        h = self._t.data_page_header_v2
+        cc = self._cc
+        num_values = h.num_values
+        rep_len = h.repetition_levels_byte_length or 0
+        def_len = h.definition_levels_byte_length or 0
+        body = self.raw_body()
+        if rep_len + def_len > len(body):
+            raise ValueError(
+                f"V2 page levels ({rep_len}+{def_len} bytes) exceed the page "
+                f"body ({len(body)} bytes)"
+            )
+        rep_levels = decode_levels(body[:rep_len], cc.max_repetition_level, num_values)
+        def_levels = decode_levels(
+            body[rep_len : rep_len + def_len], cc.max_definition_level, num_values
+        )
+        values_section = body[rep_len + def_len :]
+        # is_compressed defaults to True in the thrift; treat an unset value
+        # as compressed too. Levels are never compressed, so the values'
+        # uncompressed size is the page total minus the level bytes.
+        if h.is_compressed is None or h.is_compressed:
+            values_buf = _decompress(
+                values_section,
+                cc.codec,
+                self._t.uncompressed_page_size - rep_len - def_len,
+            )
+        else:
+            values_buf = values_section
+        return self._decode_values(
+            encoding_value=h.encoding,
+            values_buf=values_buf,
+            num_values=num_values,
+            num_nulls=h.num_nulls,
+            rep_levels=rep_levels,
+            def_levels=def_levels,
+            values_body_offset=rep_len + def_len,
+        )
+
+    def _decode_values(
+        self,
+        *,
+        encoding_value: int,
+        values_buf: bytes,
+        num_values: int,
+        num_nulls: int,
+        rep_levels: list[int],
+        def_levels: list[int],
+        values_body_offset: int,
+    ) -> DecodedPage:
+        """Decode the values section (shared by V1/V2) and assemble the
+        :class:`DecodedPage`. ``num_nulls`` values are absent from the
+        section, so exactly ``num_values - num_nulls`` values are decoded."""
+        encoding = _ENCODING_NAMES.get(encoding_value, str(encoding_value))
+        num_non_null = num_values - num_nulls
+        cc = self._cc
+        dictionary_indices: list[int] | None = None
+        index_stats: DecodeStats | None = None
+
+        if encoding == "PLAIN":
+            values = decode_plain(values_buf, cc.type, num_non_null, cc.type_length)
+        elif encoding in _DICTIONARY_ENCODINGS:
+            dictionary = cc.dictionary()
+            if dictionary is None:
+                raise MissingDictionaryError(cc.path)
+            dictionary_indices = []
+            if num_non_null:
+                bit_width = values_buf[0]
+                dictionary_indices, index_stats = decode_rle_bitpacked_hybrid(
+                    values_buf[1:], bit_width, num_non_null
+                )
+            values = [
+                _dictionary_lookup(dictionary, i, cc.path) for i in dictionary_indices
+            ]
+        else:
+            raise UnsupportedEncodingError(encoding)
+
+        return DecodedPage(
+            encoding=encoding,
+            num_values=num_values,
+            num_nulls=num_nulls,
+            repetition_levels=rep_levels,
+            definition_levels=def_levels,
+            values=values,
+            dictionary_indices=dictionary_indices,
+            index_stats=index_stats,
+            values_body_offset=values_body_offset,
+        )
+
+    @staticmethod
+    def _require_rle_level_encoding(
+        encoding_value: int, max_level: int, which: str
+    ) -> None:
+        """V1 level blocks are RLE/bit-packed-hybrid; raise on a deprecated
+        ``BIT_PACKED`` (or other) level encoding the decoder can't read.
+        A column with ``max_level == 0`` has no level block, so its declared
+        level encoding is irrelevant and not checked."""
+        if max_level == 0:
+            return
+        name = _ENCODING_NAMES.get(encoding_value, str(encoding_value))
+        if name != "RLE":
+            raise UnsupportedEncodingError(name, context=f"{which} level")
+
+    def _decode_dictionary_entries(self) -> list[Any]:
+        """Decode this (dictionary) page's entries to physical-type values.
+        Dictionary pages are PLAIN-encoded over the whole (single,
+        possibly-compressed) body."""
+        h = self._t.dictionary_page_header
+        encoding = _ENCODING_NAMES.get(h.encoding, str(h.encoding))
+        if encoding not in ("PLAIN", "PLAIN_DICTIONARY"):
+            raise UnsupportedEncodingError(encoding, context="dictionary")
+        body = _decompress(
+            self.raw_body(), self._cc.codec, self._t.uncompressed_page_size
+        )
+        return decode_plain(body, self._cc.type, h.num_values, self._cc.type_length)
 
     # ----- Tree-node interface (docs/tree-schema.md v0) --------------------
 
