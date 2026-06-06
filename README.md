@@ -68,6 +68,11 @@ header / extract / decode`) land in a future release.
 - **`--limit N`** caps list-shaped outputs. Truncation is reported explicitly via the `truncated` field; nothing is silently dropped.
 - **`-o / --output PATH`** writes JSON to a file instead of stdout.
 - **`--log-level {DEBUG,INFO,WARNING,ERROR,CRITICAL}`** is the top-level global option.
+- **Navigation cross-link.** Every `rowgroup`/`column` `list` and `show` item carries a `_path` — its canonical [`show`](#show--path-addressed-navigation) navigation path (`row_groups/2/columns/1`). Use the flat commands as a search/sort surface, then feed a `_path` straight back into `show` to drill in (no need to hand-build the path):
+  ```bash
+  parquet-analyzer column list data.parquet | jq -r '.items | max_by(.compressed_size)._path' \
+    | xargs parquet-analyzer show data.parquet
+  ```
 - **Errors → stderr** as a single JSON line: `{"$schema": "parquet-analyzer/v1/error", "error": "<code>", "message": "<human>", "fix": "<retry command>"}`. The process exits non-zero on operational errors; `file validate` reports parse failures as findings (exit 0).
 - **Column path matching.** Every emitted column carries both `column` (dot-joined display string) and `path` (list of segments). `--column NAME` matches against the dot-joined form. Ambiguous matches (when multiple distinct paths join to the same string) produce a JSON error listing the candidate paths.
 
