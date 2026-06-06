@@ -276,8 +276,12 @@ instead of paying an O(pages) walk:
 ```
 
 `--walk-pages` enables listing/addressing pages of such a column (it reads
-every page header). `show` is tree-structured; the verb-noun subcommands
-above remain the way to get flat, aggregated views.
+every page header). A column can have many thousands of pages, so the child
+listing is capped by **`--limit N`** (default 100; `0` lists all); the
+`_navigation` block reports `children_total` / `children_shown` /
+`children_truncated`, and truncation only bounds the *listing* — every child
+stays addressable by its index. `show` is tree-structured; the verb-noun
+subcommands above remain the way to get flat, aggregated views.
 
 ### Schema-version discovery
 

@@ -623,7 +623,9 @@ def handle_column_show(args: argparse.Namespace) -> None:
 def handle_show(args: argparse.Namespace) -> None:
     with ParquetFile(args.path) as pf:
         try:
-            rendered = _navigate.render(pf, args.navpath, walk_pages=args.walk_pages)
+            rendered = _navigate.render(
+                pf, args.navpath, walk_pages=args.walk_pages, limit=args.limit
+            )
         except _navigate.NavigationError as exc:
             raise CliError(exc.code, exc.message, exc.fix) from exc
     payload = {"$schema": _schema_uri("show"), **rendered}
@@ -789,6 +791,14 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="allow listing/addressing a column's pages when the file has no "
         "OffsetIndex (reads every page header)",
+    )
+    show_parser.add_argument(
+        "--limit",
+        type=int,
+        default=100,
+        help="cap how many child stubs are listed (a column can have many "
+        "thousands of pages); 0 lists all. Truncation is reported in "
+        "_navigation; every child stays addressable by index regardless.",
     )
 
     return parser

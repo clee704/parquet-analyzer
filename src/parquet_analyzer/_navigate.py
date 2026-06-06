@@ -135,36 +135,50 @@ def _out_of_range(what: str, idx: int, total: int, parent: str) -> NavigationErr
     )
 
 
-def render(pf: Any, navpath: str, *, walk_pages: bool) -> dict:
+def render(pf: Any, navpath: str, *, walk_pages: bool, limit: int = 100) -> dict:
     """Render the node at ``navpath`` with its children as path-annotated
     stubs and a ``_navigation`` block. The returned dict has no ``$schema``
-    (the CLI handler attaches the ``show`` schema)."""
+    (the CLI handler attaches the ``show`` schema).
+
+    ``limit`` caps how many child stubs are listed (a column can have many
+    thousands of pages); ``limit <= 0`` lists all. The ``_navigation`` block
+    reports ``children_total`` / ``children_shown`` / ``children_truncated``.
+    Truncation only bounds the *listing* — every child remains addressable by
+    its index regardless of ``limit``.
+    """
     node, kind, canonical = resolve(pf, navpath, walk_pages=walk_pages)
 
     if kind == "column_chunk":
-        out = _render_column_show(node, canonical, walk_pages)
+        out = _render_column_show(node, canonical, walk_pages, limit)
+        listing = out.pop("_listing", None)
     else:
         out = node.to_json(view="tree", depth=1)
         out.pop("$schema", None)
         if kind == "file":
-            _annotate_children(out.get("row_groups"), "row_groups", "")
+            listing = _list_children(out, "row_groups", "", limit=limit)
         elif kind == "row_group":
-            _annotate_children(out.get("columns"), "columns", canonical, node.columns)
+            listing = _list_children(
+                out, "columns", canonical, limit=limit, wrappers=node.columns
+            )
+        else:
+            listing = None
 
-    out["_navigation"] = {
+    nav: dict[str, Any] = {
         "path": canonical,
         "parent": _parent_path(canonical),
         "kind": kind,
     }
+    if listing is not None:
+        nav.update(listing)
+    out["_navigation"] = nav
     return out
 
 
-def _render_column_show(cc: Any, base: str, walk_pages: bool) -> dict:
+def _render_column_show(cc: Any, base: str, walk_pages: bool, limit: int) -> dict:
     out = _column_chunk_content(cc)
     if cc.has_offset_index or walk_pages:
         dict_json, pages_json = _render_pages(cc, "tree", 0)
-        out["dictionary_page"] = dict_json
-        out["pages"] = pages_json
+        total = len(pages_json) + (1 if dict_json is not None else 0)
         idx = 0
         if dict_json is not None:
             dict_json["_path"] = f"{base}/pages/{idx}"
@@ -172,6 +186,19 @@ def _render_column_show(cc: Any, base: str, walk_pages: bool) -> dict:
         for stub in pages_json:
             stub["_path"] = f"{base}/pages/{idx}"
             idx += 1
+        out["dictionary_page"] = dict_json
+        if limit > 0 and len(pages_json) > limit:
+            out["pages"] = pages_json[:limit]
+            truncated = True
+        else:
+            out["pages"] = pages_json
+            truncated = False
+        shown = len(out["pages"]) + (1 if dict_json is not None else 0)
+        out["_listing"] = {
+            "children_total": total,
+            "children_shown": shown,
+            "children_truncated": truncated,
+        }
     else:
         out["dictionary_page"] = None
         out["pages"] = {
@@ -182,17 +209,31 @@ def _render_column_show(cc: Any, base: str, walk_pages: bool) -> dict:
                 "page (reads every page header)"
             ),
         }
+        out["_listing"] = {
+            "children_total": None,
+            "children_shown": 0,
+            "children_truncated": False,
+        }
     out.update(render_tree_index_children(cc, 0))
     return out
 
 
-def _annotate_children(
-    stubs: Any, keyword: str, base: str, wrappers: Any = None
-) -> None:
-    """Attach the canonical descend ``_path`` (and, for columns, the display
-    ``name``) to each child stub in place."""
+def _list_children(
+    out: dict, keyword: str, base: str, *, limit: int, wrappers: Any = None
+) -> dict | None:
+    """Cap ``out[keyword]`` to ``limit`` stubs, annotate each with its
+    canonical descend ``_path`` (and, for columns, the display ``name``), and
+    return the listing metadata. ``limit <= 0`` lists all."""
+    stubs = out.get(keyword)
     if not isinstance(stubs, list):
-        return
+        return None
+    total = len(stubs)
+    if limit > 0 and total > limit:
+        stubs = stubs[:limit]
+        out[keyword] = stubs
+        truncated = True
+    else:
+        truncated = False
     prefix = f"{base}/" if base else ""
     for i, stub in enumerate(stubs):
         if not isinstance(stub, dict):
@@ -200,6 +241,11 @@ def _annotate_children(
         stub["_path"] = f"{prefix}{keyword}/{i}"
         if wrappers is not None:
             stub["name"] = ".".join(wrappers[i].path)
+    return {
+        "children_total": total,
+        "children_shown": len(stubs),
+        "children_truncated": truncated,
+    }
 
 
 def _parent_path(canonical: str) -> str | None:

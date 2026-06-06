@@ -87,7 +87,8 @@ def test_show_root_lists_row_groups_with_paths(indexed):
     with ParquetFile(str(indexed)) as pf:
         out = render(pf, "", walk_pages=False)
     assert out["_kind"] == "file"
-    assert out["_navigation"] == {"path": "", "parent": None, "kind": "file"}
+    nav = out["_navigation"]
+    assert nav["path"] == "" and nav["parent"] is None and nav["kind"] == "file"
     paths = [rg["_path"] for rg in out["row_groups"]]
     assert paths == ["row_groups/0", "row_groups/1"]
 
@@ -213,6 +214,71 @@ def test_page_out_of_range(indexed):
     assert ei.value.code == "page_out_of_range"
 
 
+@pytest.fixture()
+def many_pages(tmp_path):
+    """OffsetIndex column with many data pages (small page size + enough
+    rows that pyarrow splits into well over a hundred pages)."""
+    p = tmp_path / "manypages.parquet"
+    pq.write_table(
+        pa.table({"v": pa.array(list(range(200_000)), pa.int64())}),
+        p,
+        data_page_size=1024,
+        use_dictionary=False,
+        write_page_index=True,
+    )
+    return p
+
+
+def test_show_limit_caps_page_listing(many_pages):
+    with ParquetFile(str(many_pages)) as pf:
+        total = pf.row_groups[0].columns[0].num_pages
+        out = render(pf, "row_groups/0/columns/0", walk_pages=False, limit=5)
+    assert total > 5, "fixture should have more than 5 pages"
+    assert len(out["pages"]) == 5
+    nav = out["_navigation"]
+    assert nav["children_total"] == total
+    assert nav["children_shown"] == 5
+    assert nav["children_truncated"] is True
+
+
+def test_show_limit_caps_row_group_listing(indexed):
+    with ParquetFile(str(indexed)) as pf:
+        out = render(pf, "", walk_pages=False, limit=1)
+    assert len(out["row_groups"]) == 1
+    nav = out["_navigation"]
+    assert nav["children_total"] == 2
+    assert nav["children_shown"] == 1
+    assert nav["children_truncated"] is True
+
+
+def test_show_limit_zero_lists_all(many_pages):
+    with ParquetFile(str(many_pages)) as pf:
+        total = pf.row_groups[0].columns[0].num_pages
+        out = render(pf, "row_groups/0/columns/0", walk_pages=False, limit=0)
+    assert len(out["pages"]) == total
+    assert out["_navigation"]["children_truncated"] is False
+
+
+def test_show_limit_does_not_block_addressing(many_pages):
+    """Truncating the listing must not affect addressability — a page past
+    the limit still resolves."""
+    with ParquetFile(str(many_pages)) as pf:
+        total = pf.row_groups[0].columns[0].num_pages
+        node, kind, _ = resolve(
+            pf, f"row_groups/0/columns/0/pages/{total - 1}", walk_pages=False
+        )
+    assert kind == "page"
+
+
+def test_list_children_guards():
+    # Missing / non-list child key → None, no error.
+    assert _navigate._list_children({}, "row_groups", "", limit=0) is None
+    out = {"row_groups": [{"_kind": "x"}, "not-a-dict"]}
+    meta = _navigate._list_children(out, "row_groups", "", limit=0)
+    assert out["row_groups"][0]["_path"] == "row_groups/0"
+    assert meta["children_total"] == 2
+
+
 def test_parent_path():
     assert _navigate._parent_path("") is None
     assert _navigate._parent_path("row_groups/0") == ""
@@ -221,9 +287,8 @@ def test_parent_path():
 
 def test_annotate_children_guards():
     # Non-list and non-dict members are ignored without error.
-    _navigate._annotate_children(None, "row_groups", "")
     items = [{"_kind": "x"}, "not-a-dict"]
-    _navigate._annotate_children(items, "row_groups", "")
+    _navigate._list_children({"row_groups": items}, "row_groups", "", limit=0)
     assert items[0]["_path"] == "row_groups/0"
 
 
