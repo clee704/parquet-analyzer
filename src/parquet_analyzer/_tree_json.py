@@ -243,7 +243,10 @@ def _render_row_group(rg: "RowGroup", view: str, child_depth: Depth) -> dict:
     return out
 
 
-def _render_column_chunk(cc: "ColumnChunk", view: str, child_depth: Depth) -> dict:
+def _column_chunk_content(cc: "ColumnChunk") -> dict:
+    """The column chunk's own scalar fields (footer-derived, cheap) — shared
+    by the tree/layout renderers and the ``show`` navigation verb, which
+    each attach their own children."""
     out = _system_fields(cc, "column_chunk")
     out["path"] = list(cc.path)
     out["path_display"] = ".".join(cc.path)
@@ -257,25 +260,39 @@ def _render_column_chunk(cc: "ColumnChunk", view: str, child_depth: Depth) -> di
     out["dictionary_page_offset"] = cc.dictionary_page_offset
     out["file_offset"] = cc._t.file_offset
     out["statistics"] = _column_chunk_statistics(cc)
+    return out
+
+
+def render_tree_index_children(cc: "ColumnChunk", child_depth: Depth) -> dict:
+    """The tree-view ``offset_index`` / ``column_index`` / ``bloom_filter``
+    children of a column chunk (each ``None`` when absent). Shared by the
+    tree renderer and ``show``."""
+    return {
+        "offset_index": (
+            _render(_offset_index_node(cc), "tree", child_depth)
+            if cc.offset_index_offset is not None
+            else None
+        ),
+        "column_index": (
+            _render(_column_index_node(cc), "tree", child_depth)
+            if cc.column_index_offset is not None
+            else None
+        ),
+        "bloom_filter": (
+            _render(_bloom_filter_header_node(cc), "tree", child_depth)
+            if cc.bloom_filter_offset is not None
+            else None
+        ),
+    }
+
+
+def _render_column_chunk(cc: "ColumnChunk", view: str, child_depth: Depth) -> dict:
+    out = _column_chunk_content(cc)
     if view == "tree":
         # Tree view: page kinds + opaque branches as named children; no
         # data_region (per docs/tree-schema.md). null when absent.
         out["dictionary_page"], out["pages"] = _render_pages(cc, view, child_depth)
-        out["offset_index"] = (
-            _render(_offset_index_node(cc), view, child_depth)
-            if cc.offset_index_offset is not None
-            else None
-        )
-        out["column_index"] = (
-            _render(_column_index_node(cc), view, child_depth)
-            if cc.column_index_offset is not None
-            else None
-        )
-        out["bloom_filter"] = (
-            _render(_bloom_filter_header_node(cc), view, child_depth)
-            if cc.bloom_filter_offset is not None
-            else None
-        )
+        out.update(render_tree_index_children(cc, child_depth))
     else:
         # Layout view: refs (stubs) to the nodes' physical positions; no
         # children array (the data lives elsewhere in the file tree).
