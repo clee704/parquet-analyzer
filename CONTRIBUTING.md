@@ -132,9 +132,12 @@ introducing new node kinds.
 
 This codebase does not accept tech debt as a cost of shipping. The
 final state of a change must look like it was designed cleanly from the
-start, not like the path the author took to get there. Before opening a
-PR, refactor within the boundary of what you changed so that **none of
-the following remain**:
+start, not like the path the author took to get there. Keeping it that
+way is a **recurring checkpoint**, not a one-time cleanup — you run it
+at the end of every task (see "The refactoring checkpoint" below).
+
+The checkpoint scans the code you touched, and the design it now sits
+in, so that **none of the following remain**:
 
 - **Dead code** — branches, helpers, or fallbacks that can't execute
   given how callers now use them. Remove them. If a defensive guard is
@@ -150,9 +153,38 @@ the following remain**:
   unusual"), abandoned approaches, or session/review-round framing.
   Describe the final behavior instead.
 
-This applies to the diff you are submitting, not the whole repository:
-clean up what you touched, and file an issue for pre-existing debt you
-notice but can't fix in scope.
+### The refactoring checkpoint
+
+Run this **at every checkpoint** — before completing each task / opening
+each PR, and again at the close of a multi-PR slice. It is a deliberate,
+standing step in the workflow, not something to remember only when the
+code feels messy. Treat it like the test gate: every PR passes through
+it.
+
+The checkpoint is two moves:
+
+1. **Assess.** Re-read the code you touched and the design it sits in
+   against the four criteria above. Dogfooding or implementing the next
+   slice often exposes that an abstraction introduced earlier is now
+   leaky, duplicated, or dead — this is the moment to catch it.
+2. **Decide, per finding — fix now, or defer.** There is no third
+   "leave it" option.
+   - **Fix now (default)** when the cleanup is inside the boundary of
+     what you changed and is low-risk. Do it in the same PR (or a small
+     `refactor:` PR stacked on it).
+   - **Defer by issue** when the finding is out of scope, large, or
+     risky to fold in. File a tracking issue immediately and link it.
+     Never leave a known problem unrecorded.
+
+**Record the outcome in the PR.** The pull-request template has a
+Refactoring-checkpoint section: list what you cleaned up and what you
+deferred (with issue links). "Nothing to clean up" is a valid outcome,
+but it must be stated — silence is not the same as having run the
+checkpoint. This keeps the ritual auditable and unskippable.
+
+The checkpoint operates on the diff you are submitting, not the whole
+repository: clean up what you touched, and file an issue for
+pre-existing debt you notice but can't fix in scope.
 
 ## Issues
 
