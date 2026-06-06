@@ -1,7 +1,8 @@
 # Subcommand output design principles
 
-The contract behind `parquet-analyzer`'s v1 verb-noun CLI output
-(`file kv/schema/...`, `column show/list`, `rowgroup list/show`).
+The contract behind `parquet-analyzer`'s CLI output — the flat verb-noun
+commands (`file kv/schema/...`, `column show/list`, `rowgroup list/show`)
+and the `show` navigation verb.
 
 ## The contract
 
@@ -98,8 +99,52 @@ Rules for these flags:
   `true` (same honesty pattern, just both states now reachable).
 
 The page-subcommand work tracked in #21 lands the page-walk
-infrastructure that makes these flags possible. Until then, the
-only escape is the Python API (`cc.pages()` on the wrapper).
+infrastructure that makes the **verb-noun** flags possible (`column show
+--walk-pages`, etc.). The **navigation surface got there first**: `show
+--walk-pages` (see below) already provides a landed CLI escape hatch for
+page enumeration, so the page walk is no longer Python-API-only.
+
+## The `show` navigation surface
+
+`show FILE [PATH]` is a second output surface that applies the same
+contract to *exploration*. Instead of one flat answer it renders the node
+at `PATH` plus its immediate children as stubs, each annotated with the
+canonical path to descend into it — you walk the file like a map, one
+bounded step at a time, by extending the path along the
+`row_groups → columns → pages` spine.
+
+Every `show` step obeys the footer-bounded, walk-free rule:
+
+- A node's own fields and its children's stubs (`_kind` / `_offset` /
+  `_length` + the `_path` to descend) are footer-derived.
+- **Listing a column's pages never forces a page-header walk.** With an
+  OffsetIndex the page stubs come from it (one bounded index parse — the
+  contract's "bounded extra index parse" tier); without one, the listing
+  is *withheld* behind a `_walk_required` affordance rather than silently
+  walking. That is the honesty pattern (above) applied to navigation: the
+  output says "this needs a walk" instead of quietly doing it.
+
+`show` carries the two cost/size knobs the contract implies:
+
+- **`--walk-pages`** is the navigation-surface instance of the
+  per-subcommand opt-in flag — named for the cost, not the field. It opts
+  a single invocation into the page-header walk needed to list or address
+  the pages of a column that has no OffsetIndex. Default off.
+- **`--limit N`** bounds the *output size*, not the cost: a column can
+  have thousands of pages, so the listing is capped (default 100) and
+  `_navigation` reports `children_total` / `children_shown` /
+  `children_truncated`. Truncation never affects addressability — every
+  child still resolves by its index.
+
+The two surfaces **compose**. The verb-noun `list` / `show` commands are
+the search/sort surface (aggregated, sortable tables); each item carries
+a `_path` that feeds straight into `show` to drill in. A consumer (or an
+AI agent) sorts on the flat surface and navigates on the `show` surface
+without ever hand-building a path.
+
+Because each command is a fresh process, the parsed footer is cached on
+disk (content-addressed; see the README) so an interactive sequence of
+bounded steps stays fast — the footer parse is paid once, not per step.
 
 ## What this implies for the page subcommands (#21)
 
@@ -111,10 +156,11 @@ When the page-level subcommands land:
 - `page extract` and `page decode` cross into body access and are
   explicitly opt-in by the verb name. They're allowed because the
   consumer is asking for exactly that work.
-- The first per-subcommand escape-hatch flag (`column show
-  --walk-pages`, and the equivalent on `column list` /
-  `rowgroup show`) lands there, since that work is when the page-walk
-  CLI infrastructure becomes available.
+- The **verb-noun** per-subcommand escape-hatch flags (`column show
+  --walk-pages`, and the equivalent on `column list` / `rowgroup show`)
+  land there, since that work is when the page-walk CLI infrastructure
+  becomes available. (`show --walk-pages` on the navigation surface
+  already landed ahead of it — same flag, same cost contract.)
 - `num_pages_known: true` becomes a reachable state on
   `--walk-pages` invocations (in addition to the existing
   OffsetIndex-present case).
