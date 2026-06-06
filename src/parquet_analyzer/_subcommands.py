@@ -809,12 +809,18 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 
+def _command_label(args: argparse.Namespace) -> str:
+    """The ``verb noun`` (or just ``verb`` for a nounless verb like ``show``)
+    label used in error messages and ``fix`` commands."""
+    return (
+        args.verb if getattr(args, "noun", None) is None else f"{args.verb} {args.noun}"
+    )
+
+
 def _validate_required_for_run(args: argparse.Namespace) -> None:
     """Enforce per-subcommand required args that we made optional for the
     sake of ``--schema-version`` (which short-circuits before running)."""
-    cmd = (
-        args.verb if getattr(args, "noun", None) is None else f"{args.verb} {args.noun}"
-    )
+    cmd = _command_label(args)
     if args.path is None:
         raise CliError(
             code="missing_argument",
@@ -874,7 +880,7 @@ def run_subcommand(argv: Sequence[str]) -> int:
             CliError(
                 code="file_not_found",
                 message=str(exc),
-                fix=f"check the path and re-run: parquet-analyzer {args.verb} {args.noun} <path>",
+                fix=f"check the path and re-run: parquet-analyzer {_command_label(args)} <path>",
             )
         )
         return 1

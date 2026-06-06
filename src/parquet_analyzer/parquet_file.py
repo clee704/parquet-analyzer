@@ -849,10 +849,8 @@ class ColumnChunk:
         *listed* cheaply (#30):
 
         - The dictionary-page extent is computed from the column-metadata
-          offsets. ``[dictionary_page_offset, data_page_offset)`` is, by
-          the parquet column-chunk layout, exactly the dictionary page (it
-          is written immediately before the first data page), so no read
-          is needed.
+          offsets (see :meth:`_dictionary_page_extent`) — footer-derived, no
+          read.
         - Each data-page extent comes from an OffsetIndex ``PageLocation``;
           its ``compressed_page_size`` includes the page header per the
           parquet spec, so it matches the materialized :attr:`Page._length`.
@@ -865,13 +863,13 @@ class ColumnChunk:
             return None
         oi = self._read_offset_index()
         stubs: list[PageStub] = []
-        if self._md.dictionary_page_offset:
-            dict_offset = self._md.dictionary_page_offset
+        dict_extent = self._dictionary_page_extent()
+        if dict_extent is not None:
             stubs.append(
                 PageStub(
                     kind="dictionary_page",
-                    offset=dict_offset,
-                    length=self._md.data_page_offset - dict_offset,
+                    offset=dict_extent[0],
+                    length=dict_extent[1],
                     first_row_index=None,
                 )
             )
@@ -885,6 +883,21 @@ class ColumnChunk:
                 )
             )
         return tuple(stubs)
+
+    def _dictionary_page_extent(self) -> tuple[int, int] | None:
+        """``(offset, length)`` of this chunk's dictionary page, or ``None``
+        when there is none. Footer-derived (no read): the dictionary page
+        spans ``[dictionary_page_offset, data_page_offset)``. For a column
+        with no data pages — e.g. a 0-row column, where ``data_page_offset``
+        is ``0`` rather than past the dictionary page — the dictionary page
+        is the whole compressed region, whose size is ``total_compressed_size``.
+        """
+        off = self._md.dictionary_page_offset
+        if not off:
+            return None
+        dpo = self._md.data_page_offset
+        length = dpo - off if dpo and dpo > off else self._md.total_compressed_size
+        return off, length
 
     def page(self, index: int) -> "Page":
         """Return the ``index``-th page (a :class:`Page`), supporting

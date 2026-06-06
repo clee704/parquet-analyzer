@@ -994,6 +994,35 @@ def test_page_stubs_none_without_offset_index(small_parquet):
                 assert cc.page_stubs() is None
 
 
+def test_dictionary_page_extent_normal_and_zero_row(tmp_path):
+    """The dictionary-page extent is the gap to the first data page normally,
+    and the whole compressed region for a 0-row column (where
+    data_page_offset is 0, which would make the gap negative)."""
+    # Normal column with data pages.
+    normal = tmp_path / "normal.parquet"
+    pq.write_table(
+        pa.table({"v": pa.array(list(range(100)), pa.int64())}),
+        normal,
+        use_dictionary=True,
+    )
+    with ParquetFile(str(normal)) as pf:
+        cc = pf.row_groups[0].columns[0]
+        off, length = cc._dictionary_page_extent()
+        assert off == cc._md.dictionary_page_offset
+        assert length == cc._md.data_page_offset - off > 0
+
+    # 0-row column: data_page_offset is 0 -> fall back to total_compressed_size.
+    empty = tmp_path / "empty.parquet"
+    pq.write_table(
+        pa.table({"v": pa.array([], type=pa.string())}), empty, use_dictionary=True
+    )
+    with ParquetFile(str(empty)) as pf:
+        cc = pf.row_groups[0].columns[0]
+        assert cc._md.data_page_offset == 0
+        off, length = cc._dictionary_page_extent()
+        assert length == cc._md.total_compressed_size > 0
+
+
 def test_page_stubs_match_materialized_pages(indexed_parquet):
     """page_stubs() extents/kinds match the materialized pages() exactly —
     validating the dictionary-page arithmetic and the OffsetIndex-derived

@@ -224,16 +224,17 @@ def _render_column_show(cc: Any, base: str, walk_pages: bool, limit: int) -> dic
 
 def _withheld_dict_stub(cc: Any, base: str) -> dict | None:
     """The dictionary-page stub on the no-OffsetIndex path. Its extent is
-    footer-derivable — ``[dictionary_page_offset, data_page_offset)`` is, by
-    the column-chunk layout, exactly the dictionary page — so it is shown
-    even when the data-page listing is withheld (reporting ``null`` here
-    would be indistinguishable from a column that has no dictionary page)."""
-    if not cc.dictionary_page_offset:
+    footer-derivable (see :meth:`ColumnChunk._dictionary_page_extent`), so it
+    is shown even when the data-page listing is withheld (reporting ``null``
+    here would be indistinguishable from a column that has no dictionary
+    page)."""
+    extent = cc._dictionary_page_extent()
+    if extent is None:
         return None
     return {
         "_kind": "dictionary_page",
-        "_offset": cc.dictionary_page_offset,
-        "_length": cc.data_page_offset - cc.dictionary_page_offset,
+        "_offset": extent[0],
+        "_length": extent[1],
         "_lazy": True,
         "_path": f"{base}/pages/0",
     }

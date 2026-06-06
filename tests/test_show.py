@@ -83,6 +83,38 @@ def _probe(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture()
+def empty_dict(tmp_path):
+    """0-row column with a dictionary page (data_page_offset is 0, which
+    breaks naive dict-extent arithmetic)."""
+    p = tmp_path / "emptydict.parquet"
+    pq.write_table(
+        pa.table({"s": pa.array([], type=pa.string())}), p, use_dictionary=True
+    )
+    return p
+
+
+def test_show_zero_row_dict_extent_not_negative(empty_dict):
+    """Regression: a 0-row column's dict stub must report its true (positive)
+    extent, not a negative length from `data_page_offset - dict_offset`."""
+    with ParquetFile(str(empty_dict)) as pf:
+        cc = pf.row_groups[0].columns[0]
+        assert cc.dictionary_page_offset and cc._md.data_page_offset == 0
+        out = render(pf, "row_groups/0/columns/0", walk_pages=False)
+    dp = out["dictionary_page"]
+    assert dp is not None
+    assert dp["_length"] == cc._md.total_compressed_size
+    assert dp["_length"] > 0
+
+
+def test_show_file_not_found_uses_verb_only_fix(capsys):
+    rc = run_subcommand(["show", "/no/such/file.parquet"])
+    assert rc == 1
+    err = json.loads(capsys.readouterr().err)
+    assert err["error"] == "file_not_found"
+    assert "show" in err["fix"] and "None" not in err["fix"]
+
+
 def test_show_root_lists_row_groups_with_paths(indexed):
     with ParquetFile(str(indexed)) as pf:
         out = render(pf, "", walk_pages=False)
