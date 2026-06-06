@@ -505,6 +505,26 @@ Gotchas worth knowing:
 
 The tool uses a custom Thrift protocol implementation (`OffsetRecordingProtocol`) that wraps the standard Thrift compact protocol to track byte offsets and lengths of all decoded structures. This enables precise mapping of logical Parquet structures to their binary representation.
 
+### Footer cache
+
+Because each command is a one-shot process, a complex footer (hundreds of row groups × tens of columns) would re-pay the offset-recording decode — seconds — on every invocation. To keep repeated inspection of the same file fast, the parsed footer of a large file is cached on disk and served on the next open of an unchanged file (e.g. an interactive sequence of commands drops from seconds to tens of milliseconds per call).
+
+The cache is transparent and safe by construction:
+
+- **Content-addressed** on the footer bytes, so it is self-invalidating — any change to the file produces a different key and a stale entry can never be served. The cache also invalidates automatically across tool/Thrift upgrades.
+- Stored in a private (`0700`) per-user cache directory; if that directory cannot be confirmed private, the cache silently disables itself and parsing proceeds normally.
+- Written only for footers large enough to be worth it, and bounded in total size (oldest entries evicted).
+
+It is fully optional:
+
+| Environment variable | Effect |
+|---|---|
+| `PARQUET_ANALYZER_NO_CACHE=1` | Disable the cache entirely (always parse). |
+| `PARQUET_ANALYZER_CACHE_DIR=<path>` | Relocate the cache directory (default: `$XDG_CACHE_HOME/parquet-analyzer/` or `~/.cache/parquet-analyzer/`). |
+| `PARQUET_ANALYZER_CACHE_MAX_BYTES=<n>` | Eviction ceiling for the cache directory (default 1 GiB). |
+
+The `ParquetFile(path, use_cache=False)` keyword bypasses it programmatically.
+
 ## Development
 
 ### Environment setup
