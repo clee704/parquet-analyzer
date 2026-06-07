@@ -9,10 +9,14 @@ from ._core import (
     segment_to_json,
 )
 from .decoders import (
+    BitPackedRun,
     DecodeStats,
+    RleBitPackedStream,
+    RleRun,
     decode_levels,
     decode_plain,
     decode_rle_bitpacked_hybrid,
+    decode_rle_bitpacked_hybrid_stream,
     decode_v1_level_block,
     decompress,
 )
@@ -23,6 +27,7 @@ from .parquet_file import (
     Page,
     PageDecodeError,
     ParquetFile,
+    PlainValues,
     RowGroup,
     UnsupportedCodecError,
     UnsupportedEncodingError,
@@ -30,6 +35,7 @@ from .parquet_file import (
 )
 
 __all__ = [
+    "BitPackedRun",
     "ColumnChunk",
     "DecodeStats",
     "DecodedPage",
@@ -39,6 +45,9 @@ __all__ = [
     "Page",
     "PageDecodeError",
     "ParquetFile",
+    "PlainValues",
+    "RleBitPackedStream",
+    "RleRun",
     "RowGroup",
     "TFileTransport",
     "UnsupportedCodecError",
@@ -47,6 +56,7 @@ __all__ = [
     "decode_levels",
     "decode_plain",
     "decode_rle_bitpacked_hybrid",
+    "decode_rle_bitpacked_hybrid_stream",
     "decode_v1_level_block",
     "decompress",
     "fill_gaps",

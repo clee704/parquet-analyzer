@@ -30,6 +30,7 @@ Typical usage::
 from __future__ import annotations
 
 import logging
+import struct
 from dataclasses import dataclass
 from typing import Any
 
@@ -60,11 +61,9 @@ from ._core import (
     segment_to_json,
 )
 from .decoders import (
-    DecodeStats,
-    decode_levels,
+    RleBitPackedStream,
     decode_plain,
-    decode_rle_bitpacked_hybrid,
-    decode_v1_level_block,
+    decode_rle_bitpacked_hybrid_stream,
     decompress,
 )
 from ._tree_json import to_json_root as _to_json_root
@@ -76,6 +75,7 @@ __all__ = [
     "Page",
     "PageDecodeError",
     "ParquetFile",
+    "PlainValues",
     "RowGroup",
     "UnsupportedCodecError",
     "UnsupportedEncodingError",
@@ -185,19 +185,94 @@ def _dictionary_lookup(dictionary: list, index: int, path: tuple[str, ...]) -> A
     return dictionary[index]
 
 
+def _level_stream_v1(
+    body: bytes, offset: int, max_level: int, num_values: int
+) -> tuple[RleBitPackedStream | None, int]:
+    """Decode a V1 level block (``[4-byte LE length][RLE/bit-packed stream]``)
+    from a decompressed page body, returning ``(stream, next_offset)``.
+
+    Returns ``(None, offset)`` for a column with ``max_level == 0`` (no level
+    block exists on disk). The stream's ``bit_width`` is derived from
+    ``max_level`` (``max_level.bit_length()``)."""
+    if max_level == 0:
+        return None, offset
+    if offset + 4 > len(body):
+        raise ValueError(
+            f"truncated V1 level-block length prefix at offset {offset}: "
+            f"need 4 bytes, have {len(body) - offset}"
+        )
+    (block_len,) = struct.unpack_from("<I", body, offset)
+    start = offset + 4
+    block_end = start + block_len
+    if block_end > len(body):
+        raise ValueError(
+            f"V1 level block at offset {offset} claims {block_len} bytes but "
+            f"only {len(body) - start} remain"
+        )
+    stream = decode_rle_bitpacked_hybrid_stream(
+        body[start:block_end], max_level.bit_length(), num_values
+    )
+    return stream, block_end
+
+
+def _level_stream_v2(
+    stream_bytes: bytes, max_level: int, num_values: int
+) -> RleBitPackedStream | None:
+    """Decode a V2 level stream (stored uncompressed in a header-declared byte
+    range, no length prefix), returning ``None`` for a ``max_level == 0``
+    column. The stream's ``bit_width`` is ``max_level.bit_length()``."""
+    if max_level == 0:
+        return None
+    return decode_rle_bitpacked_hybrid_stream(
+        stream_bytes, max_level.bit_length(), num_values
+    )
+
+
+def _count_nulls(def_levels: RleBitPackedStream | None, max_def: int) -> int:
+    """Count nulls from a V1 definition-level stream (a value is null when its
+    definition level is below ``max_def``). ``0`` when there is no def block."""
+    if def_levels is None:
+        return 0
+    return sum(1 for level in def_levels.values if level < max_def)
+
+
+@dataclass(frozen=True)
+class PlainValues:
+    """The values section of a PLAIN-encoded page. PLAIN stores the values
+    verbatim with no further run structure, so this is simply the decoded
+    physical-type values (``bytes`` for ``BYTE_ARRAY`` /
+    ``FIXED_LEN_BYTE_ARRAY`` / ``INT96``). Length is the page's non-null count."""
+
+    values: tuple[Any, ...]
+
+
 @dataclass
 class DecodedPage:
-    """The decoded body of a single V1/V2 data page.
+    """The decoded body of a single V1/V2 data page, faithful to the page's
+    on-disk encoding.
 
-    Faithful to the page's on-disk sections: ``values`` holds the
-    **non-null** values from the page's values section (length
-    ``num_values - num_nulls``), and the nulls are represented by the
-    definition levels — this is the on-disk shape, not a reassembled
-    logical column (reinserting ``None`` for nulls, and assembling repeated
-    columns, are reader-level concerns left to a higher layer).
+    Each encoded stream is exposed in its own encoding-logical form rather
+    than as a flattened reconstruction:
 
-    Returned by :meth:`Page.decode` and cached on the page; treat the lists
-    as read-only.
+    - ``repetition_levels`` / ``definition_levels`` are
+      :class:`~parquet_analyzer.decoders.RleBitPackedStream` objects (the
+      level RLE/bit-packed runs + the expanded per-value levels), or ``None``
+      when the column has no such level block on disk.
+    - ``values`` is the **values section**: a :class:`PlainValues` for a
+      PLAIN page, or — because dictionary indices use the *same* RLE/bit-packed
+      encoding as levels — an
+      :class:`~parquet_analyzer.decoders.RleBitPackedStream` of the raw
+      indices for a dictionary page. Resolving those indices to values (via
+      the chunk's dictionary) is :meth:`Page.physical_values`, kept separate
+      so the page's own data is not conflated with the sibling dictionary.
+
+    The values section carries only the **non-null** values/indices (length
+    ``num_values - num_nulls``); the nulls are represented by the definition
+    levels. Reassembling a logical column (reinserting ``None``, assembling
+    repeated columns) is a reader-level concern left to a higher layer.
+
+    Returned by :meth:`Page.decode` and cached on the page; treat it as
+    read-only.
     """
 
     encoding: str
@@ -211,26 +286,19 @@ class DecodedPage:
     """Number of nulls (V2: from the header; V1: counted from the
     definition levels)."""
 
-    repetition_levels: list[int]
-    """Per-value repetition levels (length ``num_values``); ``[0] * n`` for a
-    non-repeated column (``max_repetition_level == 0``)."""
+    repetition_levels: RleBitPackedStream | None
+    """The repetition-level stream (runs + expanded levels), or ``None`` for a
+    non-repeated column (``max_repetition_level == 0``, no block on disk)."""
 
-    definition_levels: list[int]
-    """Per-value definition levels (length ``num_values``); ``[0] * n`` for a
+    definition_levels: RleBitPackedStream | None
+    """The definition-level stream (runs + expanded levels), or ``None`` for a
     required column (``max_definition_level == 0``). A value is null when its
     definition level is below the column's ``max_definition_level``."""
 
-    values: list[Any]
-    """The decoded non-null values, in physical-type form (``bytes`` for
-    ``BYTE_ARRAY`` / ``FIXED_LEN_BYTE_ARRAY`` / ``INT96``)."""
-
-    dictionary_indices: list[int] | None
-    """Raw dictionary indices for a dictionary-encoded page (before
-    resolving through the dictionary); ``None`` for a PLAIN page."""
-
-    index_stats: DecodeStats | None
-    """RLE/bit-packed run classification of the dictionary indices; ``None``
-    for a PLAIN page."""
+    values: PlainValues | RleBitPackedStream
+    """The values section: :class:`PlainValues` for a PLAIN page, or an
+    :class:`~parquet_analyzer.decoders.RleBitPackedStream` of dictionary
+    indices for a dictionary-encoded page."""
 
     values_body_offset: int
     """Byte offset where the values section starts — within the
@@ -1333,22 +1401,22 @@ class Page:
         return self._pf._f.read(self._t.compressed_page_size)
 
     def decode(self) -> DecodedPage:
-        """Decode this data page's body — levels and non-null values — and
-        cache the :class:`DecodedPage` result.
+        """Decode this data page's body — its level streams and its values
+        section — into the encoding-faithful :class:`DecodedPage` and cache it.
 
         Dispatches on page version (V1 levels are length-prefixed inside the
         compressed body; V2 levels are uncompressed in header-declared byte
-        ranges ahead of an optionally-compressed values section) and on value
-        encoding (PLAIN, or a dictionary encoding resolved through
-        :meth:`ColumnChunk.dictionary`).
+        ranges ahead of an optionally-compressed values section). The values
+        section is decoded into its encoding's own structure (PLAIN values, or
+        a dictionary-index :class:`~parquet_analyzer.decoders.RleBitPackedStream`);
+        it does **not** resolve dictionary indices to values — that is
+        :meth:`physical_values`, which pulls in the sibling dictionary page.
 
         Raises:
             UnsupportedPageTypeError: the page is not a V1/V2 data page.
             UnsupportedEncodingError: the value encoding (or a V1 level
                 encoding) is outside the supported set.
             UnsupportedCodecError: the page's codec cannot be decompressed.
-            MissingDictionaryError: a dictionary-encoded page whose chunk has
-                no dictionary page.
         """
         if self._decoded_cache is None:
             if self._t.data_page_header is not None:
@@ -1360,21 +1428,42 @@ class Page:
         return self._decoded_cache
 
     def definition_levels(self) -> list[int]:
-        """Per-value definition levels (length :attr:`num_values`). ``[0] *
-        n`` for a required column. See :class:`DecodedPage`."""
-        return self.decode().definition_levels
+        """The expanded per-value definition levels (length :attr:`num_values`);
+        ``[0] * n`` for a required column. Convenience over
+        ``decode().definition_levels`` (the full level stream)."""
+        stream = self.decode().definition_levels
+        return list(stream.values) if stream is not None else [0] * self.num_values
 
     def repetition_levels(self) -> list[int]:
-        """Per-value repetition levels (length :attr:`num_values`). ``[0] *
-        n`` for a non-repeated column. See :class:`DecodedPage`."""
-        return self.decode().repetition_levels
+        """The expanded per-value repetition levels (length :attr:`num_values`);
+        ``[0] * n`` for a non-repeated column. Convenience over
+        ``decode().repetition_levels`` (the full level stream)."""
+        stream = self.decode().repetition_levels
+        return list(stream.values) if stream is not None else [0] * self.num_values
 
     def physical_values(self) -> list[Any]:
         """The decoded **non-null** values of this data page in physical-type
         form (``bytes`` for ``BYTE_ARRAY`` / ``FIXED_LEN_BYTE_ARRAY`` /
         ``INT96``). Length is ``num_values - num_nulls``; the nulls are
-        carried by :meth:`definition_levels`. See :class:`DecodedPage`."""
-        return self.decode().values
+        carried by the definition levels.
+
+        For a PLAIN page these are the values verbatim; for a dictionary page
+        the indices in ``decode().values`` are resolved through the chunk's
+        dictionary (:meth:`ColumnChunk.dictionary`).
+
+        Raises:
+            MissingDictionaryError: a dictionary-encoded page whose chunk has
+                no dictionary page.
+        """
+        section = self.decode().values
+        if isinstance(section, PlainValues):
+            return list(section.values)
+        dictionary = self._cc.dictionary()
+        if dictionary is None:
+            raise MissingDictionaryError(self._cc.path)
+        return [
+            _dictionary_lookup(dictionary, i, self._cc.path) for i in section.values
+        ]
 
     def _decode_v1(self) -> DecodedPage:
         """Decode a V1 data page: decompress the whole body, then read the
@@ -1384,20 +1473,22 @@ class Page:
         h = self._t.data_page_header
         cc = self._cc
         num_values = h.num_values
-        max_rep = cc.max_repetition_level
         max_def = cc.max_definition_level
-        self._require_rle_level_encoding(h.repetition_level_encoding, max_rep, "rep")
+        self._require_rle_level_encoding(
+            h.repetition_level_encoding, cc.max_repetition_level, "rep"
+        )
         self._require_rle_level_encoding(h.definition_level_encoding, max_def, "def")
 
         body = _decompress(self.raw_body(), cc.codec, self._t.uncompressed_page_size)
-        rep_levels, offset = decode_v1_level_block(body, 0, max_rep, num_values)
-        def_levels, offset = decode_v1_level_block(body, offset, max_def, num_values)
-        num_nulls = sum(1 for d in def_levels if d < max_def)
-        return self._decode_values(
+        rep_levels, offset = _level_stream_v1(
+            body, 0, cc.max_repetition_level, num_values
+        )
+        def_levels, offset = _level_stream_v1(body, offset, max_def, num_values)
+        return self._assemble(
             encoding_value=h.encoding,
             values_buf=body[offset:],
             num_values=num_values,
-            num_nulls=num_nulls,
+            num_nulls=_count_nulls(def_levels, max_def),
             rep_levels=rep_levels,
             def_levels=def_levels,
             values_body_offset=offset,
@@ -1419,8 +1510,10 @@ class Page:
                 f"V2 page levels ({rep_len}+{def_len} bytes) exceed the page "
                 f"body ({len(body)} bytes)"
             )
-        rep_levels = decode_levels(body[:rep_len], cc.max_repetition_level, num_values)
-        def_levels = decode_levels(
+        rep_levels = _level_stream_v2(
+            body[:rep_len], cc.max_repetition_level, num_values
+        )
+        def_levels = _level_stream_v2(
             body[rep_len : rep_len + def_len], cc.max_definition_level, num_values
         )
         values_section = body[rep_len + def_len :]
@@ -1435,7 +1528,7 @@ class Page:
             )
         else:
             values_buf = values_section
-        return self._decode_values(
+        return self._assemble(
             encoding_value=h.encoding,
             values_buf=values_buf,
             num_values=num_values,
@@ -1445,44 +1538,24 @@ class Page:
             values_body_offset=rep_len + def_len,
         )
 
-    def _decode_values(
+    def _assemble(
         self,
         *,
         encoding_value: int,
         values_buf: bytes,
         num_values: int,
         num_nulls: int,
-        rep_levels: list[int],
-        def_levels: list[int],
+        rep_levels: RleBitPackedStream | None,
+        def_levels: RleBitPackedStream | None,
         values_body_offset: int,
     ) -> DecodedPage:
         """Decode the values section (shared by V1/V2) and assemble the
         :class:`DecodedPage`. ``num_nulls`` values are absent from the
-        section, so exactly ``num_values - num_nulls`` values are decoded."""
+        section, so it carries exactly ``num_values - num_nulls`` values."""
         encoding = _ENCODING_NAMES.get(encoding_value, str(encoding_value))
-        num_non_null = num_values - num_nulls
-        cc = self._cc
-        dictionary_indices: list[int] | None = None
-        index_stats: DecodeStats | None = None
-
-        if encoding == "PLAIN":
-            values = decode_plain(values_buf, cc.type, num_non_null, cc.type_length)
-        elif encoding in _DICTIONARY_ENCODINGS:
-            dictionary = cc.dictionary()
-            if dictionary is None:
-                raise MissingDictionaryError(cc.path)
-            dictionary_indices = []
-            if num_non_null:
-                bit_width = values_buf[0]
-                dictionary_indices, index_stats = decode_rle_bitpacked_hybrid(
-                    values_buf[1:], bit_width, num_non_null
-                )
-            values = [
-                _dictionary_lookup(dictionary, i, cc.path) for i in dictionary_indices
-            ]
-        else:
-            raise UnsupportedEncodingError(encoding)
-
+        values = self._decode_values_section(
+            encoding, values_buf, num_values - num_nulls
+        )
         return DecodedPage(
             encoding=encoding,
             num_values=num_values,
@@ -1490,10 +1563,34 @@ class Page:
             repetition_levels=rep_levels,
             definition_levels=def_levels,
             values=values,
-            dictionary_indices=dictionary_indices,
-            index_stats=index_stats,
             values_body_offset=values_body_offset,
         )
+
+    def _decode_values_section(
+        self, encoding: str, values_buf: bytes, num_non_null: int
+    ) -> PlainValues | RleBitPackedStream:
+        """Decode the values section into its encoding's own structure.
+
+        PLAIN yields a :class:`PlainValues` (the values verbatim); a
+        dictionary encoding yields an
+        :class:`~parquet_analyzer.decoders.RleBitPackedStream` of the raw
+        indices (the leading 1-byte ``bit_width`` + the RLE/bit-packed run
+        structure) — the same encoding levels use. Resolving the indices to
+        values is deferred to :meth:`physical_values`."""
+        cc = self._cc
+        if encoding == "PLAIN":
+            return PlainValues(
+                values=tuple(
+                    decode_plain(values_buf, cc.type, num_non_null, cc.type_length)
+                )
+            )
+        if encoding in _DICTIONARY_ENCODINGS:
+            bit_width = values_buf[0] if values_buf else 0
+            index_bytes = values_buf[1:] if values_buf else b""
+            return decode_rle_bitpacked_hybrid_stream(
+                index_bytes, bit_width, num_non_null
+            )
+        raise UnsupportedEncodingError(encoding)
 
     @staticmethod
     def _require_rle_level_encoding(

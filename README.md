@@ -465,23 +465,36 @@ for page in cc.pages():
 
 ### Decoding page bodies
 
-Each `Page` decodes its own body on demand — levels and values — without
-walking the rest of the file:
+Each `Page` decodes its own body on demand — **faithfully to the encoding**,
+not as a flattened reconstruction — without walking the rest of the file.
+Every encoded stream is exposed in its own structure:
 
 ```python
 cc = pf.row_groups[0].columns[0]
 page = cc.page(1)                 # seeks via the OffsetIndex when present
 
 decoded = page.decode()           # a DecodedPage (cached on the page)
-decoded.values                    # decoded NON-NULL values, physical form
-decoded.definition_levels         # per-value def levels (length num_values)
-decoded.repetition_levels         # per-value rep levels
 decoded.num_nulls                 # V2: from the header; V1: from def levels
-decoded.dictionary_indices        # raw indices for a dict-encoded page, else None
 
-# Convenience shortcuts:
-page.physical_values()            # == decoded.values
-page.definition_levels()
+# Level streams: RleBitPackedStream (the encoding parquet uses for levels),
+# or None when the column has no such block on disk (required / non-repeated).
+decoded.definition_levels         # RleBitPackedStream | None
+decoded.repetition_levels         # RleBitPackedStream | None
+lvl = decoded.definition_levels
+lvl.bit_width                     # packing width (from max_definition_level)
+lvl.runs                          # ordered (RleRun | BitPackedRun) — on-disk structure
+lvl.values                        # the expanded per-value levels
+
+# Values section: PlainValues for PLAIN, or — because dictionary indices use
+# the SAME RLE/bit-packed encoding as levels — an RleBitPackedStream of the
+# raw indices for a dictionary page.
+decoded.values                    # PlainValues | RleBitPackedStream
+# e.g. for a dict page: decoded.values.bit_width / .runs / .values (indices)
+
+# Decoded logical (non-null) values — resolves dict indices through the
+# dictionary; for PLAIN, the values verbatim:
+page.physical_values()
+page.definition_levels()          # convenience: expanded levels ([0]*n if no block)
 page.repetition_levels()
 page.raw_body()                   # the on-disk body bytes (no decode)
 
@@ -491,17 +504,21 @@ cc.max_definition_level           # schema-derived, cheap
 cc.max_repetition_level
 ```
 
-`values` holds only the **non-null** values from the page's values section
-(length `num_values - num_nulls`); the nulls live in the definition levels —
-this is the on-disk shape, not a reassembled column. V1 (length-prefixed
-levels inside the compressed body) and V2 (uncompressed levels ahead of an
-optionally-compressed values section) are handled transparently, as are the
-`PLAIN`, `PLAIN_DICTIONARY`, and `RLE_DICTIONARY` encodings (dictionary
-indices are resolved through the chunk's dictionary page). An out-of-scope
-encoding, an undecompressable codec, or a non-data page raises a typed
-`PageDecodeError` subclass (`UnsupportedEncodingError`,
+`decode()` gives you the encoding's own data: an `RleBitPackedStream`
+(`bit_width` + ordered `RleRun` / `BitPackedRun`) for levels and dictionary
+indices, and `PlainValues` for PLAIN. The values section carries only the
+**non-null** entries (`num_values - num_nulls`); the nulls live in the
+definition levels — this is the on-disk shape, not a reassembled column.
+`physical_values()` is the separate step that resolves dictionary indices to
+values (PLAIN values pass through). V1 (length-prefixed levels inside the
+compressed body) and V2 (uncompressed levels ahead of an
+optionally-compressed values section) are handled transparently. An
+out-of-scope encoding or an undecompressable codec on `decode()`, a non-data
+page on `decode()`, or a missing dictionary on `physical_values()` raises a
+typed `PageDecodeError` subclass (`UnsupportedEncodingError`,
 `UnsupportedCodecError`, `UnsupportedPageTypeError`, `MissingDictionaryError`)
 carrying a stable `.code`.
+
 
 ### Full eager walk (legacy shape)
 
@@ -528,18 +545,23 @@ Page-level decoders for the encoded streams a Parquet inspector actually needs t
 from parquet_analyzer.decoders import (
     decompress,
     decode_rle_bitpacked_hybrid,
+    decode_rle_bitpacked_hybrid_stream,
     decode_levels,
     decode_v1_level_block,
     decode_plain,
     DecodeStats,
+    RleBitPackedStream,
+    RleRun,
+    BitPackedRun,
 )
 ```
 
 | Function | What it does |
 |---|---|
 | `decompress(data, codec, uncompressed_size)` | Decompress a Parquet compressed byte slice. Supports `UNCOMPRESSED`, `SNAPPY`, `GZIP`, `ZSTD`, `LZ4` (legacy Hadoop framed), `LZ4_RAW`. |
-| `decode_rle_bitpacked_hybrid(data, bit_width, num_values)` | Decode a raw RLE / bit-packed-hybrid stream — used for dictionary indices and (with no length prefix) V2 level streams. Returns `(values, DecodeStats)` where `DecodeStats` records RLE-run / bit-packed-run counts, lengths, and RLE-run values for verification workflows. |
-| `decode_levels(data, max_level, num_values)` | Decode definition or repetition levels. Bit width is derived from `max_level`. Returns `[0] * num_values` if `max_level == 0` (no level block exists on disk for required columns). |
+| `decode_rle_bitpacked_hybrid_stream(data, bit_width, num_values)` | Decode a raw RLE / bit-packed-hybrid stream into an `RleBitPackedStream` — the encoding's own structure: `bit_width` plus the ordered `runs` (each an `RleRun(value, length)` or `BitPackedRun(length, values)`) plus the flattened `values`. This is the faithful "encoder-logical" view used for both level streams and dictionary indices. |
+| `decode_rle_bitpacked_hybrid(data, bit_width, num_values)` | The same stream as a `(values, DecodeStats)` pair — the flattened values plus a flat run summary. Use `decode_rle_bitpacked_hybrid_stream` when the ordered, per-run structure matters. |
+| `decode_levels(data, max_level, num_values)` | Decode definition or repetition levels to a flat list. Bit width is derived from `max_level`. Returns `[0] * num_values` if `max_level == 0` (no level block exists on disk for required columns). |
 | `decode_v1_level_block(data, offset, max_level, num_values)` | V1-data-page helper that handles the 4-byte little-endian length prefix in front of each level block. Returns `(levels, new_offset)`. V2 data pages store level byte lengths in the page header instead — for those, slice the bytes yourself and call `decode_levels` directly. |
 | `decode_plain(data, parquet_type, num_values, type_length=None)` | Decode `PLAIN`-encoded values. Supported types: `BOOLEAN`, `INT32`, `INT64`, `INT96`, `FLOAT`, `DOUBLE`, `BYTE_ARRAY`, `FIXED_LEN_BYTE_ARRAY` (`type_length` required). `INT96` is returned as 12-byte `bytes` — interpretation is the caller's responsibility. |
 

@@ -3,9 +3,13 @@
 Strategy mirrors :mod:`tests.test_decoders`: round-trip through
 pyarrow-generated parquet files so the tests exercise the same lazy
 ``ParquetFile`` -> ``ColumnChunk`` -> ``Page`` path real callers use, and
-assert decoded values against the original data. The matrix covers V1/V2
-pages x {PLAIN, dictionary} encodings x {required, optional, repeated}
-columns, plus the unsupported-input error contract.
+assert against the original data. The engine is **encoding-faithful**: a
+page's level streams and its values section are exposed in their own
+encoding structure (``RleBitPackedStream`` of runs for levels and dictionary
+indices, ``PlainValues`` for PLAIN), with the decoded logical values
+available separately via ``Page.physical_values()``. The matrix covers
+V1/V2 × {PLAIN, dictionary} × {required, optional, repeated} columns, the
+encoding-structure assertions, and the unsupported-input error contract.
 """
 
 from __future__ import annotations
@@ -22,6 +26,9 @@ from parquet_analyzer import (
     ColumnChunk,
     MissingDictionaryError,
     ParquetFile,
+    PlainValues,
+    RleBitPackedStream,
+    RleRun,
     UnsupportedCodecError,
     UnsupportedEncodingError,
     UnsupportedPageTypeError,
@@ -75,6 +82,18 @@ def _decoded_values(cc: ColumnChunk) -> list:
     out: list = []
     for p in _data_pages(cc):
         out.extend(p.physical_values())
+    return out
+
+
+def _run_values(stream: RleBitPackedStream) -> list[int]:
+    """Flatten a stream's runs by hand — must match the stream's own
+    ``values`` (the faithful run structure round-trips to the value list)."""
+    out: list[int] = []
+    for run in stream.runs:
+        if isinstance(run, RleRun):
+            out.extend([run.value] * min(run.length, len(stream.values) - len(out)))
+        else:
+            out.extend(run.values)
     return out
 
 
@@ -166,6 +185,64 @@ def test_roundtrip_matrix(tmp_path, version, use_dictionary, name):
     assert _decoded_values(cc) == _FLAT_PHYSICAL[name]
 
 
+# ---------------------------------------------------------------------------
+# Encoding-faithful structure (the encoding's own data, not just the values)
+# ---------------------------------------------------------------------------
+
+
+def test_plain_values_section_is_plainvalues(tmp_path):
+    path = _flat(tmp_path / "f.parquet", use_dictionary=False)
+    pf = ParquetFile(str(path))
+    decoded = _data_pages(_col(pf, "id"))[0].decode()
+    assert isinstance(decoded.values, PlainValues)
+    # PLAIN stores values verbatim — the section IS the non-null values.
+    assert list(decoded.values.values) == _FLAT_PHYSICAL["id"]
+
+
+def test_dictionary_values_section_is_index_stream(tmp_path):
+    path = _flat(tmp_path / "f.parquet", use_dictionary=True)
+    pf = ParquetFile(str(path))
+    cc = _col(pf, "name")
+    decoded = _data_pages(cc)[0].decode()
+    # The values section of a dictionary page is the RLE/bit-packed index
+    # stream (the page's actual on-disk data), NOT the resolved values.
+    section = decoded.values
+    assert isinstance(section, RleBitPackedStream)
+    assert section.bit_width >= 1
+    assert len(section.runs) >= 1
+    # Resolving the indices through the dictionary yields the values.
+    dictionary = cc.dictionary()
+    assert [dictionary[i] for i in section.values] == _FLAT_PHYSICAL["name"]
+
+
+def test_level_stream_exposes_runs(tmp_path):
+    # A fully-defined optional column packs its definition levels as a single
+    # RLE run (value 1, repeated num_values times).
+    path = _flat(tmp_path / "f.parquet", use_dictionary=False)
+    pf = ParquetFile(str(path))
+    decoded = _data_pages(_col(pf, "name"))[0].decode()
+    stream = decoded.definition_levels
+    assert isinstance(stream, RleBitPackedStream)
+    assert stream.bit_width == 1
+    assert stream.runs == (RleRun(value=1, length=10),)
+    # The run structure round-trips to the expanded levels.
+    assert list(stream.values) == [1] * 10
+    assert _run_values(stream) == list(stream.values)
+
+
+def test_repetition_levels_none_for_flat_column(tmp_path):
+    path = _flat(tmp_path / "f.parquet", use_dictionary=False)
+    pf = ParquetFile(str(path))
+    decoded = _data_pages(_col(pf, "id"))[0].decode()
+    # A non-repeated column has no repetition-level block on disk.
+    assert decoded.repetition_levels is None
+
+
+# ---------------------------------------------------------------------------
+# Levels, nulls, and value counts
+# ---------------------------------------------------------------------------
+
+
 def test_optional_column_nulls_and_levels(tmp_path):
     path = _flat(tmp_path / "f.parquet", use_dictionary=False)
     pf = ParquetFile(str(path))
@@ -174,24 +251,28 @@ def test_optional_column_nulls_and_levels(tmp_path):
 
     assert decoded.num_values == 10
     assert decoded.num_nulls == 1
-    assert len(decoded.values) == 9
+    assert len(page.physical_values()) == 9
     # Index 3 is the lone null (definition level 0 < max_definition_level 1).
-    assert decoded.definition_levels == [1, 1, 1, 0, 1, 1, 1, 1, 1, 1]
-    assert decoded.repetition_levels == [0] * 10
-    assert page.definition_levels() == decoded.definition_levels
+    expected_def = [1, 1, 1, 0, 1, 1, 1, 1, 1, 1]
+    assert list(decoded.definition_levels.values) == expected_def
+    assert page.definition_levels() == expected_def
+    assert page.repetition_levels() == [0] * 10  # convenience derives [0]*n
 
 
-def test_required_column_has_no_levels_or_nulls(tmp_path):
+def test_required_column_has_no_level_block(tmp_path):
     schema = pa.schema([pa.field("x", pa.int32(), nullable=False)])
     table = pa.table({"x": [10, 20, 30]}, schema=schema)
     path = _write(tmp_path / "req.parquet", table, use_dictionary=False)
     pf = ParquetFile(str(path))
-    decoded = _data_pages(_col(pf, "x"))[0].decode()
+    page = _data_pages(_col(pf, "x"))[0]
+    decoded = page.decode()
 
     assert _col(pf, "x").max_definition_level == 0
     assert decoded.num_nulls == 0
-    assert decoded.definition_levels == [0, 0, 0]
-    assert decoded.values == [10, 20, 30]
+    # A required column has no definition-level block on disk.
+    assert decoded.definition_levels is None
+    assert page.definition_levels() == [0, 0, 0]  # convenience derives [0]*n
+    assert page.physical_values() == [10, 20, 30]
 
 
 def test_repeated_column_repetition_levels(tmp_path):
@@ -200,13 +281,15 @@ def test_repeated_column_repetition_levels(tmp_path):
     pf = ParquetFile(str(path))
     cc = _col(pf, "tags.list.element")
     assert cc.max_repetition_level == 1
-    decoded = _data_pages(cc)[0].decode()
+    page = _data_pages(cc)[0]
+    decoded = page.decode()
     # The non-null leaf values are the flattened list elements; the trailing
     # empty list contributes a null leaf (no value). A new list starts at
     # repetition level 0, a continuation at level 1.
-    assert decoded.values == [1, 2, 3]
-    assert decoded.repetition_levels == [0, 1, 0, 0]
+    assert page.physical_values() == [1, 2, 3]
     assert decoded.num_nulls == 1
+    assert isinstance(decoded.repetition_levels, RleBitPackedStream)
+    assert page.repetition_levels() == [0, 1, 0, 0]
 
 
 def test_fixed_len_byte_array_decode(tmp_path):
@@ -263,16 +346,6 @@ def test_dictionary_offset_pointing_at_non_dictionary_raises(tmp_path):
         cc.dictionary()
 
 
-def test_level_convenience_methods(tmp_path):
-    table = pa.table({"tags": [[1, 2], [3]]})
-    path = _write(tmp_path / "list.parquet", table, use_dictionary=False)
-    pf = ParquetFile(str(path))
-    page = _data_pages(_col(pf, "tags.list.element"))[0]
-    assert page.repetition_levels() == [0, 1, 0]
-    assert page.definition_levels() == page.decode().definition_levels
-    assert page.physical_values() == [1, 2, 3]
-
-
 # ---------------------------------------------------------------------------
 # Body bytes + caching
 # ---------------------------------------------------------------------------
@@ -305,15 +378,18 @@ def test_all_null_page_has_no_values(tmp_path, use_dictionary):
     cc = _col(pf, "x")
     decoded = _data_pages(cc)[0].decode()
     assert decoded.num_nulls == 3
-    assert decoded.values == []
+    assert _data_pages(cc)[0].physical_values() == []
     if use_dictionary:
-        # A dictionary-encoded all-null page still resolves its (empty)
-        # dictionary; the index stream is simply empty.
+        # A dictionary-encoded all-null page still yields an (empty) index
+        # stream; the dictionary resolves to an empty list.
         assert decoded.encoding == "RLE_DICTIONARY"
-        assert decoded.dictionary_indices == []
+        assert isinstance(decoded.values, RleBitPackedStream)
+        assert decoded.values.values == ()
+        assert decoded.values.runs == ()
         assert cc.dictionary() == []
     else:
-        assert decoded.dictionary_indices is None
+        assert isinstance(decoded.values, PlainValues)
+        assert decoded.values.values == ()
 
 
 # ---------------------------------------------------------------------------
@@ -360,14 +436,18 @@ def test_decode_on_dictionary_page_raises(tmp_path):
     assert exc.value.code == "page_type_not_supported"
 
 
-def test_missing_dictionary(tmp_path, monkeypatch):
+def test_missing_dictionary_on_resolution(tmp_path, monkeypatch):
+    """``decode()`` of a dictionary page yields the index stream without the
+    dictionary; only resolving to values (``physical_values``) needs it."""
     path = _flat(tmp_path / "f.parquet", use_dictionary=True)
     pf = ParquetFile(str(path))
     cc = _col(pf, "name")
-    monkeypatch.setattr(ColumnChunk, "dictionary", lambda self: None)
     page = _data_pages(cc)[0]
+    # decode() succeeds without the dictionary.
+    assert isinstance(page.decode().values, RleBitPackedStream)
+    monkeypatch.setattr(ColumnChunk, "dictionary", lambda self: None)
     with pytest.raises(MissingDictionaryError) as exc:
-        page.decode()
+        page.physical_values()
     assert exc.value.code == "missing_dictionary"
     assert exc.value.path == ("name",)
 

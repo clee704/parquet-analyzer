@@ -24,10 +24,13 @@ pq = pytest.importorskip("pyarrow.parquet")
 
 from parquet_analyzer import ParquetFile
 from parquet_analyzer.decoders import (
+    BitPackedRun,
     DecodeStats,
+    RleRun,
     decode_levels,
     decode_plain,
     decode_rle_bitpacked_hybrid,
+    decode_rle_bitpacked_hybrid_stream,
     decode_v1_level_block,
     decompress,
 )
@@ -423,6 +426,55 @@ def test_rle_decode_num_values_zero_returns_empty():
     assert values == []
     assert stats.rle_run_count == 0
     assert stats.bit_packed_run_count == 0
+
+
+def test_hybrid_stream_decomposes_rle_run():
+    """The stream view exposes the encoding's own run structure: an RLE-run
+    header ``(run_len << 1) | 0`` becomes a single :class:`RleRun`."""
+    # Header (5 << 1) = 10, then one 1-byte value (7) for a width-8 stream.
+    stream = decode_rle_bitpacked_hybrid_stream(
+        bytes([10, 7]), bit_width=8, num_values=5
+    )
+    assert stream.bit_width == 8
+    assert stream.runs == (RleRun(value=7, length=5),)
+    assert stream.values == (7, 7, 7, 7, 7)
+
+
+def test_hybrid_stream_decomposes_bit_packed_run():
+    """A bit-packed-run header ``(num_groups << 1) | 1`` becomes a
+    :class:`BitPackedRun` carrying its decoded values."""
+    # Header (1 << 1) | 1 = 3 → 1 group of 8 values at bit_width 1, packed
+    # LSB-first in one byte 0b10110100 = 0xB4 → [0,0,1,0,1,1,0,1].
+    stream = decode_rle_bitpacked_hybrid_stream(
+        bytes([3, 0xB4]), bit_width=1, num_values=8
+    )
+    assert stream.bit_width == 1
+    assert stream.runs == (BitPackedRun(length=8, values=(0, 0, 1, 0, 1, 1, 0, 1)),)
+    assert stream.values == (0, 0, 1, 0, 1, 1, 0, 1)
+
+
+def test_hybrid_stream_and_legacy_decode_agree_on_real_page(tmp_path):
+    """The stream view and the legacy ``(values, stats)`` view are two
+    projections of the same parsed runs and must agree on a real page."""
+    table = pa.table({"k": pa.array(["a", "b", "c", "a", "b"] * 200)})
+    path = tmp_path / "dict.parquet"
+    pq.write_table(table, path, use_dictionary=True, compression="snappy")
+    pages = _read_pages(path)
+    data_page = next(p for p in pages if p["page_type"] == "DATA_PAGE")
+    raw = decompress(data_page["data"], "SNAPPY", data_page["uncompressed_size"])
+    _, after_def = decode_v1_level_block(
+        raw, 0, max_level=1, num_values=data_page["num_values"]
+    )
+    index_bytes = raw[after_def + 1 :]
+    bit_width = raw[after_def]
+    nv = data_page["num_values"]
+
+    stream = decode_rle_bitpacked_hybrid_stream(index_bytes, bit_width, nv)
+    values, stats = decode_rle_bitpacked_hybrid(index_bytes, bit_width, nv)
+    assert stream.bit_width == bit_width
+    assert list(stream.values) == values
+    assert stream.runs  # the page has at least one run
+    assert len(stream.runs) == stats.rle_run_count + stats.bit_packed_run_count
 
 
 def test_rle_decode_truncated_stream_raises():

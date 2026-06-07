@@ -55,18 +55,76 @@ from typing import Any
 import cramjam  # type: ignore[import-untyped]
 
 __all__ = [
+    "BitPackedRun",
     "DecodeStats",
+    "RleBitPackedStream",
+    "RleRun",
     "decode_levels",
     "decode_plain",
     "decode_rle_bitpacked_hybrid",
+    "decode_rle_bitpacked_hybrid_stream",
     "decode_v1_level_block",
     "decompress",
 ]
 
 
 @dataclass(frozen=True)
+class RleRun:
+    """One run-length-encoded run of an RLE/bit-packed-hybrid stream: the
+    integer ``value`` repeated ``length`` times.
+
+    ``length`` is the **encoder-declared** repeat count from the run header.
+    When this is the final run of a stream whose value budget ends mid-run,
+    fewer than ``length`` values are actually emitted, but ``length`` still
+    reflects what the encoder wrote on disk."""
+
+    value: int
+    length: int
+
+
+@dataclass(frozen=True)
+class BitPackedRun:
+    """One bit-packed run of an RLE/bit-packed-hybrid stream: ``length`` values
+    (a multiple of 8 — the encoder-declared group count × 8) packed at the
+    stream's bit width.
+
+    ``values`` holds the decoded values that fall within the stream's value
+    budget; the final run of a stream may carry fewer than ``length`` values
+    when the budget ends mid-run (the trailing packed slots are padding the
+    encoder wrote but no value claims)."""
+
+    length: int
+    values: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class RleBitPackedStream:
+    """The encoder-logical view of one RLE/bit-packed-hybrid stream.
+
+    Parquet uses this same encoding for two distinct roles — definition /
+    repetition **levels** and dictionary **indices** — so this one type
+    represents both. The integers mean levels or indices depending on where
+    the stream sits in the page; structurally they are identical.
+
+    ``bit_width`` is the packing width (derived from ``max_level`` for a level
+    stream, read from the 1-byte prefix for a dictionary-index stream).
+    ``runs`` is the on-disk run structure in order; ``values`` is the
+    flattened decoded integer list (length = the stream's value count)."""
+
+    bit_width: int
+    runs: tuple[RleRun | BitPackedRun, ...]
+    values: tuple[int, ...]
+
+
+@dataclass(frozen=True)
 class DecodeStats:
     """Run-classification stats produced by :func:`decode_rle_bitpacked_hybrid`.
+
+    A flat summary of the run structure;
+    :func:`decode_rle_bitpacked_hybrid_stream` returns the ordered
+    :class:`RleRun` / :class:`BitPackedRun` list (plus ``bit_width`` and the
+    flattened values) this is derived from when the interleaving and
+    per-bit-packed-run values matter.
 
     ``rle_run_values`` records the value of each RLE-run header in stream
     order. Bit-packed runs do not contribute to ``rle_run_values`` — value
@@ -274,30 +332,78 @@ def decode_rle_bitpacked_hybrid(
     Returns:
         Tuple of ``(values, stats)`` where ``values`` has length
         ``num_values`` (or 0 if ``num_values == 0``) and ``stats`` records
-        the run classification.
+        the run classification. For the ordered, per-run view (the encoding's
+        own structure), use :func:`decode_rle_bitpacked_hybrid_stream`.
 
     Raises:
         ValueError: invalid arguments or truncated stream.
     """
+    runs = _parse_hybrid_runs(data, bit_width, num_values)
+    return _flatten_runs(runs, num_values), _runs_to_stats(runs)
+
+
+def decode_rle_bitpacked_hybrid_stream(
+    data: bytes, bit_width: int, num_values: int
+) -> RleBitPackedStream:
+    """Decode a raw RLE/bit-packed-hybrid stream into an
+    :class:`RleBitPackedStream` — the encoding's own on-disk structure
+    (``bit_width`` + ordered runs) alongside the flattened values.
+
+    This is the faithful "encoder-logical" view used to inspect how a level
+    or dictionary-index stream is actually laid out (both roles use this same
+    encoding). The flat value list is also available via
+    :func:`decode_rle_bitpacked_hybrid` / :func:`decode_levels`.
+
+    Reads until ``num_values`` values have been accounted for; the final run
+    may be truncated to land exactly on ``num_values`` (its declared
+    ``length`` still reflects the on-disk run, while its emitted values stop
+    at the budget). Raises ``ValueError`` if the buffer is exhausted before
+    ``num_values`` values are produced.
+
+    Args:
+        data: raw RLE/bit-packed-hybrid stream bytes (no length prefix).
+        bit_width: number of bits per packed value. Must satisfy
+            ``0 <= bit_width <= 64``. ``bit_width == 0`` is valid and means
+            every value is 0 (no bytes are consumed per RLE run).
+        num_values: number of values the stream should produce.
+
+    Returns:
+        The :class:`RleBitPackedStream` (empty ``runs``/``values`` when
+        ``num_values == 0``).
+
+    Raises:
+        ValueError: invalid arguments or truncated stream.
+    """
+    runs = _parse_hybrid_runs(data, bit_width, num_values)
+    return RleBitPackedStream(
+        bit_width=bit_width,
+        runs=tuple(runs),
+        values=tuple(_flatten_runs(runs, num_values)),
+    )
+
+
+def _parse_hybrid_runs(
+    data: bytes, bit_width: int, num_values: int
+) -> list[RleRun | BitPackedRun]:
+    """Parse a raw RLE/bit-packed-hybrid stream into its ordered runs. Shared
+    by :func:`decode_rle_bitpacked_hybrid` (which flattens + summarises) and
+    :func:`decode_rle_bitpacked_hybrid_stream` (which bundles them)."""
     if bit_width < 0 or bit_width > 64:
         raise ValueError(f"bit_width must be in [0, 64], got {bit_width}")
     if num_values < 0:
         raise ValueError(f"num_values must be >= 0, got {num_values}")
 
-    values: list[int] = []
-    rle_run_lengths: list[int] = []
-    rle_run_values: list[int] = []
-    bit_packed_run_lengths: list[int] = []
-
+    runs: list[RleRun | BitPackedRun] = []
+    produced = 0
     pos = 0
     end = len(data)
     byte_width = (bit_width + 7) // 8
     mask = (1 << bit_width) - 1 if bit_width > 0 else 0
 
-    while len(values) < num_values:
+    while produced < num_values:
         if pos >= end:
             raise ValueError(
-                f"RLE/bit-packed-hybrid stream truncated: produced {len(values)} "
+                f"RLE/bit-packed-hybrid stream truncated: produced {produced} "
                 f"of {num_values} values before end-of-buffer"
             )
         header, pos = _read_varint(data, pos, end)
@@ -312,14 +418,11 @@ def decode_rle_bitpacked_hybrid(
             for i in range(byte_width):
                 val |= data[pos + i] << (8 * i)
             pos += byte_width
-            take = min(run_len, num_values - len(values))
-            values.extend([val] * take)
-            rle_run_lengths.append(run_len)
-            rle_run_values.append(val)
+            produced += min(run_len, num_values - produced)
+            runs.append(RleRun(value=val, length=run_len))
         else:
             num_groups = header >> 1
             run_len = num_groups * 8
-            bit_packed_run_lengths.append(run_len)
             bits_total = num_groups * 8 * bit_width
             bytes_total = (bits_total + 7) // 8
             if pos + bytes_total > end:
@@ -329,29 +432,57 @@ def decode_rle_bitpacked_hybrid(
                 )
             bit_buf = 0
             bit_count = 0
-            take = min(run_len, num_values - len(values))
+            take = min(run_len, num_values - produced)
+            run_values: list[int] = []
             for _ in range(take):
                 while bit_count < bit_width:
                     bit_buf |= data[pos] << bit_count
                     pos += 1
                     bit_count += 8
-                values.append(bit_buf & mask)
+                run_values.append(bit_buf & mask)
                 bit_buf >>= bit_width
                 bit_count -= bit_width
             # When `take < run_len` the bit-packed run is being truncated to
             # land on `num_values`. The outer loop exits immediately after
-            # this branch in that case, so we don't need to advance `pos`
-            # past the remaining (unused) bytes of the run — the next varint
-            # header will never be read.
+            # this branch in that case, so we don't advance `pos` past the
+            # remaining (unused) bytes of the run — the next varint header
+            # will never be read.
+            produced += take
+            runs.append(BitPackedRun(length=run_len, values=tuple(run_values)))
 
-    stats = DecodeStats(
-        rle_run_count=len(rle_run_lengths),
-        bit_packed_run_count=len(bit_packed_run_lengths),
-        rle_run_lengths=tuple(rle_run_lengths),
-        rle_run_values=tuple(rle_run_values),
-        bit_packed_run_lengths=tuple(bit_packed_run_lengths),
+    return runs
+
+
+def _flatten_runs(runs: list[RleRun | BitPackedRun], num_values: int) -> list[int]:
+    """Flatten ordered hybrid runs back into the value list, truncating the
+    final run to exactly ``num_values`` values."""
+    values: list[int] = []
+    for run in runs:
+        if isinstance(run, RleRun):
+            values.extend([run.value] * min(run.length, num_values - len(values)))
+        else:
+            values.extend(run.values)
+    return values
+
+
+def _runs_to_stats(runs: list[RleRun | BitPackedRun]) -> DecodeStats:
+    """Summarise ordered hybrid runs into the flat :class:`DecodeStats`."""
+    rle_lengths: list[int] = []
+    rle_values: list[int] = []
+    bit_packed_lengths: list[int] = []
+    for run in runs:
+        if isinstance(run, RleRun):
+            rle_lengths.append(run.length)
+            rle_values.append(run.value)
+        else:
+            bit_packed_lengths.append(run.length)
+    return DecodeStats(
+        rle_run_count=len(rle_lengths),
+        bit_packed_run_count=len(bit_packed_lengths),
+        rle_run_lengths=tuple(rle_lengths),
+        rle_run_values=tuple(rle_values),
+        bit_packed_run_lengths=tuple(bit_packed_lengths),
     )
-    return values, stats
 
 
 def decode_levels(data: bytes, max_level: int, num_values: int) -> list[int]:
