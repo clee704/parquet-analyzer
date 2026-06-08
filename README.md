@@ -491,15 +491,16 @@ lvl.values                        # the expanded per-value levels
 decoded.values                    # PlainValues | RleBitPackedStream
 # e.g. for a dict page: decoded.values.bit_width / .runs / .values (indices)
 
-# Decoded logical (non-null) values — resolves dict indices through the
-# dictionary; for PLAIN, the values verbatim:
+# Physical-TYPE values (one level below logical): the encoding decoded and
+# dict indices resolved, but NOT logical-type-interpreted — a UTF8 column
+# yields b'S', not 'S' (a logical_values() companion is planned):
 page.physical_values()
 page.definition_levels()          # convenience: expanded levels ([0]*n if no block)
 page.repetition_levels()
 page.raw_body()                   # the on-disk body bytes (no decode)
 
 # The chunk's dictionary (decoded once, cached) when it has a dictionary page:
-cc.dictionary()                   # list of physical values, or None
+cc.dictionary()                   # list of physical-type values, or None
 cc.max_definition_level           # schema-derived, cheap
 cc.max_repetition_level
 ```
@@ -509,13 +510,22 @@ cc.max_repetition_level
 indices, and `PlainValues` for PLAIN. The values section carries only the
 **non-null** entries (`num_values - num_nulls`); the nulls live in the
 definition levels — this is the on-disk shape, not a reassembled column.
-`physical_values()` is the separate step that resolves dictionary indices to
-values (PLAIN values pass through). V1 (length-prefixed levels inside the
-compressed body) and V2 (uncompressed levels ahead of an
-optionally-compressed values section) are handled transparently. An
-out-of-scope encoding or an undecompressable codec on `decode()`, a non-data
-page on `decode()`, or a missing dictionary on `physical_values()` raises a
-typed `PageDecodeError` subclass (`UnsupportedEncodingError`,
+
+There are three levels between the on-disk bytes and the logical values:
+the **encoding representation** (`decode().values` — indices/runs/PLAIN
+bytes), the **physical-type values** (`physical_values()` — decoded to the
+parquet physical type with the dictionary resolved, e.g. `b'S'`), and the
+**logical-type values** (the physical values reinterpreted via the column's
+logical type, e.g. `'S'` / `Decimal` / a timestamp — not yet implemented).
+The dictionary is an *encoding*, not a type, so `physical_values()` yields
+the same physical type whether or not the page was dictionary-encoded.
+
+V1 (length-prefixed levels inside the compressed body) and V2 (uncompressed
+levels ahead of an optionally-compressed values section) are handled
+transparently. An out-of-scope encoding or an undecompressable codec on
+`decode()`, a non-data page on `decode()`, or a missing dictionary on
+`physical_values()` raises a typed `PageDecodeError` subclass
+(`UnsupportedEncodingError`,
 `UnsupportedCodecError`, `UnsupportedPageTypeError`, `MissingDictionaryError`)
 carrying a stable `.code`.
 

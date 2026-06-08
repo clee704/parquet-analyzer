@@ -1442,14 +1442,30 @@ class Page:
         return list(stream.values) if stream is not None else [0] * self.num_values
 
     def physical_values(self) -> list[Any]:
-        """The decoded **non-null** values of this data page in physical-type
-        form (``bytes`` for ``BYTE_ARRAY`` / ``FIXED_LEN_BYTE_ARRAY`` /
-        ``INT96``). Length is ``num_values - num_nulls``; the nulls are
-        carried by the definition levels.
+        """The page's non-null values in their **physical type** — one decode
+        level below the logical values.
 
-        For a PLAIN page these are the values verbatim; for a dictionary page
-        the indices in ``decode().values`` are resolved through the chunk's
-        dictionary (:meth:`ColumnChunk.dictionary`).
+        Three levels sit between the on-disk bytes and the logical values;
+        this returns the middle one:
+
+        1. *encoding representation* — how the values are stored on the page:
+           dictionary indices + the dictionary, or PLAIN bytes
+           (``decode().values`` + :meth:`ColumnChunk.dictionary`).
+        2. *physical-type values* (**this method**) — the values decoded to
+           their parquet physical type (``bytes`` for ``BYTE_ARRAY`` /
+           ``FIXED_LEN_BYTE_ARRAY`` / ``INT96``, ``int`` for ``INT32`` /
+           ``INT64``, etc.), with any dictionary encoding resolved. The
+           dictionary is an *encoding*, not a type, so this is the same
+           physical type whether or not the page was dictionary-encoded.
+        3. *logical-type values* — physical values reinterpreted via the
+           column's logical / converted type (e.g. ``b'S'`` → ``'S'`` for a
+           UTF8 string, raw bytes → ``Decimal`` for DECIMAL, ``INT96`` →
+           a timestamp). Not applied here; a ``logical_values()`` companion
+           that performs this interpretation is planned.
+
+        So a dictionary-encoded UTF8 column yields ``b'S'``, not ``'S'``.
+        Length is ``num_values - num_nulls``; the nulls are carried by the
+        definition levels.
 
         Raises:
             MissingDictionaryError: a dictionary-encoded page whose chunk has
