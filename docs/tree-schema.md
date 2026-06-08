@@ -1,6 +1,6 @@
 # Tree schema: footer-layer kinds (v0)
 
-This doc defines the **tree-node schema** for `parquet-analyzer`'s v2
+This doc defines the **tree-node schema** for `parquet-analyzer`'s v3
 output surface — the catalog of node kinds that represent parquet's
 on-disk structure as navigable lazy trees, plus the universal rules
 every node follows.
@@ -13,17 +13,36 @@ contract operates on.
 This is **v0** — the footer-layer kinds. Body-layer kinds (sub-page
 structure: def_block, values_block, indices, dict_lookup, encoding-
 specific leaves) land in v1 alongside the body-decode work in #21.
-Both versions are additive within v2.
+Both versions are additive within v3. (The catalog version — v0 / v1 —
+tracks which kinds exist; the `$schema` major — `parquet-analyzer/v3/...`
+— tracks the universal node shape. The major moved v2 → v3 when every
+node's `_offset` / `_length` were folded into a single `_location`
+address object.)
 
 ## Universal node contract
 
-Every tree node — leaf or branch — carries three system fields:
+Every tree node — leaf or branch — carries two system fields:
 
 | Field | Type | Always present? | Meaning |
 |---|---|---|---|
 | `_kind` | string | yes | identifies the node's schema; consumer reads this and looks up the rest in this doc |
-| `_offset` | int | yes | start byte of this node's bytes within the file |
-| `_length` | int | yes | byte length of this node's bytes |
+| `_location` | object | yes | where this node's bytes live in the file — see below |
+
+`_location` is an object with plain (non-`_`-prefixed) inner keys:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `offset` | int | start byte of this node's bytes within the file |
+| `length` | int | byte length of this node's bytes |
+
+`_location` always describes **real file bytes** — the range you could
+`dd`/`xxd` out of the file. (A later body-layer revision extends this
+object with decompression fields for sub-nodes that live inside a
+compressed region; v0's footer-layer nodes are all uncompressed on disk,
+so they carry only `offset`/`length`.) The inner keys are plain because
+the `_` prefix exists to separate framework fields from kind-specific
+content *on a node*, and inside `_location` every key is framework-owned —
+the same reason `_value` sub-dicts (below) use plain keys.
 
 Leaf nodes (kinds where the schema says "leaf with scalar value")
 additionally carry:
@@ -69,7 +88,7 @@ entries — preserves order and duplicates per parquet spec) and
 on-disk encoding).
 
 **Future consideration**: per-entry addressability (each
-`kv_metadata` entry as its own node with `_offset`/`_length` for
+`kv_metadata` entry as its own node with its own `_location` for
 its byte range in the footer) is a viable alternative shape if a
 forensics use case ever needs it. v0 doesn't, so the simpler
 single-leaf shape wins.
@@ -77,11 +96,11 @@ single-leaf shape wins.
 ### Reserved namespaces
 
 - `_*` prefix — system / annotation fields. Reserved for the
-  framework. Today: `_kind`, `_offset`, `_length`, `_value`. Future:
+  framework. Today: `_kind`, `_location`, `_value`. Future:
   `_lazy`, `_error`, etc.
 - `$schema` at output root — the response-shape URI (existing JSON
   Schema convention, carried over from PR #19). Format:
-  `parquet-analyzer/v2/...`.
+  `parquet-analyzer/v3/...`.
 
 All other names are kind-specific content.
 
@@ -99,13 +118,13 @@ Tree nodes can appear in JSON output in two forms:
 
 **Materialized** — the full content per the kind's schema:
 ```json
-{"_kind": "row_group", "_offset": 4, "_length": 306419,
+{"_kind": "row_group", "_location": {"offset": 4, "length": 306419},
  "num_rows": 891, "total_byte_size": 306419, "columns": [...]}
 ```
 
 **Stub** — only the system fields, no content fields, no children:
 ```json
-{"_kind": "row_group", "_offset": 4, "_length": 306419}
+{"_kind": "row_group", "_location": {"offset": 4, "length": 306419}}
 ```
 
 A stub is recognized by absence — the kind's schema declares content
@@ -123,7 +142,7 @@ only because the consumer asked for a depth-limited view.
 **Caveat — enumerating a `column_chunk`'s pages.** A `column_chunk`'s
 own scalar fields are footer-derived, but emitting its `dictionary_page`
 / `pages` children — even as stubs, which still need each page's
-`_offset`/`_length` — requires the per-page extents, which the footer
+`_location` (`offset`/`length`) — requires the per-page extents, which the footer
 does not record. There are two cases:
 
 - **With an `offset_index`** (written by most modern encoders), the page
@@ -139,8 +158,8 @@ does not record. There are two cases:
   page-header walk to discover its page children.
 
 Either way the page nodes carry `_lazy: true`. At the stub level a data
-page uses the generic `data_page` kind (see below) — its `_offset` /
-`_length` are known, but its version is not.
+page uses the generic `data_page` kind (see below) — its `_location` is
+known, but its version is not.
 
 ### `_lazy: true` — genuine I/O needed
 
@@ -149,7 +168,7 @@ materializing actually triggers I/O or extra thrift parsing beyond
 the footer parse:
 
 - `dictionary_page`, `data_page` — a page reached without reading its
-  header (its `_offset`/`_length` came from an `offset_index` or a
+  header (its `_location` (`offset`/`length`) came from an `offset_index` or a
   header walk). `data_page` is the **generic, version-agnostic** stub
   kind: at the stub level a data page's `data_page_v1` / `data_page_v2`
   version is not yet known, because it lives in the page header the stub
@@ -163,7 +182,7 @@ When these nodes appear as stubs in JSON output, they carry
 `_lazy: true` to signal the materialization cost:
 
 ```json
-{"_kind": "data_page", "_offset": 24276, "_length": 481, "_lazy": true}
+{"_kind": "data_page", "_location": {"offset": 24276, "length": 481}, "_lazy": true}
 ```
 
 A data page is therefore `data_page` when stubbed and `data_page_v1` /
@@ -227,10 +246,10 @@ arranged**:
 | | Tree view | Layout view |
 |---|---|---|
 | Surfaces what | Logical hierarchy | Physical byte ordering |
-| Containment rule | A node's children are everything it's logically associated with | A node's children must be physically contained (`child._offset` within `parent._offset..parent._offset+parent._length`) |
-| Non-contained logical children | Appear inline as full child nodes | Replaced by `<name>_ref` content fields carrying `{_kind, _offset, _length}`; the actual node lives at its physical position in the tree |
+| Containment rule | A node's children are everything it's logically associated with | A node's children must be physically contained (`child._location.offset` within `parent._location.offset..parent._location.offset+parent._location.length`) |
+| Non-contained logical children | Appear inline as full child nodes | Replaced by `<name>_ref` content fields carrying `{_kind, _location}`; the actual node lives at its physical position in the tree |
 | Unreferenced bytes | Don't appear (nothing logically points to them) | Appear as `unknown` leaf nodes |
-| `$schema` URI | `parquet-analyzer/v2/tree` | `parquet-analyzer/v2/layout` |
+| `$schema` URI | `parquet-analyzer/v3/tree` | `parquet-analyzer/v3/layout` |
 | Verbs | `tree`, plus the existing curated verb-noun verbs (`file summary`, `column show`, etc.) — see PR #19 | `layout` (replaces legacy `--output-mode segments`) |
 
 The Python API hides the distinction — `cc.offset_index` returns
@@ -258,11 +277,11 @@ or label physical byte ranges that have no logical counterpart.
 
 - Kinds are added freely (additive).
 - A kind's schema (its field set, child set, `_value` semantics) is
-  the v2 contract for that kind. Changes bump the major (v2 → v3).
+  the v3 contract for that kind. Changes bump the major (v3 → v4).
 - New optional fields on an existing kind are NOT breaking
   (additive within the same major version).
 - The `$schema` URI on outputs carries the major version:
-  `parquet-analyzer/v2/...`.
+  `parquet-analyzer/v3/...`.
 
 ## Derived-field policy
 
@@ -306,7 +325,7 @@ Logical children:
 | Name | Kind | Multiplicity | Physically contained? |
 |---|---|---|---|
 | `header_magic` | `header_magic` | exactly 1 | yes |
-| `row_groups` | `row_group` | 0+ (array) | yes (each `row_group`'s `_offset`/`_length` cover its metadata-thrift bytes in footer; physically inside `footer`) |
+| `row_groups` | `row_group` | 0+ (array) | yes (each `row_group`'s `_location` (`offset`/`length`) cover its metadata-thrift bytes in footer; physically inside `footer`) |
 | `footer` | `footer` | exactly 1 | yes |
 | `footer_length` | `footer_length` | exactly 1 | yes |
 | `trailer_magic` | `trailer_magic` | exactly 1 | yes |
@@ -318,21 +337,21 @@ Logical children:
   `trailer_magic`) — order is irrelevant; consumers navigate by
   name.
 - In **layout view**, the named-child fields collapse into a single
-  `children` array ordered by `_offset` ascending. This array also
+  `children` array ordered by `_location.offset` ascending. This array also
   includes the nodes that aren't tree-view children of `file` but
   ARE physical children of it: `column_chunk_data_region` (one per
   `(rg, col)`), `offset_index` / `column_index` /
   `bloom_filter_header` (when present), and `unknown` (any
   unreferenced byte ranges).
 
-`_offset` = 0, `_length` = file size.
+`_location` is `{offset: 0, length: <file size>}`.
 
 **`row_groups` appears under both `file` and `footer` (tree view).**
 In tree view, the `row_groups[]` array is a named child of `file`
 (above) as a navigation shortcut, AND a named child of `footer` (where
 the RowGroup thrifts physically live). The same `row_group` nodes are
 reachable at both `file.row_groups` and `file.footer.row_groups`, with
-identical `_offset`/`_length`. This duplication is intentional in v0 —
+identical `_location` (`offset`/`length`). This duplication is intentional in v0 —
 the `file.row_groups` shortcut is the common access path and saves
 consumers a hop through `footer` — but it means a consumer walking the
 whole tree sees row groups twice and must dedupe. A future version may
@@ -344,13 +363,13 @@ groups appear only inside `footer`.)
 
 The 4-byte `PAR1` at file start.
 
-`_value`: `"PAR1"` (string). `_offset` = 0, `_length` = 4.
+`_value`: `"PAR1"` (string). `_location` is `{offset: 0, length: 4}`.
 
 ### `trailer_magic` (leaf)
 
 The 4-byte `PAR1` at file end.
 
-`_value`: `"PAR1"` (string). `_offset` = file size − 4, `_length` = 4.
+`_value`: `"PAR1"` (string). `_location` is `{offset: <file size − 4>, length: 4}`.
 
 ### `footer_length` (leaf)
 
@@ -358,12 +377,12 @@ The 4-byte little-endian unsigned int immediately before
 `trailer_magic`, encoding the size in bytes of the `footer` thrift.
 
 `_value`: integer (the footer size in bytes).
-`_offset` = file size − 8, `_length` = 4.
+`_location` is `{offset: <file size − 8>, length: 4}`.
 
 ### `footer` (branch)
 
-The parsed `FileMetaData` thrift. Located at `_offset` = file size −
-8 − footer_size, `_length` = footer_size.
+The parsed `FileMetaData` thrift. Located at `_location` `{offset: <file size − 8 − footer_size>, length:
+footer_size}`.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -387,7 +406,7 @@ size. v0 surfaces this as a single leaf node with `_value` carrying
 the list — consumers needing the tree structure rebuild it from
 `num_children`.
 
-`_offset` / `_length` reference the entire schema-list byte range
+`_location` (`offset`/`length`) reference the entire schema-list byte range
 within the footer.
 
 `_value`: list of dicts, each shaped:
@@ -412,11 +431,11 @@ No children, no other content fields.
 The footer's key-value metadata list. Parquet permits duplicate
 keys; the list shape preserves order and duplicates.
 
-`_offset` / `_length` reference the entire kv_metadata-list byte
+`_location` (`offset`/`length`) reference the entire kv_metadata-list byte
 range within the footer. When the writer emitted no kv_metadata,
 the kind is still present as a leaf with `_value: []` (the
 multiplicity-1 contract on `footer.kv_metadata` is consistent;
-the absence-vs-empty distinction is carried by `_length` and
+the absence-vs-empty distinction is carried by `_location.length` and
 `_value` being empty).
 
 `_value`: list of dicts, each shaped:
@@ -435,7 +454,7 @@ node represents the **metadata** describing a row group; the actual
 on-disk data extent lives as `column_chunk_data_region` nodes
 (layout view only — see below).
 
-`_offset` / `_length` reference this RowGroup thrift's byte range
+`_location` (`offset`/`length`) reference this RowGroup thrift's byte range
 within the footer.
 
 | Field | Type | Notes |
@@ -466,7 +485,7 @@ the actual on-disk data (dict page + data pages) lives as a
 `column_chunk_data_region` node (layout view) and is reached via
 `data_region` in tree view.
 
-`_offset` / `_length` reference this ColumnChunk thrift's byte
+`_location` (`offset`/`length`) reference this ColumnChunk thrift's byte
 range within the footer.
 
 | Field | Type | Notes |
@@ -502,7 +521,7 @@ Logical children:
   The `data_region` indirection only earns its place where physical
   contiguity matters, which is layout view.
 - In **layout view**, `column_chunk` carries `data_region_ref`
-  (with `{_kind, _offset, _length}` of the `column_chunk_data_region`
+  (with `{_kind, _location}` of the `column_chunk_data_region`
   node), `offset_index_ref`, `column_index_ref`, `bloom_filter_ref`
   fields. The actual nodes appear at their physical positions as
   direct children of `file`.
@@ -516,11 +535,11 @@ spec — it's a convenience node for navigating physical layout.
 (The existing HTML view's `:column_chunk_pages` grouping is exactly
 this.)
 
-`_offset` = `min(dictionary_page_offset, data_page_offset)`,
-`_length` = `column_chunk.compressed_size` (`total_compressed_size`).
+`_location.offset` = `min(dictionary_page_offset, data_page_offset)`,
+`_location.length` = `column_chunk.compressed_size` (`total_compressed_size`).
 
 Tied back to its logical chunk via `chunk_ref` content field
-(`{_kind: "column_chunk", _offset: <metadata-thrift-offset>, _length: <thrift-size>}`).
+(`{_kind: "column_chunk", _location: {offset: <metadata-thrift-offset>, length: <thrift-size>}}`).
 
 | Field | Type | Notes |
 |---|---|---|
@@ -546,8 +565,8 @@ layout view.
 
 ### `dictionary_page` (branch)
 
-A dictionary page header + body. `_offset` is the page-header start
-(= `column_chunk.dictionary_page_offset`). `_length` covers header
+A dictionary page header + body. `_location.offset` is the page-header start
+(= `column_chunk.dictionary_page_offset`). `_location.length` covers header
 thrift + body.
 
 | Field | Type | Notes |
@@ -567,7 +586,7 @@ No `_value`.
 
 ### `data_page_v1` (branch)
 
-A V1 data page. `_offset` and `_length` cover header + body.
+A V1 data page. `_location` covers header + body.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -588,7 +607,7 @@ No `_value`.
 
 ### `data_page_v2` (branch)
 
-A V2 data page. `_offset` and `_length` cover header + body.
+A V2 data page. `_location` covers header + body.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -612,16 +631,16 @@ No `_value`.
 
 ### `offset_index` (opaque branch, v0)
 
-Located at `column_chunk.offset_index_offset`, `_length` =
+Located at `column_chunk.offset_index_offset`; `_location.length` =
 `column_chunk.offset_index_length`. Contains per-data-page byte
 offsets and row indices.
 
-v0: opaque — only `_kind`, `_offset`, `_length`. Per-page internal
+v0: opaque — only `_kind`, `_location`. Per-page internal
 structure deferred to v1.
 
 ### `column_index` (opaque branch, v0)
 
-Located at `column_chunk.column_index_offset`, `_length` =
+Located at `column_chunk.column_index_offset`; `_location.length` =
 `column_chunk.column_index_length`. Contains per-data-page min/max
 statistics and null counts.
 
@@ -629,7 +648,7 @@ v0: opaque. Per-page internal structure deferred to v1.
 
 ### `bloom_filter_header` (opaque branch, v0)
 
-Located at `column_chunk.bloom_filter_offset`, `_length` =
+Located at `column_chunk.bloom_filter_offset`; `_location.length` =
 `column_chunk.bloom_filter_length`. Contains the bloom filter
 header thrift plus the bloom-filter bitset.
 
@@ -645,7 +664,7 @@ Carries only the system fields by default — `_value` is omitted to
 keep output light (unknown ranges can be arbitrarily large). A
 future opt-in flag (`--include-unknown-bytes`) could populate
 `_value` with base64-encoded bytes for forensics workflows; small
-ranges (e.g. `_length < 256`) may inline as hex by default in a
+ranges (e.g. `_location.length < 256`) may inline as hex by default in a
 later revision. For now, consumers needing the raw bytes can use
 `dd if=file bs=1 skip=$OFFSET count=$LENGTH` (or `xxd -s $OFFSET
 -l $LENGTH file`) directly.
@@ -685,42 +704,39 @@ rule above — and that `row_groups` appears twice: materialized under
 
 ```json
 {
-  "$schema": "parquet-analyzer/v2/tree",
+  "$schema": "parquet-analyzer/v3/tree",
   "_kind": "file",
-  "_offset": 0,
-  "_length": 40013,
+  "_location": {"offset": 0, "length": 40013},
   "path": "example.parquet",
-  "header_magic": {"_kind": "header_magic", "_offset": 0, "_length": 4, "_value": "PAR1"},
+  "header_magic": {"_kind": "header_magic", "_location": {"offset": 0, "length": 4}, "_value": "PAR1"},
   "row_groups": [
     {
       "_kind": "row_group",
-      "_offset": 38990,
-      "_length": 850,
+      "_location": {"offset": 38990, "length": 850},
       "num_rows": 891,
       "total_byte_size": 306419,
       "total_compressed_size": 38839,
       "ordinal": null,
       "columns": [
-        {"_kind": "column_chunk", "_offset": 38990, "_length": 70},
-        {"_kind": "column_chunk", "_offset": 39060, "_length": 70}
+        {"_kind": "column_chunk", "_location": {"offset": 38990, "length": 70}},
+        {"_kind": "column_chunk", "_location": {"offset": 39060, "length": 70}}
       ]
     }
   ],
   "footer": {
     "_kind": "footer",
-    "_offset": 38843,
-    "_length": 1162,
+    "_location": {"offset": 38843, "length": 1162},
     "version": 2,
     "num_rows": 891,
     "created_by": "parquet-cpp-arrow version 14.0.0",
-    "schema": {"_kind": "schema", "_offset": 38846, "_length": 193},
-    "kv_metadata": {"_kind": "kv_metadata", "_offset": 39960, "_length": 45},
+    "schema": {"_kind": "schema", "_location": {"offset": 38846, "length": 193}},
+    "kv_metadata": {"_kind": "kv_metadata", "_location": {"offset": 39960, "length": 45}},
     "row_groups": [
-      {"_kind": "row_group", "_offset": 38990, "_length": 850}
+      {"_kind": "row_group", "_location": {"offset": 38990, "length": 850}}
     ]
   },
-  "footer_length": {"_kind": "footer_length", "_offset": 40005, "_length": 4, "_value": 1162},
-  "trailer_magic": {"_kind": "trailer_magic", "_offset": 40009, "_length": 4, "_value": "PAR1"}
+  "footer_length": {"_kind": "footer_length", "_location": {"offset": 40005, "length": 4}, "_value": 1162},
+  "trailer_magic": {"_kind": "trailer_magic", "_location": {"offset": 40009, "length": 4}, "_value": "PAR1"}
 }
 ```
 
@@ -728,17 +744,16 @@ Note `file` carries only `path` as a content field — logical aggregates
 like `num_rows`, `created_by` live on `footer` (per the derived-field
 policy above). Consumers navigate `.footer.num_rows` or `pf.tree.footer.num_rows`.
 
-Note `row_group._offset`/`_length` describe the RowGroup thrift in
+Note `row_group._location` describes the RowGroup thrift in
 the footer, not the on-disk data extent.
 
 ### Tree view, materialized column chunk (`tree --path row_groups/0/columns/foo --depth 1`)
 
 ```json
 {
-  "$schema": "parquet-analyzer/v2/tree",
+  "$schema": "parquet-analyzer/v3/tree",
   "_kind": "column_chunk",
-  "_offset": 39050,
-  "_length": 120,
+  "_location": {"offset": 39050, "length": 120},
   "path": ["Sex"],
   "path_display": "Sex",
   "type": "BYTE_ARRAY",
@@ -751,9 +766,9 @@ the footer, not the on-disk data extent.
   "dictionary_page_offset": 24256,
   "file_offset": 0,
   "statistics": {"min_value": "female", "max_value": "male", "null_count": 0},
-  "dictionary_page": {"_kind": "dictionary_page", "_offset": 24256, "_length": 20, "_lazy": true},
+  "dictionary_page": {"_kind": "dictionary_page", "_location": {"offset": 24256, "length": 20}, "_lazy": true},
   "pages": [
-    {"_kind": "data_page", "_offset": 24276, "_length": 481, "_lazy": true}
+    {"_kind": "data_page", "_location": {"offset": 24276, "length": 481}, "_lazy": true}
   ],
   "offset_index": null,
   "column_index": null,
@@ -761,33 +776,32 @@ the footer, not the on-disk data extent.
 }
 ```
 
-`column_chunk._offset`/`_length` describe the metadata thrift
+`column_chunk._location` describes the metadata thrift
 (in footer); `compressed_size` / `data_page_offset` /
 `dictionary_page_offset` describe where the actual data lives.
 
 ### Layout view, shallow (`layout --depth 1`)
 
 At `depth 1`, `file` is materialized and its physical children are
-stubs — a byte map (each child's `_kind`/`_offset`/`_length`) without
+stubs — a byte map (each child's `_kind`/`_location`) without
 materializing content. Go to `depth 2` to materialize each child (a
 `column_chunk_data_region`'s `chunk_ref` / `row_group_index` / page
 stubs, the footer's fields, etc.).
 
 ```json
 {
-  "$schema": "parquet-analyzer/v2/layout",
+  "$schema": "parquet-analyzer/v3/layout",
   "_kind": "file",
-  "_offset": 0,
-  "_length": 40013,
+  "_location": {"offset": 0, "length": 40013},
   "path": "example.parquet",
   "children": [
-    {"_kind": "header_magic", "_offset": 0, "_length": 4},
-    {"_kind": "column_chunk_data_region", "_offset": 4, "_length": 4357},
-    {"_kind": "column_chunk_data_region", "_offset": 4361, "_length": 1051},
-    {"_kind": "unknown", "_offset": 38500, "_length": 343},
-    {"_kind": "footer", "_offset": 38843, "_length": 1162},
-    {"_kind": "footer_length", "_offset": 40005, "_length": 4},
-    {"_kind": "trailer_magic", "_offset": 40009, "_length": 4}
+    {"_kind": "header_magic", "_location": {"offset": 0, "length": 4}},
+    {"_kind": "column_chunk_data_region", "_location": {"offset": 4, "length": 4357}},
+    {"_kind": "column_chunk_data_region", "_location": {"offset": 4361, "length": 1051}},
+    {"_kind": "unknown", "_location": {"offset": 38500, "length": 343}},
+    {"_kind": "footer", "_location": {"offset": 38843, "length": 1162}},
+    {"_kind": "footer_length", "_location": {"offset": 40005, "length": 4}},
+    {"_kind": "trailer_magic", "_location": {"offset": 40009, "length": 4}}
   ]
 }
 ```
@@ -801,16 +815,15 @@ bytes between the data and the footer.)
 
 ```json
 {
-  "$schema": "parquet-analyzer/v2/layout",
+  "$schema": "parquet-analyzer/v3/layout",
   "_kind": "column_chunk_data_region",
-  "_offset": 24256,
-  "_length": 501,
-  "chunk_ref": {"_kind": "column_chunk", "_offset": 39050, "_length": 120},
+  "_location": {"offset": 24256, "length": 501},
+  "chunk_ref": {"_kind": "column_chunk", "_location": {"offset": 39050, "length": 120}},
   "row_group_index": 0,
   "column_position_in_row_group": 5,
-  "dictionary_page": {"_kind": "dictionary_page", "_offset": 24256, "_length": 20, "_lazy": true},
+  "dictionary_page": {"_kind": "dictionary_page", "_location": {"offset": 24256, "length": 20}, "_lazy": true},
   "pages": [
-    {"_kind": "data_page", "_offset": 24276, "_length": 481, "_lazy": true}
+    {"_kind": "data_page", "_location": {"offset": 24276, "length": 481}, "_lazy": true}
   ]
 }
 ```
@@ -818,7 +831,7 @@ bytes between the data and the footer.)
 ### Leaf
 
 ```json
-{"_kind": "footer_length", "_offset": 40005, "_length": 4, "_value": 1162}
+{"_kind": "footer_length", "_location": {"offset": 40005, "length": 4}, "_value": 1162}
 ```
 
 ## How this doc grows
@@ -827,7 +840,7 @@ bytes between the data and the footer.)
   rationale.
 - Field additions to existing kinds (within the same major version)
   documented inline; old consumers ignore the new field.
-- Breaking schema changes bump the major (v2 → v3) and require this
+- Breaking schema changes bump the major (e.g. v3 → v4) and require this
   doc to be reissued at the new version.
 - The body-layer kinds (v1) get added by #21; each kind's
   introduction in code carries a docstring, and that docstring

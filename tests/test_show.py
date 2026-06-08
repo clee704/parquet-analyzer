@@ -103,8 +103,8 @@ def test_show_zero_row_dict_extent_not_negative(empty_dict):
         out = render(pf, "row_groups/0/columns/0", walk_pages=False)
     dp = out["dictionary_page"]
     assert dp is not None
-    assert dp["_length"] == cc._md.total_compressed_size
-    assert dp["_length"] > 0
+    assert dp["_location"]["length"] == cc._md.total_compressed_size
+    assert dp["_location"]["length"] > 0
 
 
 def test_show_file_not_found_uses_verb_only_fix(capsys):
@@ -318,8 +318,8 @@ def test_show_withheld_path_shows_dict_stub(no_index_dict):
     dp = out["dictionary_page"]
     assert dp is not None
     assert dp["_kind"] == "dictionary_page"
-    assert dp["_offset"] == cc.dictionary_page_offset
-    assert dp["_length"] == expected_len
+    assert dp["_location"]["offset"] == cc.dictionary_page_offset
+    assert dp["_location"]["length"] == expected_len
     assert out["pages"]["_walk_required"] is True
 
 

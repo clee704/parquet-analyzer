@@ -115,8 +115,8 @@ bounded step at a time, by extending the path along the
 
 Every `show` step obeys the footer-bounded, walk-free rule:
 
-- A node's own fields and its children's stubs (`_kind` / `_offset` /
-  `_length` + the `_path` to descend) are footer-derived.
+- A node's own fields and its children's stubs (`_kind` / `_location`
+  + the `_path` to descend) are footer-derived.
 - **Listing a column's pages never forces a page-header walk.** With an
   OffsetIndex the page stubs come from it (one bounded index parse — the
   contract's "bounded extra index parse" tier); without one, the listing

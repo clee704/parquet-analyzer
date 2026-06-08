@@ -260,14 +260,17 @@ hand:
 ```jsonc
 {
   "$schema": "parquet-analyzer/v1/show",
-  "_kind": "row_group", "_offset": 620, "_length": 210, "num_rows": 10,
+  "_kind": "row_group", "_location": {"offset": 620, "length": 210}, "num_rows": 10,
   "columns": [
-    {"_kind": "column_chunk", "_offset": 622, "_length": 112,
+    {"_kind": "column_chunk", "_location": {"offset": 622, "length": 112},
      "_path": "row_groups/0/columns/0", "name": "id"}
   ],
   "_navigation": {"path": "row_groups/0", "parent": "", "kind": "row_group"}
 }
 ```
+
+(The `show` envelope is a v1 CLI response; the node stubs inside it carry the
+v3 tree-node `_location` address — `{offset, length}`, the file byte range.)
 
 **Listing a column's pages never forces a page-header walk.** With an
 OffsetIndex the pages are listed from it (one small read, independent of

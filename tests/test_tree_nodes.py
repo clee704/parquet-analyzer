@@ -199,8 +199,7 @@ def v2_parquet(tmp_path):
 ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
     "file": {
         "_kind",
-        "_offset",
-        "_length",
+        "_location",
         "path",
         # tree view children
         "header_magic",
@@ -211,13 +210,12 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
         # layout view children
         "children",
     },
-    "header_magic": {"_kind", "_offset", "_length", "_value"},
-    "trailer_magic": {"_kind", "_offset", "_length", "_value"},
-    "footer_length": {"_kind", "_offset", "_length", "_value"},
+    "header_magic": {"_kind", "_location", "_value"},
+    "trailer_magic": {"_kind", "_location", "_value"},
+    "footer_length": {"_kind", "_location", "_value"},
     "footer": {
         "_kind",
-        "_offset",
-        "_length",
+        "_location",
         "version",
         "num_rows",
         "created_by",
@@ -228,12 +226,11 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
         # layout view children
         "children",
     },
-    "schema": {"_kind", "_offset", "_length", "_value"},
-    "kv_metadata": {"_kind", "_offset", "_length", "_value"},
+    "schema": {"_kind", "_location", "_value"},
+    "kv_metadata": {"_kind", "_location", "_value"},
     "row_group": {
         "_kind",
-        "_offset",
-        "_length",
+        "_location",
         "num_rows",
         "total_byte_size",
         "total_compressed_size",
@@ -245,8 +242,7 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
     },
     "column_chunk": {
         "_kind",
-        "_offset",
-        "_length",
+        "_location",
         "path",
         "path_display",
         "type",
@@ -274,8 +270,7 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
     },
     "column_chunk_data_region": {
         "_kind",
-        "_offset",
-        "_length",
+        "_location",
         "chunk_ref",
         "row_group_index",
         "column_position_in_row_group",
@@ -284,8 +279,7 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
     },
     "dictionary_page": {
         "_kind",
-        "_offset",
-        "_length",
+        "_location",
         "page_type",
         "encoding",
         "num_values",
@@ -296,8 +290,7 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
     },
     "data_page_v1": {
         "_kind",
-        "_offset",
-        "_length",
+        "_location",
         "page_type",
         "encoding",
         "num_values",
@@ -310,8 +303,7 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
     },
     "data_page_v2": {
         "_kind",
-        "_offset",
-        "_length",
+        "_location",
         "page_type",
         "encoding",
         "num_values",
@@ -325,13 +317,13 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
         "statistics",
         "crc",
     },
-    "offset_index": {"_kind", "_offset", "_length"},
-    "column_index": {"_kind", "_offset", "_length"},
-    "bloom_filter_header": {"_kind", "_offset", "_length"},
-    "unknown": {"_kind", "_offset", "_length"},
+    "offset_index": {"_kind", "_location"},
+    "column_index": {"_kind", "_location"},
+    "bloom_filter_header": {"_kind", "_location"},
+    "unknown": {"_kind", "_location"},
     # Generic data-page kind used at the stub level (the v1/v2 version is a
     # materialized-only detail). Stub-only: never carries content fields.
-    "data_page": {"_kind", "_offset", "_length"},
+    "data_page": {"_kind", "_location"},
 }
 
 
@@ -443,7 +435,7 @@ def _iter_nodes(node, *, include_root: bool = True):
 
 def _assert_universal_contract(root: dict, *, view: str) -> None:
     """Assert every node in the tree obeys the universal contract."""
-    assert root["$schema"] == f"parquet-analyzer/v2/{view}", (
+    assert root["$schema"] == f"parquet-analyzer/v3/{view}", (
         f"root $schema mismatch: {root['$schema']!r}"
     )
     # The root itself has $schema in addition to the kind's keys; allow it.
@@ -454,13 +446,20 @@ def _assert_universal_contract(root: dict, *, view: str) -> None:
         # kv pairs) don't have _kind — skip them.
         if kind is None:
             continue
-        assert "_offset" in node, f"{kind} node missing _offset: {node}"
-        assert "_length" in node, f"{kind} node missing _length: {node}"
-        assert isinstance(node["_offset"], int), (
-            f"{kind} _offset not int: {node['_offset']!r}"
+        assert "_location" in node, f"{kind} node missing _location: {node}"
+        # The v3 address lives only under _location — no node may carry the
+        # legacy top-level _offset / _length (the v2 shape).
+        assert "_offset" not in node, f"{kind} node has legacy _offset: {node}"
+        assert "_length" not in node, f"{kind} node has legacy _length: {node}"
+        loc = node["_location"]
+        assert set(loc.keys()) == {"offset", "length"}, (
+            f"{kind} _location has unexpected keys {set(loc.keys())}: {node}"
         )
-        assert isinstance(node["_length"], int), (
-            f"{kind} _length not int: {node['_length']!r}"
+        assert isinstance(loc["offset"], int), (
+            f"{kind} _location.offset not int: {loc['offset']!r}"
+        )
+        assert isinstance(loc["length"], int), (
+            f"{kind} _location.length not int: {loc['length']!r}"
         )
         allowed = ALLOWED_MATERIALIZED_KEYS[kind] | {"$schema", "_lazy"}
         extra = set(node.keys()) - allowed
@@ -469,8 +468,7 @@ def _assert_universal_contract(root: dict, *, view: str) -> None:
         # fields. A stub carries only system fields (+ _lazy), so skip those.
         content_keys = set(node.keys()) - {
             "_kind",
-            "_offset",
-            "_length",
+            "_location",
             "_lazy",
             "$schema",
         }
@@ -501,14 +499,20 @@ def _assert_layout_invariants(out: dict) -> None:
     """Assert the layout-view ``children`` are offset-sorted, free of
     overlaps, and exactly contiguous (gap-filled) across ``[0, file)``."""
     children = out["children"]
-    offsets = [c["_offset"] for c in children]
+    offsets = [c["_location"]["offset"] for c in children]
     assert offsets == sorted(offsets), f"layout children not offset-sorted: {offsets}"
-    assert children[0]["_offset"] == 0, "first layout child must start at offset 0"
-    assert children[-1]["_offset"] + children[-1]["_length"] == out["_length"], (
-        "last layout child must end at file end"
+    assert children[0]["_location"]["offset"] == 0, (
+        "first layout child must start at offset 0"
     )
+    assert (
+        children[-1]["_location"]["offset"] + children[-1]["_location"]["length"]
+        == out["_location"]["length"]
+    ), "last layout child must end at file end"
     for a, b in zip(children, children[1:]):
-        assert b["_offset"] == a["_offset"] + a["_length"], (
+        assert (
+            b["_location"]["offset"]
+            == a["_location"]["offset"] + a["_location"]["length"]
+        ), (
             f"non-contiguous: {a['_kind']}@{a['_offset']}+{a['_length']} "
             f"then {b['_kind']}@{b['_offset']} (overlap or unfilled gap)"
         )
@@ -565,16 +569,16 @@ def test_page_node_properties(small_parquet):
 def test_depth_zero_root_stub_only_tree(small_parquet):
     with ParquetFile(str(small_parquet)) as pf:
         out = pf.to_json(view="tree", depth=0)
-    assert set(out.keys()) == {"$schema", "_kind", "_offset", "_length"}
+    assert set(out.keys()) == {"$schema", "_kind", "_location"}
     assert out["_kind"] == "file"
-    assert out["$schema"] == "parquet-analyzer/v2/tree"
+    assert out["$schema"] == "parquet-analyzer/v3/tree"
 
 
 def test_depth_zero_root_stub_only_layout(small_parquet):
     with ParquetFile(str(small_parquet)) as pf:
         out = pf.to_json(view="layout", depth=0)
-    assert set(out.keys()) == {"$schema", "_kind", "_offset", "_length"}
-    assert out["$schema"] == "parquet-analyzer/v2/layout"
+    assert set(out.keys()) == {"$schema", "_kind", "_location"}
+    assert out["$schema"] == "parquet-analyzer/v3/layout"
 
 
 def test_depth_one_root_materialized_children_stubbed_tree(small_parquet):
@@ -587,11 +591,11 @@ def test_depth_one_root_materialized_children_stubbed_tree(small_parquet):
     assert "footer" in out
     # Direct children are stubs (just _kind/_offset/_length)
     rg_child = out["row_groups"][0]
-    assert set(rg_child.keys()) == {"_kind", "_offset", "_length"}
+    assert set(rg_child.keys()) == {"_kind", "_location"}
     # Footer too (not a lazy kind, no _lazy)
-    assert set(out["footer"].keys()) == {"_kind", "_offset", "_length"}
+    assert set(out["footer"].keys()) == {"_kind", "_location"}
     # Header magic is a leaf at depth 1 -- still stub, no _value
-    assert set(out["header_magic"].keys()) == {"_kind", "_offset", "_length"}
+    assert set(out["header_magic"].keys()) == {"_kind", "_location"}
 
 
 def test_depth_two_tree_materializes_through_row_group(small_parquet):
@@ -603,7 +607,7 @@ def test_depth_two_tree_materializes_through_row_group(small_parquet):
     assert "columns" in rg
     # but columns at level 2 are stubs
     cc = rg["columns"][0]
-    assert set(cc.keys()) == {"_kind", "_offset", "_length"}
+    assert set(cc.keys()) == {"_kind", "_location"}
 
 
 def test_depth_all_materializes_everything_no_lazy_markers(small_parquet):
@@ -637,7 +641,7 @@ def test_lazy_markers_present_on_lazy_kind_stubs(small_parquet):
 def test_schema_uri_only_on_root(small_parquet):
     with ParquetFile(str(small_parquet)) as pf:
         out = pf.to_json(view="tree", depth="all")
-    assert out["$schema"] == "parquet-analyzer/v2/tree"
+    assert out["$schema"] == "parquet-analyzer/v3/tree"
     # Walk all descendants; none should carry $schema
     for node in _iter_nodes(out, include_root=False):
         assert "$schema" not in node, (
@@ -648,7 +652,7 @@ def test_schema_uri_only_on_root(small_parquet):
 def test_schema_uri_layout(small_parquet):
     with ParquetFile(str(small_parquet)) as pf:
         out = pf.to_json(view="layout", depth=1)
-    assert out["$schema"] == "parquet-analyzer/v2/layout"
+    assert out["$schema"] == "parquet-analyzer/v3/layout"
 
 
 # ---------------------------------------------------------------------------
@@ -684,8 +688,8 @@ def test_tree_view_row_groups_duplicated_under_file_and_footer(small_parquet):
     with ParquetFile(str(small_parquet)) as pf:
         out2 = pf.to_json(view="tree", depth=2)
     footer_rg = out2["footer"]["row_groups"][0]
-    assert file_rg["_offset"] == footer_rg["_offset"]
-    assert file_rg["_length"] == footer_rg["_length"]
+    assert file_rg["_location"]["offset"] == footer_rg["_location"]["offset"]
+    assert file_rg["_location"]["length"] == footer_rg["_location"]["length"]
 
 
 def test_tree_view_column_chunk_has_pages_no_data_region(small_parquet):
@@ -710,7 +714,7 @@ def test_layout_view_children_sorted_by_offset(small_parquet):
     with ParquetFile(str(small_parquet)) as pf:
         out = pf.to_json(view="layout", depth=1)
     children = out["children"]
-    offsets = [c["_offset"] for c in children]
+    offsets = [c["_location"]["offset"] for c in children]
     assert offsets == sorted(offsets), f"layout children not offset-sorted: {offsets}"
 
 
@@ -719,7 +723,10 @@ def test_layout_view_children_no_overlaps(small_parquet):
         out = pf.to_json(view="layout", depth=1)
     children = out["children"]
     for a, b in zip(children, children[1:]):
-        assert a["_offset"] + a["_length"] <= b["_offset"], (
+        assert (
+            a["_location"]["offset"] + a["_location"]["length"]
+            <= b["_location"]["offset"]
+        ), (
             f"overlap between {a['_kind']}@{a['_offset']} (len {a['_length']}) "
             f"and {b['_kind']}@{b['_offset']}"
         )
@@ -732,12 +739,18 @@ def test_layout_view_continuity_via_unknown_gap_fill(small_parquet):
         out = pf.to_json(view="layout", depth=1)
     children = out["children"]
     # First child starts at file offset 0
-    assert children[0]["_offset"] == 0
+    assert children[0]["_location"]["offset"] == 0
     # Last child ends at file end
-    assert children[-1]["_offset"] + children[-1]["_length"] == out["_length"]
+    assert (
+        children[-1]["_location"]["offset"] + children[-1]["_location"]["length"]
+        == out["_location"]["length"]
+    )
     # No gaps between siblings (gap-fill via unknown nodes makes this true)
     for a, b in zip(children, children[1:]):
-        assert b["_offset"] == a["_offset"] + a["_length"], (
+        assert (
+            b["_location"]["offset"]
+            == a["_location"]["offset"] + a["_location"]["length"]
+        ), (
             f"gap between {a['_kind']}@{a['_offset']}+{a['_length']} "
             f"and {b['_kind']}@{b['_offset']}; gap-fill missed"
         )
@@ -1146,11 +1159,12 @@ def test_layout_data_region_pages_contiguous_with_offset_index(indexed_parquet):
         if region["dictionary_page"] is not None:
             page_nodes.append(region["dictionary_page"])
         page_nodes.extend(region["pages"])
-        page_nodes.sort(key=lambda p: p["_offset"])
+        page_nodes.sort(key=lambda p: p["_location"]["offset"])
         for a, b in zip(page_nodes, page_nodes[1:]):
-            assert a["_offset"] + a["_length"] == b["_offset"], (
-                f"non-contiguous pages in data region: {a} then {b}"
-            )
+            assert (
+                a["_location"]["offset"] + a["_location"]["length"]
+                == b["_location"]["offset"]
+            ), f"non-contiguous pages in data region: {a} then {b}"
             checked = True
     assert checked, "no multi-page data region exercised"
 
@@ -1167,7 +1181,7 @@ def test_row_group_to_json_root_emits_schema_uri(small_parquet):
         rg = pf.row_groups[0]
         out = rg.to_json(view="tree", depth=1)
     assert out["_kind"] == "row_group"
-    assert out["$schema"] == "parquet-analyzer/v2/tree"
+    assert out["$schema"] == "parquet-analyzer/v3/tree"
 
 
 def test_column_chunk_to_json_root(small_parquet):
@@ -1175,7 +1189,7 @@ def test_column_chunk_to_json_root(small_parquet):
         cc = pf.row_groups[0].columns[0]
         out = cc.to_json(view="tree", depth=1)
     assert out["_kind"] == "column_chunk"
-    assert out["$schema"] == "parquet-analyzer/v2/tree"
+    assert out["$schema"] == "parquet-analyzer/v3/tree"
     # depth=1 materializes the cc; its pages are stubs
     assert "pages" in out
 
@@ -1185,7 +1199,7 @@ def test_page_to_json_root(small_parquet):
         page = pf.row_groups[0].columns[0].pages()[0]
         out = page.to_json(view="tree", depth=1)
     assert out["_kind"] in {"dictionary_page", "data_page_v1", "data_page_v2"}
-    assert out["$schema"] == "parquet-analyzer/v2/tree"
+    assert out["$schema"] == "parquet-analyzer/v3/tree"
 
 
 # ---------------------------------------------------------------------------
@@ -1256,7 +1270,7 @@ def test_empty_file_tree_all_does_not_crash(empty_parquet):
     assert dp["num_values"] == 0
     assert "encoding" in dp
     # The dictionary page has real on-disk bytes; its length reflects them.
-    assert dp["_length"] > 0
+    assert dp["_location"]["length"] > 0
 
 
 def test_empty_file_layout_data_region_tiled_by_dictionary_page(empty_parquet):
@@ -1272,8 +1286,11 @@ def test_empty_file_layout_data_region_tiled_by_dictionary_page(empty_parquet):
     dp = region["dictionary_page"]
     assert dp is not None and dp["_kind"] == "dictionary_page"
     # The dictionary page exactly tiles the data region (no uncovered bytes).
-    assert dp["_offset"] == region["_offset"]
-    assert dp["_offset"] + dp["_length"] == region["_offset"] + region["_length"]
+    assert dp["_location"]["offset"] == region["_location"]["offset"]
+    assert (
+        dp["_location"]["offset"] + dp["_location"]["length"]
+        == region["_location"]["offset"] + region["_location"]["length"]
+    )
 
 
 def test_empty_file_layout_no_overlap_at_offset_zero(empty_parquet):
@@ -1286,7 +1303,7 @@ def test_empty_file_layout_no_overlap_at_offset_zero(empty_parquet):
         c for c in out["children"] if c["_kind"] == "column_chunk_data_region"
     )
     # Region starts at the dictionary page (offset 4), never at byte 0.
-    assert region["_offset"] >= 4
+    assert region["_location"]["offset"] >= 4
 
 
 @pytest.mark.parametrize("depth", [1, "all"])
@@ -1320,6 +1337,9 @@ def test_offset_index_length_defaults_to_zero_when_absent(monkeypatch, indexed_p
         )
         monkeypatch.setattr(cc._t, "offset_index_length", None, raising=False)
         node = _tree_json._offset_index_node(cc)
+        # _offset_index_node returns an internal carrier dict (read back via
+        # _length_of), so it keeps the internal _offset / _length keys; the
+        # output-facing _location wrapper is applied later by the emitter.
         assert node["_length"] == 0
         assert isinstance(node["_length"], int)
 
@@ -1424,7 +1444,7 @@ def test_gap_fill_emits_unknown_nodes_for_gaps():
     rendered = _tree_json._render(
         {"_kind": "unknown", "_offset": 0, "_length": 10}, "layout", "all"
     )
-    assert rendered == {"_kind": "unknown", "_offset": 0, "_length": 10}
+    assert rendered == {"_kind": "unknown", "_location": {"offset": 0, "length": 10}}
 
 
 # ---------------------------------------------------------------------------
@@ -1523,21 +1543,25 @@ def test_layout_data_region_real_dictionary_page_tiles(indexed_parquet):
     region = next(
         c
         for c in out["children"]
-        if c["_kind"] == "column_chunk_data_region" and c["_offset"] == target[1]
+        if c["_kind"] == "column_chunk_data_region"
+        and c["_location"]["offset"] == target[1]
     )
     dp = region["dictionary_page"]
     assert dp is not None and dp["_kind"] == "dictionary_page"
-    assert dp["_offset"] == target[1]
+    assert dp["_location"]["offset"] == target[1]
     # dict page + data pages, offset-sorted, tile the region exactly.
     children = [dp] + region["pages"]
-    children.sort(key=lambda c: c["_offset"])
-    assert children[0]["_offset"] == region["_offset"]
+    children.sort(key=lambda c: c["_location"]["offset"])
+    assert children[0]["_location"]["offset"] == region["_location"]["offset"]
     assert (
-        children[-1]["_offset"] + children[-1]["_length"]
-        == region["_offset"] + region["_length"]
+        children[-1]["_location"]["offset"] + children[-1]["_location"]["length"]
+        == region["_location"]["offset"] + region["_location"]["length"]
     )
     for a, b in zip(children, children[1:]):
-        assert b["_offset"] == a["_offset"] + a["_length"], "data region not tiled"
+        assert (
+            b["_location"]["offset"]
+            == a["_location"]["offset"] + a["_location"]["length"]
+        ), "data region not tiled"
 
 
 def test_pages_reads_dictionary_via_data_page_offset(indexed_parquet):
