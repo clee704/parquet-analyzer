@@ -21,6 +21,7 @@ from .decoders import (
     decompress,
 )
 from .parquet_file import (
+    BodyExtent,
     ColumnChunk,
     DecodedPage,
     MissingDictionaryError,
@@ -36,6 +37,7 @@ from .parquet_file import (
 
 __all__ = [
     "BitPackedRun",
+    "BodyExtent",
     "ColumnChunk",
     "DecodeStats",
     "DecodedPage",
