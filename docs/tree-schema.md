@@ -1,4 +1,4 @@
-# Tree schema: footer-layer kinds (v0)
+# Tree schema: footer-layer + body-layer kinds (v1)
 
 This doc defines the **tree-node schema** for `parquet-analyzer`'s v3
 output surface — the catalog of node kinds that represent parquet's
@@ -10,14 +10,14 @@ defines the *contract* (footer-bounded and walk-free by default,
 escape hatches, honesty pattern). This doc defines the *shapes* the
 contract operates on.
 
-This is **v0** — the footer-layer kinds. Body-layer kinds (sub-page
-structure: def_block, values_block, indices, dict_lookup, encoding-
-specific leaves) land in v1 alongside the body-decode work in #21.
-Both versions are additive within v3. (The catalog version — v0 / v1 —
-tracks which kinds exist; the `$schema` major — `parquet-analyzer/v3/...`
-— tracks the universal node shape. The major moved v2 → v3 when every
-node's `_offset` / `_length` were folded into a single `_location`
-address object.)
+This is **v1** — it adds the body-layer kinds (sub-page structure:
+`rep_block`, `def_block`, `values_block`, `plain_values`, `dict_indices`)
+on top of the v0 footer-layer kinds, alongside the body-decode work in
+#21. Both catalog versions are additive within `$schema` major v3. (The
+catalog version — v0 / v1 — tracks which kinds exist; the `$schema`
+major — `parquet-analyzer/v3/...` — tracks the universal node shape. The
+major moved v2 → v3 when every node's `_offset` / `_length` were folded
+into a single `_location` address object.)
 
 ## Universal node contract
 
@@ -28,21 +28,31 @@ Every tree node — leaf or branch — carries two system fields:
 | `_kind` | string | yes | identifies the node's schema; consumer reads this and looks up the rest in this doc |
 | `_location` | object | yes | where this node's bytes live in the file — see below |
 
-`_location` is an object with plain (non-`_`-prefixed) inner keys:
+`_location` is an object whose `offset`/`length` are **always a real
+on-disk file range** — the bytes you could `dd`/`xxd` out of the file.
+When the node's bytes live inside a *compressed* region (a body-layer
+node — see the v1 catalog), `_location` additionally carries the codec and
+the node's position within that region's decompressed bytes:
 
-| Key | Type | Meaning |
-|---|---|---|
-| `offset` | int | start byte of this node's bytes within the file |
-| `length` | int | byte length of this node's bytes |
+| Key | Type | Present | Meaning |
+|---|---|---|---|
+| `offset` | int | always | start byte of the on-disk region this node's bytes live in |
+| `length` | int | always | byte length of that on-disk region |
+| `compression_codec` | string | compressed only | codec of the on-disk region (e.g. `SNAPPY`) |
+| `offset_uncompressed` | int | compressed only | the node's start within the region's decompressed bytes |
+| `length_uncompressed` | int | compressed only | the node's decompressed byte length |
 
-`_location` always describes **real file bytes** — the range you could
-`dd`/`xxd` out of the file. (A later body-layer revision extends this
-object with decompression fields for sub-nodes that live inside a
-compressed region; v0's footer-layer nodes are all uncompressed on disk,
-so they carry only `offset`/`length`.) The inner keys are plain because
-the `_` prefix exists to separate framework fields from kind-specific
-content *on a node*, and inside `_location` every key is framework-owned —
-the same reason `_value` sub-dicts (below) use plain keys.
+For an uncompressed node (every footer-layer node, and any body-layer node
+whose bytes are stored uncompressed on disk) only `offset`/`length` are
+present and the file range *is* the node's bytes. For a compressed
+body-layer node, `offset`/`length` point at the enclosing on-disk
+compressed slice (which you read and decompress) and the
+`*_uncompressed` keys locate the node within the result.
+
+The inner keys are plain because the `_` prefix exists to separate
+framework fields from kind-specific content *on a node*, and inside
+`_location` every key is framework-owned — the same reason `_value`
+sub-dicts (below) use plain keys.
 
 Leaf nodes (kinds where the schema says "leaf with scalar value")
 additionally carry:
@@ -580,7 +590,8 @@ thrift + body.
 | `crc` | int \| null | optional |
 
 Children: body decomposes into body-layer kinds (decoded dictionary
-values). v0 leaves opaque; v1 (#21) populates.
+values). Deferred — the v1 body kinds cover data pages; the dictionary
+page stays opaque for now (see "Out of scope for v1").
 
 No `_value`.
 
@@ -600,8 +611,9 @@ A V1 data page. `_location` covers header + body.
 | `statistics` | object \| null | per-page statistics if writer included them |
 | `crc` | int \| null | optional |
 
-Children: body decomposes into level blocks + values. v0 opaque;
-v1 (#21) populates.
+Children (tree view, when materialized): `repetition_levels` (`rep_block`
+| null), `definition_levels` (`def_block` | null), `values`
+(`values_block`). See "The v1 body-layer kind catalog".
 
 No `_value`.
 
@@ -624,8 +636,9 @@ A V2 data page. `_location` covers header + body.
 | `statistics` | object \| null | per-page statistics |
 | `crc` | int \| null | |
 
-Children: body decomposes into rep_block + def_block + values. v0
-opaque; v1 (#21) populates.
+Children (tree view, when materialized): `repetition_levels` (`rep_block`
+| null), `definition_levels` (`def_block` | null), `values`
+(`values_block`). See "The v1 body-layer kind catalog".
 
 No `_value`.
 
@@ -671,24 +684,121 @@ later revision. For now, consumers needing the raw bytes can use
 
 `_kind` = `"unknown"`. No content fields, no `_value`.
 
-## Out of scope for v0 (landing in v1 via #21)
+## The v1 body-layer kind catalog (#21)
 
-The following kinds will be added when the body-decode work lands:
+These kinds decompose a **materialized data page's body** in the tree view
+(`data_page_v1` / `data_page_v2`). They are **tree-view only**: in the
+layout view a page's bytes tile its `column_chunk_data_region` at page
+granularity, and a compressed V1 page's sub-blocks all share one on-disk
+range (no physical tiling), so the body stays opaque there.
 
-- `def_block` (V1: 4-byte length prefix + RLE block; V2: bytes in known range)
-- `rep_block` (V1 / V2 analog of def_block)
-- `values_block` (the encoded values section of a page body)
-- `plain_values` (decoded PLAIN values; leaf with `_value` array)
-- `dict_indices` (RLE/bit-packed indices; leaf with `_value` array, content fields for bit_width / RLE-vs-bit-packed runs)
-- `dict_lookup` (dict-indexed values resolved through the chunk's dictionary; leaf with `_value` array)
-- Possibly: `rle_run`, `bit_packed_block` if sub-structure of `dict_indices` is worth surfacing
+Materializing a data page reads and decodes its body — the page's `_lazy`
+cost. The body children are stubs at shallow depth and materialize when
+descended into. A `depth="all"` render decodes every page body (it pays
+all lazy I/O by definition); bounded depths that stop at or above the page
+level do not.
 
-Each will get a one-line docstring at the introduction site, and
-this doc will be expanded with the catalog entry as part of that PR.
+A materialized `data_page_v1` / `data_page_v2` gains three body children,
+named to mirror the on-disk sections:
 
-Also deferred:
+| Name | Kind | Multiplicity | Notes |
+|---|---|---|---|
+| `repetition_levels` | `rep_block` | 0 or 1 (null when `max_rep_level == 0`) | the repetition-level stream |
+| `definition_levels` | `def_block` | 0 or 1 (null when `max_def_level == 0`) | the definition-level stream |
+| `values` | `values_block` | exactly 1 | the encoded values section |
+
+### `rep_block` / `def_block` (leaf)
+
+A repetition- or definition-level stream. Levels use the RLE/bit-packed-
+hybrid encoding; this surfaces that structure directly. A leaf (its `runs`
+are a content-field array, not child nodes).
+
+| Field | Type | Notes |
+|---|---|---|
+| `bit_width` | int | packing width (derived from the column's max level) |
+| `runs` | array of run dicts | the on-disk run structure, in order — see below |
+
+`_value`: array of ints — the expanded per-value levels.
+
+Each entry of `runs` is a plain content dict (not a node):
+
+- RLE run: `{"kind": "rle", "value": <int>, "length": <int>}` — `value`
+  repeated `length` times. `length` is the encoder-declared run length and
+  may exceed the emitted count on the final run.
+- bit-packed run: `{"kind": "bit_packed", "length": <int>, "values": [<int>, ...]}`
+  — `length` is the declared group count × 8; `values` are the decoded
+  values within the page's value budget.
+
+`_location`: the level block's bytes. V1 → the page's compressed body
+region with the block's decompressed coordinates; V2 → the plain on-disk
+range the header's `*_levels_byte_length` describes.
+
+### `values_block` (branch)
+
+The encoded values section of the page body. Its single child is the
+encoding-specific values node:
+
+| Name | Kind | When |
+|---|---|---|
+| `plain_values` | `plain_values` | the page's value encoding is `PLAIN` |
+| `dict_indices` | `dict_indices` | the page is dictionary-encoded (`PLAIN_DICTIONARY` / `RLE_DICTIONARY`) |
+
+No `_value` (it is a branch).
+
+`_location`: the values section's bytes (compressed form for a compressed
+V1 body or a compressed V2 values section; plain otherwise).
+
+**Undecodable body.** When the page's value encoding or codec is outside
+the decoder's scope (e.g. `DELTA_BINARY_PACKED`, `BROTLI`), the
+`values_block` is emitted **opaquely**: it carries `_location` (the page
+body's on-disk region) and an `_error` content field
+`{"code": <string>, "message": <string>}` instead of a child, and the
+`repetition_levels` / `definition_levels` siblings are `null`. This keeps a
+`depth="all"` render of a file with unsupported encodings from failing —
+the undecodable body is honestly marked rather than crashing the walk.
+
+### `plain_values` (leaf)
+
+The decoded `PLAIN` values. A leaf with no further structure (PLAIN stores
+values verbatim).
+
+`_value`: array of the decoded **non-null** values in physical-type form
+(JSON-safe: `BYTE_ARRAY` / `FIXED_LEN_BYTE_ARRAY` / `INT96` bytes are
+encoded per the framework's byte-encoding convention). Length is
+`num_values − num_nulls`; the nulls live in the definition levels.
+
+`_location`: the values section's bytes.
+
+### `dict_indices` (leaf)
+
+The raw dictionary indices of a dictionary-encoded page — the same
+RLE/bit-packed-hybrid structure as a level block. A leaf.
+
+| Field | Type | Notes |
+|---|---|---|
+| `bit_width` | int | from the page's 1-byte index bit-width prefix |
+| `runs` | array of run dicts | the index run structure (same shape as `rep_block` / `def_block`) |
+
+`_value`: array of ints — the raw indices (length `num_values − num_nulls`).
+
+`_location`: the values section's bytes (including the 1-byte bit-width
+prefix).
+
+**The resolved values are not a tree node.** Looking an index up in the
+chunk's dictionary page is a *derived* join (index stream + the sibling
+dictionary page) with no single on-disk byte range, so it has no
+`_location` and is not part of the on-disk tree. Use
+`Page.physical_values()` for the resolved values.
+
+## Out of scope for v1 (deferred)
+
+- Dictionary-page body decomposition (the `dictionary_page`'s PLAIN
+  entries as a `values_block`) — the v1 body kinds cover data pages.
 - Internal structure of `offset_index`, `column_index`,
-  `bloom_filter_header` (all opaque in v0).
+  `bloom_filter_header` (all opaque).
+- Value encodings beyond `PLAIN` / `PLAIN_DICTIONARY` / `RLE_DICTIONARY`
+  (`DELTA_*`, `BYTE_STREAM_SPLIT`, …) — surfaced as an opaque `_error`
+  `values_block` until the decoder supports them.
 - `--include-unknown-bytes` flag for `unknown` leaves.
 
 ## Worked examples
@@ -834,6 +944,49 @@ bytes between the data and the footer.)
 {"_kind": "footer_length", "_location": {"offset": 40005, "length": 4}, "_value": 1162}
 ```
 
+### Materialized data-page body (tree view)
+
+A V1 dictionary data page (SNAPPY) decoded to its body. The column is flat
+(`repetition_levels` is null) and fully defined (the `def_block` is one RLE
+run of level 1). Because the V1 body is one compressed blob, `def_block`
+and the values section share the same on-disk `_location`
+(`offset`/`length`) and differ only in their decompressed coordinates. The
+values are dictionary-encoded, so the `values_block` holds a `dict_indices`
+leaf (the raw indices + their run structure); the resolved values come from
+`Page.physical_values()`, not the tree.
+
+```json
+{
+  "_kind": "data_page_v1",
+  "_location": {"offset": 35, "length": 41},
+  "page_type": "DATA_PAGE",
+  "encoding": "RLE_DICTIONARY",
+  "num_values": 4,
+  "repetition_levels": null,
+  "definition_levels": {
+    "_kind": "def_block",
+    "_location": {"offset": 64, "length": 12, "compression_codec": "SNAPPY",
+                  "offset_uncompressed": 0, "length_uncompressed": 6},
+    "bit_width": 1,
+    "runs": [{"kind": "rle", "value": 1, "length": 4}],
+    "_value": [1, 1, 1, 1]
+  },
+  "values": {
+    "_kind": "values_block",
+    "_location": {"offset": 64, "length": 12, "compression_codec": "SNAPPY",
+                  "offset_uncompressed": 6, "length_uncompressed": 4},
+    "dict_indices": {
+      "_kind": "dict_indices",
+      "_location": {"offset": 64, "length": 12, "compression_codec": "SNAPPY",
+                    "offset_uncompressed": 6, "length_uncompressed": 4},
+      "bit_width": 2,
+      "runs": [{"kind": "bit_packed", "length": 8, "values": [0, 1, 0, 2]}],
+      "_value": [0, 1, 0, 2]
+    }
+  }
+}
+```
+
 ## How this doc grows
 
 - New kinds added by appending to the catalog with a one-line
@@ -842,6 +995,6 @@ bytes between the data and the footer.)
   documented inline; old consumers ignore the new field.
 - Breaking schema changes bump the major (e.g. v3 → v4) and require this
   doc to be reissued at the new version.
-- The body-layer kinds (v1) get added by #21; each kind's
-  introduction in code carries a docstring, and that docstring
-  populates this doc's catalog entry.
+- The body-layer kinds (v1) were added by #21; the next catalog version
+  would extend the body layer further (e.g. dictionary-page body
+  decomposition, additional value encodings).
