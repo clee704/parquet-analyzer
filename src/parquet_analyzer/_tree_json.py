@@ -53,6 +53,13 @@ LAZY_KINDS = frozenset(
         "offset_index",
         "column_index",
         "bloom_filter_header",
+        # Body-layer kinds (#21): materializing a page's body requires reading
+        # and decoding the body bytes, beyond the page-header parse.
+        "rep_block",
+        "def_block",
+        "values_block",
+        "plain_values",
+        "dict_indices",
     }
 )
 
@@ -373,6 +380,8 @@ def _render_data_page_v1(p: Any, _view: str, _child_depth: Depth) -> dict:
     )
     out["statistics"] = _page_statistics(h, p)
     out["crc"] = p._t.crc
+    if _view == "tree":
+        out.update(_render_page_body(p, _child_depth))
     return out
 
 
@@ -395,10 +404,148 @@ def _render_data_page_v2(p: Any, _view: str, _child_depth: Depth) -> dict:
     )
     out["statistics"] = _page_statistics(h, p)
     out["crc"] = p._t.crc
+    if _view == "tree":
+        out.update(_render_page_body(p, _child_depth))
     return out
 
 
-# Opaque-branch kinds materialize to system fields only (they are opaque
+# ---------------------------------------------------------------------------
+# Body-layer kinds (#21) — tree view only
+#
+# A materialized data page's body decomposes into its level streams and its
+# values section, each surfaced in the encoding's own structure. These nodes
+# appear only in the tree view: in the layout view the page's bytes tile its
+# data region at the page granularity, and the compressed V1 sub-blocks would
+# share one on-disk range (no physical tiling), so the body stays opaque there.
+# ---------------------------------------------------------------------------
+
+
+def _body_location(extent: Any) -> dict:
+    """``_location`` for a body section, from its :class:`BodyExtent`. Plain
+    ``{offset, length}`` when the bytes are directly on disk; the compressed
+    form (``compression_codec`` + decompressed coordinates) when the section
+    lives inside a compressed region."""
+    loc: dict[str, Any] = {"offset": extent.offset, "length": extent.length}
+    if extent.compression_codec is not None:
+        loc["compression_codec"] = extent.compression_codec
+        loc["offset_uncompressed"] = extent.offset_uncompressed
+        loc["length_uncompressed"] = extent.length_uncompressed
+    return loc
+
+
+def _render_run(run: Any) -> dict:
+    """A single RLE/bit-packed run as a plain content dict (not a node).
+    ``RleRun`` → ``{kind: "rle", value, length}``; ``BitPackedRun`` →
+    ``{kind: "bit_packed", length, values}``."""
+    if hasattr(run, "value"):  # RleRun
+        return {"kind": "rle", "value": run.value, "length": run.length}
+    return {"kind": "bit_packed", "length": run.length, "values": list(run.values)}
+
+
+def _render_level_block(stream: Any, extent: Any, kind: str, stub: bool) -> dict:
+    """A ``rep_block`` / ``def_block`` leaf from an
+    :class:`~parquet_analyzer.decoders.RleBitPackedStream`. The runs are a
+    content-field array (not child nodes), so the block is a leaf with a
+    ``_value`` of the expanded per-value levels."""
+    out: dict[str, Any] = {"_kind": kind, "_location": _body_location(extent)}
+    if stub:
+        out["_lazy"] = True
+        return out
+    out["bit_width"] = stream.bit_width
+    out["runs"] = [_render_run(r) for r in stream.runs]
+    out["_value"] = list(stream.values)
+    return out
+
+
+def _render_values_block(decoded: Any, extent: Any, stub: bool) -> dict:
+    """The ``values_block`` branch: a ``plain_values`` leaf for a PLAIN page,
+    or a ``dict_indices`` leaf for a dictionary page (the resolved values are
+    not in the data page, so they are not a tree node — use
+    ``Page.physical_values()``)."""
+    out: dict[str, Any] = {
+        "_kind": "values_block",
+        "_location": _body_location(extent),
+    }
+    if stub:
+        out["_lazy"] = True
+        return out
+    section = decoded.values
+    from .parquet_file import PlainValues as _PlainValues
+
+    if isinstance(section, _PlainValues):
+        out["plain_values"] = {
+            "_kind": "plain_values",
+            "_location": _body_location(extent),
+            "_value": _make_json_safe(list(section.values)),
+        }
+    else:
+        # RleBitPackedStream of dictionary indices.
+        out["dict_indices"] = {
+            "_kind": "dict_indices",
+            "_location": _body_location(extent),
+            "bit_width": section.bit_width,
+            "runs": [_render_run(r) for r in section.runs],
+            "_value": list(section.values),
+        }
+    return out
+
+
+def _values_block_error(p: Any, exc: Any) -> dict:
+    """An opaque ``values_block`` for a page whose body could not be decoded
+    (an out-of-scope encoding or codec). Carries the page body's on-disk
+    region as ``_location`` and an ``_error`` describing why, so a
+    ``depth='all'`` render of a file with unsupported encodings does not
+    fail — the undecodable body is honestly marked instead."""
+    loc: dict[str, Any] = {
+        "offset": p.body_offset,
+        "length": p._t.compressed_page_size,
+    }
+    if p._cc.codec != "UNCOMPRESSED":
+        loc["compression_codec"] = p._cc.codec
+    return {
+        "_kind": "values_block",
+        "_location": loc,
+        "_error": {"code": exc.code, "message": str(exc)},
+    }
+
+
+def _render_page_body(p: Any, child_depth: Depth) -> dict:
+    """The tree-view body children of a materialized data page:
+    ``repetition_levels`` (``rep_block`` | null), ``definition_levels``
+    (``def_block`` | null), and ``values`` (``values_block``). Decodes the
+    page body (the page's ``_lazy`` cost). On an undecodable body, the
+    ``values`` child is an opaque error ``values_block`` and the level
+    children are null."""
+    from .parquet_file import PageDecodeError
+
+    try:
+        decoded = p.decode()
+    except PageDecodeError as exc:
+        return {
+            "repetition_levels": None,
+            "definition_levels": None,
+            "values": _values_block_error(p, exc),
+        }
+    stub = _is_stub_level(child_depth)
+    rep = decoded.repetition_levels
+    df = decoded.definition_levels
+    return {
+        "repetition_levels": (
+            _render_level_block(
+                rep, decoded.repetition_levels_extent, "rep_block", stub
+            )
+            if rep is not None
+            else None
+        ),
+        "definition_levels": (
+            _render_level_block(df, decoded.definition_levels_extent, "def_block", stub)
+            if df is not None
+            else None
+        ),
+        "values": _render_values_block(decoded, decoded.values_extent, stub),
+    }
+
+
 # in v0), but materialization must pay the underlying thrift read so the
 # cost is observable per docs/tree-schema.md.
 _OPAQUE_READ_METHODS = {
