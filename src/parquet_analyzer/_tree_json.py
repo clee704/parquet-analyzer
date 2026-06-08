@@ -34,8 +34,8 @@ if TYPE_CHECKING:
 __all__ = ["to_json_root"]
 
 
-SCHEMA_URI_TREE = "parquet-analyzer/v2/tree"
-SCHEMA_URI_LAYOUT = "parquet-analyzer/v2/layout"
+SCHEMA_URI_TREE = "parquet-analyzer/v3/tree"
+SCHEMA_URI_LAYOUT = "parquet-analyzer/v3/layout"
 
 # Kinds where materialization requires page-header parsing or extra
 # thrift parsing beyond the footer parse — these carry ``_lazy: true``
@@ -109,11 +109,25 @@ def _render(node: Any, view: str, depth: Depth) -> dict:
     return renderer(node, view, _decr(depth))
 
 
+def _location(offset: int, length: int) -> dict:
+    """The ``_location`` system field carried by every emitted tree node:
+    ``{"offset": <file byte offset>, "length": <byte length>}``.
+
+    ``_location`` always describes **real file bytes** (the range you could
+    ``dd`` / ``xxd`` out of the file). Inner keys are plain (no ``_`` prefix)
+    — the ``_`` namespace distinguishes framework fields from kind-specific
+    content *on a node*, and inside ``_location`` every key is framework
+    content, so the prefix carries no information (matching the plain-key
+    convention of ``_value`` sub-dicts). A future body-layer revision extends
+    this object for sub-nodes that live inside a compressed region.
+    """
+    return {"offset": offset, "length": length}
+
+
 def _stub(node: Any, kind: str) -> dict:
     out: dict[str, Any] = {
         "_kind": kind,
-        "_offset": _offset_of(node),
-        "_length": _length_of(node),
+        "_location": _location(_offset_of(node), _length_of(node)),
     }
     if kind in LAZY_KINDS:
         out["_lazy"] = True
@@ -121,12 +135,11 @@ def _stub(node: Any, kind: str) -> dict:
 
 
 def _system_fields(node: Any, kind: str) -> dict:
-    """Materialized form's three universal fields. Differs from ``_stub``
-    only in NOT carrying ``_lazy`` (materialization paid the I/O)."""
+    """Materialized form's universal fields. Differs from ``_stub`` only in
+    NOT carrying ``_lazy`` (materialization paid the I/O)."""
     return {
         "_kind": kind,
-        "_offset": _offset_of(node),
-        "_length": _length_of(node),
+        "_location": _location(_offset_of(node), _length_of(node)),
     }
 
 
@@ -626,8 +639,7 @@ def _page_stub_json(stub: Any) -> dict:
     """JSON stub for an OffsetIndex-derived :class:`PageStub`."""
     return {
         "_kind": stub.kind,
-        "_offset": stub.offset,
-        "_length": stub.length,
+        "_location": _location(stub.offset, stub.length),
         "_lazy": True,
     }
 
@@ -640,8 +652,7 @@ def _walked_page_stub_json(page: Any) -> dict:
     kind = "dictionary_page" if _kind_of(page) == "dictionary_page" else "data_page"
     return {
         "_kind": kind,
-        "_offset": _offset_of(page),
-        "_length": _length_of(page),
+        "_location": _location(_offset_of(page), _length_of(page)),
         "_lazy": True,
     }
 
@@ -678,16 +689,14 @@ _ENC_NAMES = _build_encoding_names()
 def _ref_stub(node: dict) -> dict:
     return {
         "_kind": node["_kind"],
-        "_offset": node["_offset"],
-        "_length": node["_length"],
+        "_location": _location(node["_offset"], node["_length"]),
     }
 
 
 def _ref_stub_from_wrapper(node: Any, kind: str) -> dict:
     return {
         "_kind": kind,
-        "_offset": _offset_of(node),
-        "_length": _length_of(node),
+        "_location": _location(_offset_of(node), _length_of(node)),
     }
 
 

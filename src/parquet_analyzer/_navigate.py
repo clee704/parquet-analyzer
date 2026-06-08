@@ -233,8 +233,7 @@ def _withheld_dict_stub(cc: Any, base: str) -> dict | None:
         return None
     return {
         "_kind": "dictionary_page",
-        "_offset": extent[0],
-        "_length": extent[1],
+        "_location": {"offset": extent[0], "length": extent[1]},
         "_lazy": True,
         "_path": f"{base}/pages/0",
     }
