@@ -437,7 +437,9 @@ def _render_run(run: Any) -> dict:
     """A single RLE/bit-packed run as a plain content dict (not a node).
     ``RleRun`` → ``{kind: "rle", value, length}``; ``BitPackedRun`` →
     ``{kind: "bit_packed", length, values}``."""
-    if hasattr(run, "value"):  # RleRun
+    from .decoders import RleRun as _RleRun
+
+    if isinstance(run, _RleRun):
         return {"kind": "rle", "value": run.value, "length": run.length}
     return {"kind": "bit_packed", "length": run.length, "values": list(run.values)}
 
