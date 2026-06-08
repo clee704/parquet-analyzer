@@ -513,8 +513,9 @@ def _assert_layout_invariants(out: dict) -> None:
             b["_location"]["offset"]
             == a["_location"]["offset"] + a["_location"]["length"]
         ), (
-            f"non-contiguous: {a['_kind']}@{a['_offset']}+{a['_length']} "
-            f"then {b['_kind']}@{b['_offset']} (overlap or unfilled gap)"
+            f"non-contiguous: {a['_kind']}@{a['_location']['offset']}"
+            f"+{a['_location']['length']} "
+            f"then {b['_kind']}@{b['_location']['offset']} (overlap or unfilled gap)"
         )
 
 
@@ -727,8 +728,9 @@ def test_layout_view_children_no_overlaps(small_parquet):
             a["_location"]["offset"] + a["_location"]["length"]
             <= b["_location"]["offset"]
         ), (
-            f"overlap between {a['_kind']}@{a['_offset']} (len {a['_length']}) "
-            f"and {b['_kind']}@{b['_offset']}"
+            f"overlap between {a['_kind']}@{a['_location']['offset']} "
+            f"(len {a['_location']['length']}) "
+            f"and {b['_kind']}@{b['_location']['offset']}"
         )
 
 
@@ -751,8 +753,9 @@ def test_layout_view_continuity_via_unknown_gap_fill(small_parquet):
             b["_location"]["offset"]
             == a["_location"]["offset"] + a["_location"]["length"]
         ), (
-            f"gap between {a['_kind']}@{a['_offset']}+{a['_length']} "
-            f"and {b['_kind']}@{b['_offset']}; gap-fill missed"
+            f"gap between {a['_kind']}@{a['_location']['offset']}"
+            f"+{a['_location']['length']} "
+            f"and {b['_kind']}@{b['_location']['offset']}; gap-fill missed"
         )
 
 
