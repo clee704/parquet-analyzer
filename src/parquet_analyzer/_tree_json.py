@@ -503,7 +503,12 @@ def _values_block_error(p: Any, exc: Any) -> dict:
         "length": p._t.compressed_page_size,
     }
     if p._cc.codec != "UNCOMPRESSED":
+        # The opaque node stands for the whole page body, so its decompressed
+        # span is the whole body — keep the compressed `_location` form
+        # complete (codec + decompressed coordinates) per the v3 schema.
         loc["compression_codec"] = p._cc.codec
+        loc["offset_uncompressed"] = 0
+        loc["length_uncompressed"] = p._t.uncompressed_page_size
     return {
         "_kind": "values_block",
         "_location": loc,

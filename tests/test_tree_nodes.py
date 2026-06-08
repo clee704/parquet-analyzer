@@ -1814,19 +1814,23 @@ def test_body_stub_level_has_lazy_markers(tmp_path):
 
 def test_body_unsupported_encoding_is_opaque_not_fatal(tmp_path):
     """A page with an out-of-scope encoding renders an opaque values_block
-    carrying _error rather than failing the whole tree render."""
+    carrying _error rather than failing the whole tree render. The opaque
+    node's _location stays a well-formed v3 address even when compressed."""
     table = pa.table({"x": pa.array(list(range(100)), type=pa.int32())})
     path = tmp_path / "delta.parquet"
     pq.write_table(
         table,
         path,
         column_encoding={"x": "DELTA_BINARY_PACKED"},
+        compression="snappy",
         use_dictionary=False,
     )
     pf = ParquetFile(str(path))
-    # Whole-file depth=all must not raise.
+    # Whole-file depth=all must not raise, and every node (including the
+    # opaque values_block) must satisfy the universal contract.
     full = pf.to_json(view="tree", depth="all")
     assert full["$schema"] == "parquet-analyzer/v3/tree"
+    _assert_universal_contract(full, view="tree")
 
     node = _data_page_node(path, "x")
     vb = node["values"]
@@ -1834,6 +1838,12 @@ def test_body_unsupported_encoding_is_opaque_not_fatal(tmp_path):
     assert vb["_error"]["code"] == "encoding_not_supported"
     assert "plain_values" not in vb and "dict_indices" not in vb
     assert node["definition_levels"] is None
+    # The body is SNAPPY-compressed, so the opaque _location must carry the
+    # complete compressed form, not just the codec.
+    loc = vb["_location"]
+    assert loc["compression_codec"] == "SNAPPY"
+    assert loc["offset_uncompressed"] == 0
+    assert loc["length_uncompressed"] == node["uncompressed_size"]
 
 
 def test_body_only_in_tree_view_not_layout(tmp_path):
