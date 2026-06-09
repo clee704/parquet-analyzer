@@ -321,6 +321,15 @@ list` it scopes to a row group (`row_groups/0`) or a column chunk
 `--row-group` selectors are mutually exclusive. Every singular-verb output
 echoes the resolved `_path`.
 
+**`--limit N`** bounds the potentially-large collections (`page list` and
+`page decode` accept it; `page header` and `page extract` don't — they return
+a single object or raw bytes). For `page list` it caps the `items`. For `page
+decode` it caps **each collection in the view independently** — the `levels`
+of each level stream, the `runs`, and the `values` — and every such collection
+reports its own `total` / `returned` / `truncated`, so nothing is silently
+dropped. `--kind statistics` ignores it (the page header's statistics aren't a
+collection). Default is no limit (the full collection).
+
 ```bash
 $ parquet-analyzer page list data.parquet --column Sex | jq -r '.items[1]._path' \
   | xargs parquet-analyzer page decode data.parquet
