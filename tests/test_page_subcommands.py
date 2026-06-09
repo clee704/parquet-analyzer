@@ -41,6 +41,18 @@ def _run_err(argv, capsys):
     return json.loads(capsys.readouterr().err)
 
 
+def _expanded_run_count(runs):
+    """Total values the RLE/bit-packed runs of an ``encoded_values`` /
+    ``rle-runs`` view expand to — an RLE run contributes its ``length``, a
+    bit-packed run contributes one per packed value. This must equal the
+    page's value count (num_values), which makes it a real invariant rather
+    than the tautological ``total == len(runs)``."""
+    total = 0
+    for run in runs:
+        total += run["length"] if run["kind"] == "rle" else len(run["values"])
+    return total
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -583,7 +595,10 @@ def test_page_decode_rle_runs_dictionary(tmp_path, capsys):
     )
     assert payload["kind"] == "rle-runs"
     assert payload["bit_width"] >= 1
+    # The runs must expand back to the page's 100 values (a real invariant,
+    # not the tautological total == len(runs)).
     assert payload["total"] == len(payload["runs"])
+    assert _expanded_run_count(payload["runs"]) == 100
     rle_run = next(r for r in payload["runs"] if r["kind"] == "rle")
     assert set(rle_run) == {"kind", "value", "length"}
     assert rle_run["length"] >= 1
@@ -1016,7 +1031,12 @@ def test_page_decode_faithful_default_dictionary(dict_v1, capsys):
     ev = payload["encoded_values"]
     assert ev["kind"] == "dictionary_indices"
     assert ev["bit_width"] >= 1
+    # The index runs must expand back to the page's 6 values, and each index
+    # must be a valid dictionary position (the column has 2 distinct values).
     assert ev["total"] == len(ev["runs"])
+    assert _expanded_run_count(ev["runs"]) == 6
+    rle_indices = [r["value"] for r in ev["runs"] if r["kind"] == "rle"]
+    assert all(i in (0, 1) for i in rle_indices)
     assert all(r["kind"] in ("rle", "bit_packed") for r in ev["runs"])
 
 
@@ -1108,9 +1128,91 @@ def test_page_decode_error_fix_keeps_row_group(tmp_path, capsys):
 
 
 def test_page_list_page_path_fix_is_runnable(dict_v1, capsys):
-    """Rejecting a page path on `page list` suggests a runnable command (a
-    singular verb on that page), not the same invalid `page list` invocation."""
+    """Rejecting a page path on `page list` suggests a runnable command. The
+    rejected path here is the dictionary page (pages/0); the fix must point at
+    `page header` (which works on any page) rather than `page decode` (which
+    fails on a dictionary page)."""
     err = _run_err(["page", "list", dict_v1, "row_groups/0/columns/0/pages/0"], capsys)
     assert err["error"] == "invalid_path"
-    assert "page decode" in err["fix"]
-    assert "page list" not in err["fix"]
+    assert "page header" in err["fix"]
+    assert "page decode" not in err["fix"]
+    # The suggested fix actually resolves (would error if it pointed at decode).
+    header = _run(["page", "header", dict_v1, "row_groups/0/columns/0/pages/0"], capsys)
+    assert header["kind"] == "dictionary_page"
+
+
+# ---------------------------------------------------------------------------
+# Review follow-ups: faithful default with repetition levels, navpath fixes
+# ---------------------------------------------------------------------------
+
+
+def test_page_decode_faithful_default_with_repetition_levels(nested, capsys):
+    """The faithful default (no --kind) populates repetition_levels for a
+    repeated column — the non-null branch of that field."""
+    payload = _run(
+        [
+            "page",
+            "decode",
+            nested,
+            "--column",
+            "tags.list.element",
+            "--page-index",
+            "0",
+        ],
+        capsys,
+    )
+    assert "kind" not in payload
+    assert payload["repetition_levels"] is not None
+    assert payload["repetition_levels"]["levels"] == [0, 1, 0, 0]
+    assert payload["definition_levels"]["levels"] == [3, 3, 3, 1]
+    assert payload["encoded_values"]["kind"] in ("plain", "dictionary_indices")
+
+
+def test_page_navpath_conflicts_with_row_group(dict_v1, capsys):
+    """A navpath is mutually exclusive with --row-group too (not just --column),
+    on a singular page verb."""
+    err = _run_err(
+        [
+            "page",
+            "header",
+            dict_v1,
+            "row_groups/0/columns/0/pages/0",
+            "--row-group",
+            "0",
+        ],
+        capsys,
+    )
+    assert err["error"] == "invalid_arguments"
+    assert "mutually exclusive" in err["message"]
+
+
+def test_page_singular_row_group_navpath_fix_is_runnable(multi_rg, capsys):
+    """Rejecting a row-group navpath on a singular verb suggests a runnable
+    `page list` on that path (not a `…/pages/0` that skips columns/<k>)."""
+    err = _run_err(["page", "header", multi_rg, "row_groups/0"], capsys)
+    assert err["error"] == "invalid_path"
+    assert "page list" in err["fix"]
+    # The suggested fix actually resolves.
+    listed = _run(["page", "list", multi_rg, "row_groups/0"], capsys)
+    assert listed["row_group"] == 0
+
+
+def test_page_out_of_range_fix_keeps_row_group(multi_rg, capsys):
+    """The page_out_of_range fix preserves a supplied --row-group so the
+    suggested `page list` stays scoped to that row group."""
+    err = _run_err(
+        [
+            "page",
+            "header",
+            multi_rg,
+            "--column",
+            "x",
+            "--page-index",
+            "99",
+            "--row-group",
+            "2",
+        ],
+        capsys,
+    )
+    assert err["error"] == "page_out_of_range"
+    assert "--row-group 2" in err["fix"]

@@ -727,19 +727,25 @@ def _data_page_index_for(cc: Any, page: Any, idx: int) -> int | None:
 
 
 def _resolve_page(
-    cc: Any, page_index: int, noun: str, path_str: str, column: str
+    cc: Any,
+    page_index: int,
+    noun: str,
+    path_str: str,
+    column: str,
+    row_group: int | None,
 ) -> tuple[Any, int, int | None]:
     """Resolve one page by index (supporting negatives), returning
     ``(Page, page_index, data_page_index)``."""
     n = cc.num_pages
     idx = page_index + n if page_index < 0 else page_index
     if not 0 <= idx < n:
+        scope = f" --row-group {row_group}" if row_group is not None else ""
         raise CliError(
             code="page_out_of_range",
             message=(
                 f"page index {page_index} out of range; column chunk has {n} pages"
             ),
-            fix=f"parquet-analyzer page list {path_str} --column {column}",
+            fix=f"parquet-analyzer page list {path_str} --column {column}{scope}",
         )
     page = cc.page(idx)
     return page, idx, _data_page_index_for(cc, page, idx)
@@ -776,14 +782,17 @@ def _select_page_singular(
     if args.navpath is not None:
         node, kind, canonical = _resolve_navpath(pf, args.navpath, noun)
         if kind != "page":
+            # The navpath addresses a row group or column chunk, not a page.
+            # `page list` accepts exactly those, so point there to enumerate the
+            # pages (their `_path`s feed straight back into this verb).
             raise CliError(
                 code="invalid_path",
                 message=(
                     f"page {noun} expects a page path (…/pages/<n>); "
                     f"{args.navpath!r} addresses a {kind}"
                 ),
-                fix=f"parquet-analyzer page {noun} {args.path} "
-                f"{args.navpath.rstrip('/')}/pages/0",
+                fix=f"parquet-analyzer page list {args.path} "
+                f"{args.navpath.rstrip('/')}",
             )
         idx = _canonical_indices(canonical)
         rg_idx, col_idx, page_index = idx["row_groups"], idx["columns"], idx["pages"]
@@ -794,7 +803,7 @@ def _select_page_singular(
         pf, pf.footer, args.column, args.row_group, noun
     )
     page, page_index, data_page_index = _resolve_page(
-        cc, args.page_index, noun, args.path, args.column
+        cc, args.page_index, noun, args.path, args.column, args.row_group
     )
     selector = f"--column {args.column} --page-index {page_index}"
     if args.row_group is not None:
@@ -864,7 +873,7 @@ def _page_list_scope(
                 f"(…/columns/<k>); {args.navpath!r} addresses a {kind}. Use "
                 "page header/extract/decode for a page path"
             ),
-            fix=f"parquet-analyzer page decode {args.path} {args.navpath}",
+            fix=f"parquet-analyzer page header {args.path} {args.navpath}",
         )
     if args.row_group is not None and not (0 <= args.row_group < n_rg):
         raise CliError(

@@ -356,6 +356,7 @@ data pages report the level encodings, V2 data pages report
 $ parquet-analyzer page header example.parquet --column Sex --page-index 1
 {
   "$schema": "parquet-analyzer/v1/page-header",
+  "_path": "row_groups/0/columns/4/pages/1",
   "row_group": 0, "column": "Sex", "page_index": 1, "data_page_index": 0,
   "kind": "data_page", "page_type": "DATA_PAGE", "offset": 24289,
   "header_size": 20, "compressed_size": 448, "uncompressed_size": 846,
