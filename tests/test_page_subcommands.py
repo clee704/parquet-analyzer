@@ -838,24 +838,29 @@ def test_page_decode_v2_values_skip_nulls(v2_nulls, capsys):
 # ---------------------------------------------------------------------------
 
 
-def test_page_decode_requires_kind(dict_v1, capsys):
-    err = _run_err(
+def test_page_decode_without_kind_is_allowed(dict_v1, capsys):
+    """--kind is optional now; omitting it yields the faithful default rather
+    than a missing-argument error."""
+    payload = _run(
         ["page", "decode", dict_v1, "--column", "s", "--page-index", "1"], capsys
     )
+    assert "kind" not in payload
+    assert "encoded_values" in payload
+
+
+def test_page_header_requires_path_or_selectors(dict_v1, capsys):
+    err = _run_err(["page", "header", dict_v1], capsys)
     assert err["error"] == "missing_argument"
-    assert "--kind is required" in err["message"]
+    assert "page path" in err["message"]
 
 
-def test_page_header_requires_column(dict_v1, capsys):
-    err = _run_err(["page", "header", dict_v1, "--page-index", "0"], capsys)
-    assert err["error"] == "missing_argument"
-    assert "--column is required" in err["message"]
-
-
-def test_page_header_requires_page_index(dict_v1, capsys):
+def test_page_header_partial_selectors_rejected(dict_v1, capsys):
+    """--column without --page-index (or vice versa) is not a complete
+    selector."""
     err = _run_err(["page", "header", dict_v1, "--column", "s"], capsys)
     assert err["error"] == "missing_argument"
-    assert "--page-index is required" in err["message"]
+    err2 = _run_err(["page", "header", dict_v1, "--page-index", "0"], capsys)
+    assert err2["error"] == "missing_argument"
 
 
 @pytest.mark.parametrize("noun", ["list", "header", "extract", "decode"])
@@ -863,3 +868,211 @@ def test_page_schema_version_short_circuits(noun, capsys):
     payload = _run(["page", noun, "--schema-version"], capsys)
     assert list(payload) == ["$schema"]
     assert payload["$schema"].endswith(f"/page-{noun}")
+
+
+# ---------------------------------------------------------------------------
+# Path addressing (navpath positional)
+# ---------------------------------------------------------------------------
+
+
+def _page_path(payload_item):
+    return payload_item["_path"]
+
+
+def test_page_header_by_navpath(dict_v1, capsys):
+    """A page can be addressed by its navpath instead of --column/--page-index,
+    and the output echoes that _path."""
+    listed = _run(["page", "list", dict_v1, "--column", "s"], capsys)
+    data_path = next(i["_path"] for i in listed["items"] if i["kind"] == "data_page")
+    payload = _run(["page", "header", dict_v1, data_path], capsys)
+    assert payload["_path"] == data_path
+    assert payload["kind"] == "data_page"
+    assert payload["data_page_index"] == 0
+
+
+def test_page_list_to_decode_roundtrip(dict_v1, capsys):
+    """The _path emitted by `page list` feeds straight back into `page decode`."""
+    listed = _run(["page", "list", dict_v1, "--column", "s"], capsys)
+    data_path = next(i["_path"] for i in listed["items"] if i["kind"] == "data_page")
+    payload = _run(["page", "decode", dict_v1, data_path, "--kind", "values"], capsys)
+    assert payload["_path"] == data_path
+    assert payload["kind"] == "values"
+    assert payload["values"]
+
+
+def test_page_extract_by_navpath(dict_v1, capsys):
+    payload = _run(
+        ["page", "extract", dict_v1, "row_groups/0/columns/0/pages/0", "--as", "hex"],
+        capsys,
+    )
+    assert payload["_path"] == "row_groups/0/columns/0/pages/0"
+    assert payload["data_page_index"] is None  # the dictionary page
+    bytes.fromhex(payload["data"])
+
+
+def test_page_navpath_multi_row_group(multi_rg, capsys):
+    """A navpath carries the row group, so --row-group is not needed even on a
+    multi-row-group file."""
+    payload = _run(
+        ["page", "header", multi_rg, "row_groups/2/columns/0/pages/0"], capsys
+    )
+    assert payload["row_group"] == 2
+    assert payload["_path"] == "row_groups/2/columns/0/pages/0"
+
+
+def test_page_navpath_page_out_of_range(dict_v1, capsys):
+    err = _run_err(
+        ["page", "header", dict_v1, "row_groups/0/columns/0/pages/9"], capsys
+    )
+    assert err["error"] == "page_out_of_range"
+
+
+def test_page_navpath_non_page_rejected(dict_v1, capsys):
+    """A singular page verb needs a page path, not a column-chunk path."""
+    err = _run_err(["page", "decode", dict_v1, "row_groups/0/columns/0"], capsys)
+    assert err["error"] == "invalid_path"
+    assert "page path" in err["message"]
+
+
+def test_page_navpath_conflicts_with_selectors(dict_v1, capsys):
+    err = _run_err(
+        [
+            "page",
+            "decode",
+            dict_v1,
+            "row_groups/0/columns/4/pages/1",
+            "--column",
+            "s",
+        ],
+        capsys,
+    )
+    assert err["error"] == "invalid_arguments"
+    assert "mutually exclusive" in err["message"]
+
+
+def test_page_decode_error_fix_uses_navpath(plain_stats, capsys):
+    """When addressed by navpath, error `fix` strings reference the path, not a
+    `--column None --page-index None` selector."""
+    err = _run_err(
+        [
+            "page",
+            "decode",
+            plain_stats,
+            "row_groups/0/columns/0/pages/0",
+            "--kind",
+            "rle-runs",
+        ],
+        capsys,
+    )
+    assert err["error"] == "kind_not_available"
+    assert "row_groups/0/columns/0/pages/0" in err["fix"]
+    assert "None" not in err["fix"]
+
+
+def test_page_list_by_column_navpath(multi_data_page, capsys):
+    """A column-chunk navpath scopes `page list` to that column."""
+    payload = _run(["page", "list", multi_data_page, "row_groups/0/columns/0"], capsys)
+    assert payload["row_group"] == 0
+    assert payload["column"] == "s"
+    assert all(i["row_group"] == 0 for i in payload["items"])
+
+
+def test_page_list_by_row_group_navpath(multi_rg, capsys):
+    payload = _run(["page", "list", multi_rg, "row_groups/2"], capsys)
+    assert payload["row_group"] == 2
+    assert all(i["row_group"] == 2 for i in payload["items"])
+
+
+def test_page_list_rejects_page_navpath(dict_v1, capsys):
+    err = _run_err(["page", "list", dict_v1, "row_groups/0/columns/0/pages/0"], capsys)
+    assert err["error"] == "invalid_path"
+    assert "page header/extract/decode" in err["message"]
+
+
+def test_page_list_navpath_conflicts_with_flags(dict_v1, capsys):
+    err = _run_err(
+        ["page", "list", dict_v1, "row_groups/0/columns/0", "--row-group", "0"],
+        capsys,
+    )
+    assert err["error"] == "invalid_arguments"
+
+
+# ---------------------------------------------------------------------------
+# Faithful default (no --kind)
+# ---------------------------------------------------------------------------
+
+
+def test_page_decode_faithful_default_dictionary(dict_v1, capsys):
+    """No --kind → the full faithful decode: levels + the native (unresolved)
+    values section. For a dictionary-encoded page that is the index runs."""
+    payload = _run(
+        ["page", "decode", dict_v1, "--column", "s", "--page-index", "1"], capsys
+    )
+    assert "kind" not in payload  # the faithful default is not a single kind
+    assert payload["encoding"] == "RLE_DICTIONARY"
+    assert payload["num_values"] == 6
+    assert payload["definition_levels"] is not None
+    assert payload["repetition_levels"] is None
+    ev = payload["encoded_values"]
+    assert ev["kind"] == "dictionary_indices"
+    assert ev["bit_width"] >= 1
+    assert ev["total"] == len(ev["runs"])
+    assert all(r["kind"] in ("rle", "bit_packed") for r in ev["runs"])
+
+
+def test_page_decode_faithful_default_plain(plain_stats, capsys):
+    """For a PLAIN page the native values section is the verbatim values."""
+    payload = _run(
+        ["page", "decode", plain_stats, "--column", "n", "--page-index", "0"], capsys
+    )
+    assert payload["encoding"] == "PLAIN"
+    ev = payload["encoded_values"]
+    assert ev["kind"] == "plain"
+    assert ev["values"] == [5, 1, 9, 3]
+    assert ev["total"] == 4
+
+
+def test_page_decode_faithful_default_respects_limit(multi_data_page, capsys):
+    payload = _run(
+        [
+            "page",
+            "decode",
+            multi_data_page,
+            "row_groups/0/columns/0/pages/1",
+            "--limit",
+            "1",
+        ],
+        capsys,
+    )
+    ev = payload["encoded_values"]
+    assert ev["returned"] == 1
+    assert ev["truncated"] is True
+
+
+def test_page_decode_faithful_default_unsupported_encoding(tmp_path, capsys):
+    """The faithful default decodes the value section, so an unsupported value
+    encoding errors the same way the explicit kinds do."""
+    path = tmp_path / "delta.parquet"
+    pq.write_table(
+        pa.table({"x": pa.array(list(range(50)), type=pa.int32())}),
+        path,
+        column_encoding={"x": "DELTA_BINARY_PACKED"},
+        use_dictionary=False,
+    )
+    err = _run_err(
+        ["page", "decode", path, "--column", "x", "--page-index", "0"], capsys
+    )
+    assert err["error"] == "encoding_not_supported"
+
+
+def test_page_list_column_navpath_selects_one_of_many(tmp_path, capsys):
+    """A column navpath on a multi-column file lists only that column chunk."""
+    path = tmp_path / "two_col.parquet"
+    pq.write_table(
+        pa.table({"a": [1, 2, 3], "b": ["x", "y", "z"]}),
+        path,
+        use_dictionary=False,
+    )
+    payload = _run(["page", "list", path, "row_groups/0/columns/1"], capsys)
+    assert payload["column"] == "b"
+    assert {i["column"] for i in payload["items"]} == {"b"}

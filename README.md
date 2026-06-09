@@ -312,6 +312,20 @@ report both `page_index` (full order) and `data_page_index` (position among
 data pages only — the `OffsetIndex` correspondence, `null` for the dictionary
 page).
 
+Equivalently, any page noun accepts a **navpath** positional — the same
+`_path` that `page list` (and `show`) emit — instead of the selectors, so a
+`page list` → `page decode` round-trip is copy-paste. For the singular verbs
+the navpath addresses a page (`row_groups/0/columns/4/pages/1`); for `page
+list` it scopes to a row group (`row_groups/0`) or a column chunk
+(`row_groups/0/columns/4`). The navpath and the `--column`/`--page-index`/
+`--row-group` selectors are mutually exclusive. Every singular-verb output
+echoes the resolved `_path`.
+
+```bash
+$ parquet-analyzer page list data.parquet --column Sex | jq -r '.items[1]._path' \
+  | xargs parquet-analyzer page decode data.parquet
+```
+
 **`page list`** is the page-walk surface: a column's (or every column's) pages
 as lightweight stubs. It is cheap when the writer emitted an `OffsetIndex` (the
 extents come from it, and stubs carry `first_row_index`); otherwise it walks
@@ -362,36 +376,49 @@ $ parquet-analyzer page extract example.parquet --column Sex --page-index 0 --as
 $ parquet-analyzer page extract example.parquet --column Sex --page-index 1 --decompress --as raw -o body.bin
 ```
 
-**`page decode`** decodes a page body and projects one view via `--kind`:
-
-- `values` — the page's physical values, with dictionary indices resolved
-  through the sibling dictionary page to the physical-type values. Nulls are
-  skipped, so `total` is the non-null count.
-- `levels` — the definition and repetition level streams, each as a `bit_width`
-  plus the expanded `levels`; either is `null` when the column has no such
-  block (a flat column has no repetition levels; a required column has no
-  definition levels).
-- `rle-runs` — for dictionary-encoded pages, the index stream's RLE/bit-packed
-  **run** structure (`bit_width` plus ordered runs) before expansion.
-- `statistics` — the page header's statistics (header-only; no body decode).
-
-`decode` is **encoding-faithful**: it surfaces the data the encoding scheme
-actually stores — RLE runs, dictionary indices, plain values — not a flattened
-logical reconstruction.
+**`page decode`** decodes a page body. With no `--kind` it emits the full
+**encoding-faithful** decode in one object — the definition/repetition level
+streams plus the values section in its native encoding form, which the page's
+encoding determines (no choice to make):
 
 ```bash
-$ parquet-analyzer page decode example.parquet --column Sex --page-index 1 --kind rle-runs --limit 3
+$ parquet-analyzer page decode example.parquet row_groups/0/columns/4/pages/1 --limit 3
 {
   "$schema": "parquet-analyzer/v1/page-decode",
+  "_path": "row_groups/0/columns/4/pages/1",
   "row_group": 0, "column": "Sex", "page_index": 1, "data_page_index": 0,
-  "kind": "rle-runs", "encoding": "RLE_DICTIONARY", "bit_width": 2,
-  "total": 419, "returned": 3, "truncated": true,
-  "runs": [
-    {"kind": "rle", "value": 0, "length": 1},
-    {"kind": "rle", "value": 1, "length": 3},
-    {"kind": "rle", "value": 0, "length": 4}
-  ]
+  "encoding": "RLE_DICTIONARY", "num_values": 891, "num_nulls": 0,
+  "definition_levels": {"bit_width": 1, "total": 891, "returned": 3, "truncated": true, "levels": [1, 1, 1]},
+  "repetition_levels": null,
+  "encoded_values": {
+    "kind": "dictionary_indices", "bit_width": 2, "total": 419, "returned": 3, "truncated": true,
+    "runs": [{"kind": "rle", "value": 0, "length": 1}, {"kind": "rle", "value": 1, "length": 3}, {"kind": "rle", "value": 0, "length": 4}]
+  }
 }
+```
+
+`encoded_values` is the values section as it is literally stored: for a
+dictionary-encoded page the index RLE/bit-packed runs (`kind:
+"dictionary_indices"`); for a PLAIN page the verbatim values (`kind: "plain"`).
+This is the encoding-faithful view — the data the encoding scheme actually
+stores, not a flattened logical reconstruction.
+
+`--kind` narrows to a single view (and is the only way to get the *resolved*
+physical values):
+
+- `values` — the page's **resolved** physical values, with dictionary indices
+  resolved through the sibling dictionary page to the physical-type values.
+  Nulls are skipped, so `total` is the non-null count.
+- `levels` — just the definition and repetition level streams (each a
+  `bit_width` plus the expanded `levels`; either `null` when the column has no
+  such block — a flat column has no repetition levels, a required column no
+  definition levels).
+- `rle-runs` — just the dictionary index runs (`kind_not_available` on a PLAIN
+  page).
+- `statistics` — the page header's statistics (header-only; no body decode).
+
+```bash
+$ parquet-analyzer page decode example.parquet --column Sex --page-index 1 --kind values --limit 2
 ```
 
 A page whose encoding or codec this tool does not yet decode returns a

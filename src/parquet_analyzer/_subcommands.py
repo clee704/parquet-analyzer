@@ -718,6 +718,14 @@ def _chunk_has_leading_dict(cc: Any) -> bool:
     return bool(pages) and pages[0]._kind == "dictionary_page"
 
 
+def _data_page_index_for(cc: Any, page: Any, idx: int) -> int | None:
+    """The page's index among **data pages only** (the OffsetIndex
+    correspondence), or ``None`` for the dictionary page."""
+    if page._kind == "dictionary_page":
+        return None
+    return idx - (1 if _chunk_has_leading_dict(cc) else 0)
+
+
 def _resolve_page(
     cc: Any, page_index: int, noun: str, path_str: str, column: str
 ) -> tuple[Any, int, int | None]:
@@ -734,11 +742,62 @@ def _resolve_page(
             fix=f"parquet-analyzer page list {path_str} --column {column}",
         )
     page = cc.page(idx)
-    if page._kind == "dictionary_page":
-        data_page_index: int | None = None
-    else:
-        data_page_index = idx - (1 if _chunk_has_leading_dict(cc) else 0)
-    return page, idx, data_page_index
+    return page, idx, _data_page_index_for(cc, page, idx)
+
+
+def _resolve_navpath(pf: Any, navpath: str, noun: str) -> tuple[Any, str, str]:
+    """Resolve a ``show``-style navpath against ``pf`` for the page surface
+    (which has opted into page walks, so ``walk_pages=True``). Maps
+    :class:`_navigate.NavigationError` onto the CLI error contract with a
+    page-oriented ``fix``."""
+    try:
+        return _navigate.resolve(pf, navpath, walk_pages=True)
+    except _navigate.NavigationError as exc:
+        raise CliError(
+            exc.code, exc.message, fix=f"parquet-analyzer page list {pf.path}"
+        ) from exc
+
+
+def _canonical_indices(canonical: str) -> dict[str, int]:
+    """Map a canonical navpath (``row_groups/0/columns/4/pages/1``) to its
+    ``{keyword: index}`` pairs."""
+    parts = canonical.split("/")
+    return {parts[i]: int(parts[i + 1]) for i in range(0, len(parts) - 1, 2)}
+
+
+def _select_page_singular(
+    pf: Any, args: argparse.Namespace, noun: str
+) -> tuple[Any, Any, int, int, int, int | None, str]:
+    """Resolve the page a singular ``page`` verb (header/extract/decode) acts
+    on, via either a navpath positional or the ``--column``/``--page-index``
+    selectors. Returns ``(cc, page, rg_idx, col_idx, page_index,
+    data_page_index, selector)`` where ``selector`` is a paste-ready
+    re-selection fragment for error ``fix`` strings."""
+    if args.navpath is not None:
+        node, kind, canonical = _resolve_navpath(pf, args.navpath, noun)
+        if kind != "page":
+            raise CliError(
+                code="invalid_path",
+                message=(
+                    f"page {noun} expects a page path (…/pages/<n>); "
+                    f"{args.navpath!r} addresses a {kind}"
+                ),
+                fix=f"parquet-analyzer page {noun} {args.path} "
+                f"{args.navpath.rstrip('/')}/pages/0",
+            )
+        idx = _canonical_indices(canonical)
+        rg_idx, col_idx, page_index = idx["row_groups"], idx["columns"], idx["pages"]
+        cc = pf.row_groups[rg_idx].columns[col_idx]
+        data_page_index = _data_page_index_for(cc, node, page_index)
+        return cc, node, rg_idx, col_idx, page_index, data_page_index, canonical
+    rg_idx, col_idx, cc = _resolve_page_column(
+        pf, pf.footer, args.column, args.row_group, noun
+    )
+    page, page_index, data_page_index = _resolve_page(
+        cc, args.page_index, noun, args.path, args.column
+    )
+    selector = f"--column {args.column} --page-index {page_index}"
+    return cc, page, rg_idx, col_idx, page_index, data_page_index, selector
 
 
 def _cap(values: list, limit: int | None) -> tuple[list, bool]:
@@ -753,33 +812,67 @@ def _cap(values: list, limit: int | None) -> tuple[list, bool]:
 def handle_page_list(args: argparse.Namespace) -> None:
     """List a column's (or every column's) pages as lightweight stubs. This is
     the page-walk surface — cheap when the writer emitted an OffsetIndex (the
-    extents come from it), otherwise it walks the per-page headers."""
+    extents come from it), otherwise it walks the per-page headers.
+
+    Pages can be scoped with ``--row-group``/``--column`` or, equivalently,
+    with a navpath that addresses a row group (``row_groups/0``) or a column
+    chunk (``row_groups/0/columns/4``)."""
     with ParquetFile(args.path) as pf:
         footer = pf.footer
         n_rg = len(footer["row_groups"])
-        if args.row_group is not None and not (0 <= args.row_group < n_rg):
-            raise CliError(
-                code="row_group_out_of_range",
-                message=(
-                    f"row group {args.row_group} requested but file has "
-                    f"{n_rg} row group(s)"
-                ),
-                fix=f"parquet-analyzer rowgroup list {args.path}",
-            )
-        rg_indices = [args.row_group] if args.row_group is not None else range(n_rg)
+        rg_filter, col_idx_filter, col_name = _page_list_scope(pf, args, n_rg)
+        rg_indices = [rg_filter] if rg_filter is not None else range(n_rg)
         items: list[dict] = []
         for rg_idx in rg_indices:
             rg_wrapper = pf.row_groups[rg_idx]
             for col_idx, cc in enumerate(rg_wrapper.columns):
-                if args.column is not None and _path_display(cc.path) != args.column:
+                if col_idx_filter is not None and col_idx != col_idx_filter:
                     continue
+                if col_name is not None and _path_display(cc.path) != col_name:
+                    continue
+                if col_idx_filter is not None:
+                    col_name = _path_display(cc.path)
                 items.extend(_page_list_items(cc, rg_idx, col_idx))
     payload = _wrap_list(items, args.limit, "page-list")
-    if args.row_group is not None:
-        payload["row_group"] = args.row_group
-    if args.column is not None:
-        payload["column"] = args.column
+    if rg_filter is not None:
+        payload["row_group"] = rg_filter
+    if col_name is not None:
+        payload["column"] = col_name
     _emit_json(payload, args.output)
+
+
+def _page_list_scope(
+    pf: Any, args: argparse.Namespace, n_rg: int
+) -> tuple[int | None, int | None, str | None]:
+    """Resolve ``page list``'s scope to ``(row_group, column_index,
+    column_name)``, from either a navpath or the ``--row-group``/``--column``
+    flags. A navpath addresses a row group or a column chunk; a page path is
+    rejected with a pointer to the singular page verbs."""
+    if args.navpath is not None:
+        node, kind, canonical = _resolve_navpath(pf, args.navpath, "list")
+        idx = _canonical_indices(canonical)
+        if kind == "row_group":
+            return idx["row_groups"], None, None
+        if kind == "column_chunk":
+            return idx["row_groups"], idx["columns"], None
+        raise CliError(
+            code="invalid_path",
+            message=(
+                "page list expects a row-group or column-chunk path "
+                f"(…/columns/<k>); {args.navpath!r} addresses a {kind}. Use "
+                "page header/extract/decode for a page path"
+            ),
+            fix=f"parquet-analyzer page list {args.path} {args.navpath}",
+        )
+    if args.row_group is not None and not (0 <= args.row_group < n_rg):
+        raise CliError(
+            code="row_group_out_of_range",
+            message=(
+                f"row group {args.row_group} requested but file has {n_rg} row group(s)"
+            ),
+            fix=f"parquet-analyzer rowgroup list {args.path}",
+        )
+    return args.row_group, None, args.column
 
 
 def _page_list_items(cc: Any, rg_idx: int, col_idx: int) -> list[dict]:
@@ -899,15 +992,12 @@ def _page_stats(page: Any, header: Any) -> Any:
 
 def handle_page_header(args: argparse.Namespace) -> None:
     with ParquetFile(args.path) as pf:
-        footer = pf.footer
-        rg_idx, _col_idx, cc = _resolve_page_column(
-            pf, footer, args.column, args.row_group, "header"
-        )
-        page, page_index, data_page_index = _resolve_page(
-            cc, args.page_index, "header", args.path, args.column
+        cc, page, rg_idx, col_idx, page_index, data_page_index, _sel = (
+            _select_page_singular(pf, args, "header")
         )
         payload = {
             "$schema": _schema_uri("page-header"),
+            "_path": f"row_groups/{rg_idx}/columns/{col_idx}/pages/{page_index}",
             "row_group": rg_idx,
             "column": _path_display(cc.path),
             "page_index": page_index,
@@ -919,12 +1009,8 @@ def handle_page_header(args: argparse.Namespace) -> None:
 
 def handle_page_extract(args: argparse.Namespace) -> None:
     with ParquetFile(args.path) as pf:
-        footer = pf.footer
-        rg_idx, _col_idx, cc = _resolve_page_column(
-            pf, footer, args.column, args.row_group, "extract"
-        )
-        page, page_index, data_page_index = _resolve_page(
-            cc, args.page_index, "extract", args.path, args.column
+        cc, page, rg_idx, col_idx, page_index, data_page_index, selector = (
+            _select_page_singular(pf, args, "extract")
         )
         try:
             data = page.decompressed_body() if args.decompress else page.raw_body()
@@ -932,8 +1018,7 @@ def handle_page_extract(args: argparse.Namespace) -> None:
             raise CliError(
                 exc.code,
                 str(exc),
-                fix=f"parquet-analyzer page extract {args.path} --column {args.column} "
-                f"--page-index {args.page_index}",
+                fix=f"parquet-analyzer page extract {args.path} {selector}",
                 details=_decode_error_details(exc),
             ) from exc
 
@@ -952,6 +1037,7 @@ def handle_page_extract(args: argparse.Namespace) -> None:
     )
     payload = {
         "$schema": _schema_uri("page-extract"),
+        "_path": f"row_groups/{rg_idx}/columns/{col_idx}/pages/{page_index}",
         "row_group": rg_idx,
         "column": _path_display(cc.path),
         "page_index": page_index,
@@ -974,14 +1060,13 @@ def _decode_error_details(exc: PageDecodeError) -> dict:
     return details
 
 
-def _decode_cli_error(exc: PageDecodeError, args: Any) -> CliError:
+def _decode_cli_error(exc: PageDecodeError, path: str, selector: str) -> CliError:
     """Map a :class:`PageDecodeError` onto the structured CLI error contract,
     pointing the ``fix`` at ``page extract`` (the raw-bytes fallback)."""
     return CliError(
         exc.code,
         str(exc),
-        fix=f"parquet-analyzer page extract {args.path} --column {args.column} "
-        f"--page-index {args.page_index} --as hex",
+        fix=f"parquet-analyzer page extract {path} {selector} --as hex",
         details=_decode_error_details(exc),
     )
 
@@ -1011,48 +1096,84 @@ def _level_view(stream: Any, limit: int | None) -> dict | None:
 
 def handle_page_decode(args: argparse.Namespace) -> None:
     with ParquetFile(args.path) as pf:
-        footer = pf.footer
-        rg_idx, _col_idx, cc = _resolve_page_column(
-            pf, footer, args.column, args.row_group, "decode"
+        cc, page, rg_idx, col_idx, page_index, data_page_index, selector = (
+            _select_page_singular(pf, args, "decode")
         )
-        page, page_index, data_page_index = _resolve_page(
-            cc, args.page_index, "decode", args.path, args.column
-        )
-        result = _decode_view(page, args.kind, args.limit, args)
+        result = _decode_view(page, args.kind, args.limit, args.path, selector)
 
         payload = {
             "$schema": _schema_uri("page-decode"),
+            "_path": f"row_groups/{rg_idx}/columns/{col_idx}/pages/{page_index}",
             "row_group": rg_idx,
             "column": _path_display(cc.path),
             "page_index": page_index,
             "data_page_index": data_page_index,
-            "kind": args.kind,
             "encoding": page.encoding,
-            **result,
         }
+        # The faithful default (no --kind) emits every applicable section; a
+        # specific --kind narrows to one and records which view it is.
+        if args.kind is not None:
+            payload["kind"] = args.kind
+        payload.update(result)
     _emit_json(payload, args.output)
 
 
-def _decode_view(page: Any, kind: str, limit: int | None, args: Any) -> dict:
-    """Project one decoded view of a page. ``statistics`` is header-only (no
-    body decode); the others decode the body and map any decode failure to the
-    JSON error contract."""
+def _encoded_values_view(decoded: Any, limit: int | None) -> dict:
+    """The page's values section in its **native encoding form** (no dictionary
+    resolution): the index RLE/bit-packed runs for a dictionary-encoded page,
+    or the verbatim values for a PLAIN page."""
+    section = decoded.values
+    if isinstance(section, PlainValues):
+        values, truncated = _cap(list(section.values), limit)
+        return {
+            "kind": "plain",
+            "total": len(section.values),
+            "returned": len(values),
+            "truncated": truncated,
+            "values": values,
+        }
+    runs, truncated = _cap([_run_dict(r) for r in section.runs], limit)
+    return {
+        "kind": "dictionary_indices",
+        "bit_width": section.bit_width,
+        "total": len(section.runs),
+        "returned": len(runs),
+        "truncated": truncated,
+        "runs": runs,
+    }
+
+
+def _decode_view(
+    page: Any, kind: str | None, limit: int | None, path: str, selector: str
+) -> dict:
+    """Project a decoded view of a page. ``statistics`` is header-only (no body
+    decode); the others decode the body and map any decode failure to the JSON
+    error contract. With ``kind`` of ``None`` (no ``--kind``) the full
+    encoding-faithful decode is returned: the level streams plus the values
+    section in its native encoding form."""
     if kind == "statistics":
         header = page._t.data_page_header or page._t.data_page_header_v2
         if header is None:
             raise CliError(
                 code="page_type_not_supported",
                 message="statistics are only available on V1/V2 data pages",
-                fix=f"parquet-analyzer page header {args.path} --column {args.column} "
-                f"--page-index {args.page_index}",
+                fix=f"parquet-analyzer page header {path} {selector}",
             )
         return {"statistics": _page_stats(page, header)}
 
     try:
         decoded = page.decode()
     except PageDecodeError as exc:
-        raise _decode_cli_error(exc, args) from exc
+        raise _decode_cli_error(exc, path, selector) from exc
 
+    if kind is None:
+        return {
+            "num_values": decoded.num_values,
+            "num_nulls": decoded.num_nulls,
+            "definition_levels": _level_view(decoded.definition_levels, limit),
+            "repetition_levels": _level_view(decoded.repetition_levels, limit),
+            "encoded_values": _encoded_values_view(decoded, limit),
+        }
     if kind == "values":
         try:
             physical = page.physical_values()
@@ -1060,7 +1181,7 @@ def _decode_view(page: Any, kind: str, limit: int | None, args: Any) -> dict:
             # physical_values() resolves dictionary indices through the sibling
             # dictionary page, which can fail independently of decode() — keep
             # that failure on the JSON error contract too.
-            raise _decode_cli_error(exc, args) from exc
+            raise _decode_cli_error(exc, path, selector) from exc
         values, truncated = _cap(physical, limit)
         return {
             "total": decoded.num_values - decoded.num_nulls,
@@ -1083,8 +1204,7 @@ def _decode_view(page: Any, kind: str, limit: int | None, args: Any) -> dict:
                 "rle-runs is only available for dictionary-encoded pages; this "
                 f"page uses {decoded.encoding} (no RLE/bit-packed run structure)"
             ),
-            fix=f"parquet-analyzer page decode {args.path} --column {args.column} "
-            f"--page-index {args.page_index} --kind values",
+            fix=f"parquet-analyzer page decode {path} {selector} --kind values",
         )
     runs, truncated = _cap([_run_dict(r) for r in section.runs], limit)
     return {
@@ -1155,6 +1275,19 @@ def _add_limit(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="cap the number of items returned (default: all). truncation is reported in the output object.",
     )
+
+
+_PAGE_NAVPATH_HELP = (
+    "page path to address (e.g. 'row_groups/0/columns/4/pages/1', as emitted "
+    "by 'page list'); alternative to --column/--page-index/--row-group"
+)
+
+
+def _add_navpath(parser: argparse.ArgumentParser, help_text: str) -> None:
+    """A ``show``-style navpath positional, as an alternative to the
+    ``--column``/``--page-index`` selectors. Optional at parse time (the
+    run-time check enforces navpath-XOR-selectors)."""
+    parser.add_argument("navpath", nargs="?", default=None, help=help_text)
 
 
 def _add_page_selectors(parser: argparse.ArgumentParser) -> None:
@@ -1288,6 +1421,11 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
         "list", help="list a column's (or every column's) pages as stubs"
     )
     _add_common_options(pl)
+    _add_navpath(
+        pl,
+        "row-group or column-chunk path to scope to "
+        "(e.g. 'row_groups/0/columns/4'); alternative to --row-group/--column",
+    )
     _add_limit(pl)
     pl.add_argument(
         "--column",
@@ -1303,12 +1441,14 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
 
     ph = page_subparsers.add_parser("header", help="one page's header fields")
     _add_common_options(ph)
+    _add_navpath(ph, _PAGE_NAVPATH_HELP)
     _add_page_selectors(ph)
 
     pe = page_subparsers.add_parser(
         "extract", help="one page's raw body bytes (hex / base64 / raw)"
     )
     _add_common_options(pe)
+    _add_navpath(pe, _PAGE_NAVPATH_HELP)
     _add_page_selectors(pe)
     pe.add_argument(
         "--decompress",
@@ -1327,13 +1467,15 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
         "decode", help="decode one page's body and project a view"
     )
     _add_common_options(pd)
+    _add_navpath(pd, _PAGE_NAVPATH_HELP)
     _add_limit(pd)
     _add_page_selectors(pd)
     pd.add_argument(
         "--kind",
         required=False,
         choices=["values", "rle-runs", "levels", "statistics"],
-        help="which decoded view to project",
+        help="project just one view (default: the full faithful decode — "
+        "levels + the values section in its native encoding form)",
     )
 
     # --- show (path-addressed navigation) --------------------------------
@@ -1407,30 +1549,52 @@ def _validate_required_for_run(args: argparse.Namespace) -> None:
             fix=f"parquet-analyzer column show {args.path} --column <name>",
         )
 
-    # Singular page verbs require a column + page index (syntactic; the
-    # conditional --row-group rule is enforced in the handler once the file is
-    # open and the row-group count is known).
+    # Page verbs accept EITHER a navpath positional OR the --column/
+    # --page-index/--row-group selectors, but not both. (The conditional
+    # --row-group-required-when->1 rule is enforced in the handler, once the
+    # file is open and the row-group count is known.)
     if args.verb == "page" and args.noun in ("header", "extract", "decode"):
-        if args.column is None:
-            raise CliError(
-                code="missing_argument",
-                message=f"page {args.noun}: --column is required",
-                fix=f"parquet-analyzer page {args.noun} {args.path} --column <name> "
-                "--page-index 0",
+        given = [
+            name
+            for name, present in (
+                ("--column", args.column is not None),
+                ("--page-index", args.page_index is not None),
+                ("--row-group", args.row_group is not None),
             )
-        if args.page_index is None:
+            if present
+        ]
+        if args.navpath is not None:
+            if given:
+                raise CliError(
+                    code="invalid_arguments",
+                    message=(
+                        f"page {args.noun}: a page path and {', '.join(given)} are "
+                        "mutually exclusive — use one or the other"
+                    ),
+                    fix=f"parquet-analyzer page {args.noun} {args.path} {args.navpath}",
+                )
+        elif args.column is None or args.page_index is None:
             raise CliError(
                 code="missing_argument",
-                message=f"page {args.noun}: --page-index is required",
+                message=(
+                    f"page {args.noun}: pass a page path, or --column and --page-index"
+                ),
                 fix=f"parquet-analyzer page {args.noun} {args.path} "
-                f"--column {args.column} --page-index 0",
+                "row_groups/0/columns/0/pages/0",
             )
-    if (args.verb, args.noun) == ("page", "decode") and args.kind is None:
+    if (
+        args.verb == "page"
+        and args.noun == "list"
+        and args.navpath is not None
+        and (args.column is not None or args.row_group is not None)
+    ):
         raise CliError(
-            code="missing_argument",
-            message="page decode: --kind is required",
-            fix=f"parquet-analyzer page decode {args.path} --column {args.column} "
-            f"--page-index {args.page_index} --kind values",
+            code="invalid_arguments",
+            message=(
+                "page list: a path and --row-group/--column are mutually "
+                "exclusive — use one or the other"
+            ),
+            fix=f"parquet-analyzer page list {args.path} {args.navpath}",
         )
 
 
