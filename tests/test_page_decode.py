@@ -23,6 +23,7 @@ pa = pytest.importorskip("pyarrow")
 pq = pytest.importorskip("pyarrow.parquet")
 
 from parquet_analyzer import (
+    BodyExtent,
     ColumnChunk,
     MissingDictionaryError,
     ParquetFile,
@@ -507,3 +508,111 @@ def test_v2_compressed_values_section(tmp_path):
     page = _data_pages(_col(pf, "s"))[0]
     assert page._t.data_page_header_v2.is_compressed is True
     assert page.physical_values() == [b"x" * 64] * 500
+
+
+# ---------------------------------------------------------------------------
+# Body section extents (byte provenance of each decoded section)
+# ---------------------------------------------------------------------------
+
+
+def _read(path: Path, extent: BodyExtent) -> bytes:
+    return path.read_bytes()[extent.offset : extent.offset + extent.length]
+
+
+def test_v1_compressed_extents_share_body_region(tmp_path):
+    """V1's whole body is one compressed region, so every section extent
+    points at the same on-disk [body_offset, compressed_size) range and
+    differs only in its decompressed sub-range."""
+    path = _flat(
+        tmp_path / "v1s.parquet", data_page_version="1.0", compression="snappy"
+    )
+    pf = ParquetFile(str(path))
+    page = _data_pages(_col(pf, "id"))[0]
+    decoded = page.decode()
+    de = decoded.definition_levels_extent
+    ve = decoded.values_extent
+
+    for ext in (de, ve):
+        assert ext.offset == page.body_offset
+        assert ext.length == page.compressed_size
+        assert ext.compression_codec == "SNAPPY"
+    # The decompressed sub-ranges are contiguous and tile the decompressed body.
+    assert de.offset_uncompressed == 0
+    assert ve.offset_uncompressed == de.offset_uncompressed + de.length_uncompressed
+    assert ve.offset_uncompressed + ve.length_uncompressed == page.uncompressed_size
+    # The on-disk region is real, readable bytes.
+    assert len(_read(path, ve)) == ve.length
+
+
+def test_v1_uncompressed_extents_are_plain_file_ranges(tmp_path):
+    """A V1 page under the UNCOMPRESSED codec is directly file-addressable, so
+    each section gets a plain {offset, length} with no compression fields."""
+    path = _flat(tmp_path / "v1u.parquet", data_page_version="1.0", compression="none")
+    pf = ParquetFile(str(path))
+    page = _data_pages(_col(pf, "id"))[0]
+    decoded = page.decode()
+    de = decoded.definition_levels_extent
+    ve = decoded.values_extent
+
+    for ext in (de, ve):
+        assert ext.compression_codec is None
+        assert ext.offset_uncompressed is None
+        assert ext.length_uncompressed is None
+    # def block then values are contiguous, directly on disk.
+    assert ve.offset == de.offset + de.length
+    assert ve.offset + ve.length == page.body_offset + page.compressed_size
+
+
+def test_v2_level_extents_are_plain_values_extent_matches_header(tmp_path):
+    """V2 stores levels uncompressed on disk (plain extents); the values
+    section is its own on-disk region."""
+    path = _flat(
+        tmp_path / "v2s.parquet", data_page_version="2.0", compression="snappy"
+    )
+    pf = ParquetFile(str(path))
+    page = _data_pages(_col(pf, "id"))[0]
+    h = page._t.data_page_header_v2
+    decoded = page.decode()
+    de = decoded.definition_levels_extent
+    ve = decoded.values_extent
+
+    # def level block: plain, length == header's definition_levels_byte_length.
+    assert de.compression_codec is None
+    assert de.offset == page.body_offset + (h.repetition_levels_byte_length or 0)
+    assert de.length == h.definition_levels_byte_length
+    # values section starts right after the levels.
+    assert ve.offset == de.offset + de.length
+
+
+def test_v2_compressed_values_extent_carries_codec(tmp_path):
+    """A genuinely-compressed V2 values section carries the compressed-region
+    form (codec + decompressed length)."""
+    table = pa.table({"s": pa.array(["x" * 64] * 500)})
+    path = _write(
+        tmp_path / "v2comp.parquet",
+        table,
+        data_page_version="2.0",
+        compression="snappy",
+        use_dictionary=False,
+    )
+    pf = ParquetFile(str(path))
+    page = _data_pages(_col(pf, "s"))[0]
+    assert page._t.data_page_header_v2.is_compressed is True
+    ve = page.decode().values_extent
+    assert ve.compression_codec == "SNAPPY"
+    assert ve.offset_uncompressed == 0
+    assert ve.length_uncompressed > ve.length  # 500x"x"*64 compresses well
+    assert len(_read(path, ve)) == ve.length
+
+
+def test_required_column_has_no_level_extents(tmp_path):
+    """A required, non-repeated column writes no level blocks, so both level
+    extents are None."""
+    schema = pa.schema([pa.field("x", pa.int32(), nullable=False)])
+    table = pa.table({"x": [1, 2, 3]}, schema=schema)
+    path = _write(tmp_path / "req.parquet", table, use_dictionary=False)
+    pf = ParquetFile(str(path))
+    decoded = _data_pages(_col(pf, "x"))[0].decode()
+    assert decoded.repetition_levels_extent is None
+    assert decoded.definition_levels_extent is None
+    assert decoded.values_extent is not None

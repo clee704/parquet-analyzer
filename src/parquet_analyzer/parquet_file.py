@@ -69,6 +69,7 @@ from .decoders import (
 from ._tree_json import to_json_root as _to_json_root
 
 __all__ = [
+    "BodyExtent",
     "ColumnChunk",
     "DecodedPage",
     "MissingDictionaryError",
@@ -246,6 +247,53 @@ class PlainValues:
     values: tuple[Any, ...]
 
 
+@dataclass(frozen=True)
+class BodyExtent:
+    """Where one page-body section's bytes live, as byte ranges.
+
+    ``offset`` / ``length`` are always a **real on-disk file range** (bytes
+    you could read directly). When that on-disk region is *compressed*, the
+    section's bytes only exist after decompressing it, so the extent also
+    carries the compression codec and the section's position within the
+    decompressed region (``offset_uncompressed`` / ``length_uncompressed``).
+
+    Maps directly onto a body-layer tree node's ``_location``:
+
+    - **Uncompressed** (V2 level streams; any section of an UNCOMPRESSED-codec
+      page) — only ``offset`` / ``length`` are set; the file range *is* the
+      section.
+    - **Compressed** (V1 body sections under a real codec; a compressed V2
+      values section) — ``offset`` / ``length`` are the enclosing on-disk
+      compressed region, and ``offset_uncompressed`` / ``length_uncompressed``
+      locate the section within that region's decompressed bytes.
+    """
+
+    offset: int
+    length: int
+    compression_codec: str | None = None
+    offset_uncompressed: int | None = None
+    length_uncompressed: int | None = None
+
+
+def _v1_section_extent(
+    body_offset: int, on_disk_len: int, codec: str, u_start: int, u_end: int
+) -> BodyExtent:
+    """:class:`BodyExtent` for a V1 body section spanning ``[u_start, u_end)``
+    in the decompressed body. The whole V1 body is one on-disk region
+    ``[body_offset, body_offset + on_disk_len)`` under ``codec``; when the
+    codec is ``UNCOMPRESSED`` the section is directly file-addressable,
+    otherwise it carries the compressed-region form."""
+    if codec == "UNCOMPRESSED":
+        return BodyExtent(offset=body_offset + u_start, length=u_end - u_start)
+    return BodyExtent(
+        offset=body_offset,
+        length=on_disk_len,
+        compression_codec=codec,
+        offset_uncompressed=u_start,
+        length_uncompressed=u_end - u_start,
+    )
+
+
 @dataclass
 class DecodedPage:
     """The decoded body of a single V1/V2 data page, faithful to the page's
@@ -300,11 +348,17 @@ class DecodedPage:
     :class:`~parquet_analyzer.decoders.RleBitPackedStream` of dictionary
     indices for a dictionary-encoded page."""
 
-    values_body_offset: int
-    """Byte offset where the values section starts — within the
-    *decompressed* page body for a V1 page (whose levels live inside the
-    compressed body), or within the on-disk page body for a V2 page (whose
-    levels are stored uncompressed ahead of the values)."""
+    repetition_levels_extent: BodyExtent | None
+    """Byte location of the repetition-level block, or ``None`` when the
+    column has no repetition-level block (``max_repetition_level == 0``)."""
+
+    definition_levels_extent: BodyExtent | None
+    """Byte location of the definition-level block, or ``None`` when the
+    column has no definition-level block (``max_definition_level == 0``)."""
+
+    values_extent: BodyExtent
+    """Byte location of the values section (the encoded values / dictionary
+    indices)."""
 
 
 # ---------------------------------------------------------------------------
@@ -1496,18 +1550,41 @@ class Page:
         self._require_rle_level_encoding(h.definition_level_encoding, max_def, "def")
 
         body = _decompress(self.raw_body(), cc.codec, self._t.uncompressed_page_size)
-        rep_levels, offset = _level_stream_v1(
+        rep_levels, def_start = _level_stream_v1(
             body, 0, cc.max_repetition_level, num_values
         )
-        def_levels, offset = _level_stream_v1(body, offset, max_def, num_values)
+        def_levels, values_start = _level_stream_v1(
+            body, def_start, max_def, num_values
+        )
+
+        # V1: the whole body is one on-disk (possibly compressed) region; each
+        # section is a slice of the decompressed body.
+        body_offset = self.body_offset
+        on_disk_len = self._t.compressed_page_size
+        codec = cc.codec
+        rep_extent = (
+            _v1_section_extent(body_offset, on_disk_len, codec, 0, def_start)
+            if rep_levels is not None
+            else None
+        )
+        def_extent = (
+            _v1_section_extent(body_offset, on_disk_len, codec, def_start, values_start)
+            if def_levels is not None
+            else None
+        )
+        values_extent = _v1_section_extent(
+            body_offset, on_disk_len, codec, values_start, len(body)
+        )
         return self._assemble(
             encoding_value=h.encoding,
-            values_buf=body[offset:],
+            values_buf=body[values_start:],
             num_values=num_values,
             num_nulls=_count_nulls(def_levels, max_def),
             rep_levels=rep_levels,
             def_levels=def_levels,
-            values_body_offset=offset,
+            rep_extent=rep_extent,
+            def_extent=def_extent,
+            values_extent=values_extent,
         )
 
     def _decode_v2(self) -> DecodedPage:
@@ -1534,16 +1611,41 @@ class Page:
         )
         values_section = body[rep_len + def_len :]
         # is_compressed defaults to True in the thrift; treat an unset value
-        # as compressed too. Levels are never compressed, so the values'
-        # uncompressed size is the page total minus the level bytes.
-        if h.is_compressed is None or h.is_compressed:
-            values_buf = _decompress(
-                values_section,
-                cc.codec,
-                self._t.uncompressed_page_size - rep_len - def_len,
-            )
+        # as compressed too — but an UNCOMPRESSED codec is never compressed.
+        # Levels are never compressed, so the values' uncompressed size is the
+        # page total minus the level bytes.
+        compressed = (h.is_compressed is None or h.is_compressed) and (
+            cc.codec != "UNCOMPRESSED"
+        )
+        values_uncompressed_len = self._t.uncompressed_page_size - rep_len - def_len
+        if compressed:
+            values_buf = _decompress(values_section, cc.codec, values_uncompressed_len)
         else:
             values_buf = values_section
+
+        # V2: levels are uncompressed on-disk slices; the values section is its
+        # own on-disk region, compressed only when `compressed`.
+        body_offset = self.body_offset
+        rep_extent = (
+            BodyExtent(body_offset, rep_len) if rep_levels is not None else None
+        )
+        def_extent = (
+            BodyExtent(body_offset + rep_len, def_len)
+            if def_levels is not None
+            else None
+        )
+        values_on_disk_off = body_offset + rep_len + def_len
+        values_on_disk_len = self._t.compressed_page_size - rep_len - def_len
+        if compressed:
+            values_extent = BodyExtent(
+                offset=values_on_disk_off,
+                length=values_on_disk_len,
+                compression_codec=cc.codec,
+                offset_uncompressed=0,
+                length_uncompressed=values_uncompressed_len,
+            )
+        else:
+            values_extent = BodyExtent(values_on_disk_off, values_on_disk_len)
         return self._assemble(
             encoding_value=h.encoding,
             values_buf=values_buf,
@@ -1551,7 +1653,9 @@ class Page:
             num_nulls=h.num_nulls,
             rep_levels=rep_levels,
             def_levels=def_levels,
-            values_body_offset=rep_len + def_len,
+            rep_extent=rep_extent,
+            def_extent=def_extent,
+            values_extent=values_extent,
         )
 
     def _assemble(
@@ -1563,7 +1667,9 @@ class Page:
         num_nulls: int,
         rep_levels: RleBitPackedStream | None,
         def_levels: RleBitPackedStream | None,
-        values_body_offset: int,
+        rep_extent: BodyExtent | None,
+        def_extent: BodyExtent | None,
+        values_extent: BodyExtent,
     ) -> DecodedPage:
         """Decode the values section (shared by V1/V2) and assemble the
         :class:`DecodedPage`. ``num_nulls`` values are absent from the
@@ -1579,7 +1685,9 @@ class Page:
             repetition_levels=rep_levels,
             definition_levels=def_levels,
             values=values,
-            values_body_offset=values_body_offset,
+            repetition_levels_extent=rep_extent,
+            definition_levels_extent=def_extent,
+            values_extent=values_extent,
         )
 
     def _decode_values_section(

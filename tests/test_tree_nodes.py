@@ -300,6 +300,10 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
         "repetition_level_encoding",
         "statistics",
         "crc",
+        # tree-view body children (#21)
+        "repetition_levels",
+        "definition_levels",
+        "values",
     },
     "data_page_v2": {
         "_kind",
@@ -316,6 +320,10 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
         "repetition_levels_byte_length",
         "statistics",
         "crc",
+        # tree-view body children (#21)
+        "repetition_levels",
+        "definition_levels",
+        "values",
     },
     "offset_index": {"_kind", "_location"},
     "column_index": {"_kind", "_location"},
@@ -324,6 +332,20 @@ ALLOWED_MATERIALIZED_KEYS: dict[str, set[str]] = {
     # Generic data-page kind used at the stub level (the v1/v2 version is a
     # materialized-only detail). Stub-only: never carries content fields.
     "data_page": {"_kind", "_location"},
+    # Body-layer kinds (#21), tree view only.
+    "rep_block": {"_kind", "_location", "bit_width", "runs", "_value"},
+    "def_block": {"_kind", "_location", "bit_width", "runs", "_value"},
+    # values_block is a branch (its child is plain_values or dict_indices), or
+    # an opaque error node carrying _error when the body can't be decoded.
+    "values_block": {
+        "_kind",
+        "_location",
+        "plain_values",
+        "dict_indices",
+        "_error",
+    },
+    "plain_values": {"_kind", "_location", "_value"},
+    "dict_indices": {"_kind", "_location", "bit_width", "runs", "_value"},
 }
 
 
@@ -452,7 +474,16 @@ def _assert_universal_contract(root: dict, *, view: str) -> None:
         assert "_offset" not in node, f"{kind} node has legacy _offset: {node}"
         assert "_length" not in node, f"{kind} node has legacy _length: {node}"
         loc = node["_location"]
-        assert set(loc.keys()) == {"offset", "length"}, (
+        # _location is either the plain on-disk form {offset, length} or, for a
+        # body-layer node inside a compressed region, the compressed form that
+        # adds the codec + decompressed coordinates.
+        plain_keys = {"offset", "length"}
+        compressed_keys = plain_keys | {
+            "compression_codec",
+            "offset_uncompressed",
+            "length_uncompressed",
+        }
+        assert set(loc.keys()) in (plain_keys, compressed_keys), (
             f"{kind} _location has unexpected keys {set(loc.keys())}: {node}"
         )
         assert isinstance(loc["offset"], int), (
@@ -461,6 +492,10 @@ def _assert_universal_contract(root: dict, *, view: str) -> None:
         assert isinstance(loc["length"], int), (
             f"{kind} _location.length not int: {loc['length']!r}"
         )
+        if "compression_codec" in loc:
+            assert isinstance(loc["compression_codec"], str)
+            assert isinstance(loc["offset_uncompressed"], int)
+            assert isinstance(loc["length_uncompressed"], int)
         allowed = ALLOWED_MATERIALIZED_KEYS[kind] | {"$schema", "_lazy"}
         extra = set(node.keys()) - allowed
         assert not extra, f"{kind} node has unexpected keys {extra}; allowed {allowed}"
@@ -489,6 +524,7 @@ def _assert_universal_contract(root: dict, *, view: str) -> None:
             "row_group",
             "column_chunk",
             "column_chunk_data_region",
+            "values_block",
         }:
             assert "_value" not in node, f"branch kind {kind} should not carry _value"
         if not seen_root:
@@ -1673,3 +1709,149 @@ def test_statistics_fallback_to_deprecated_min_max():
     out = _tree_json._build_statistics(stats, "INT32", {})
     assert out == {"null_count": 0, "min_value": 5, "max_value": 9}
     assert "min" not in out and "max" not in out
+
+
+# ---------------------------------------------------------------------------
+# Body-layer kinds (#21) — tree-view page body decomposition
+# ---------------------------------------------------------------------------
+
+
+def _data_page_node(path, column, *, view="tree", depth="all"):
+    """Materialize the last data page of ``column`` (the data page, past any
+    dictionary page) as a tree node."""
+    pf = ParquetFile(str(path))
+    cc = next(c for c in pf.row_groups[0].columns if ".".join(c.path) == column)
+    return cc.page(cc.num_pages - 1).to_json(view=view, depth=depth)
+
+
+def test_body_v1_dict_page_decomposition(tmp_path):
+    """A V1 dictionary data page decomposes into a def_block leaf and a
+    values_block whose child is a dict_indices leaf; the compressed body
+    gives each a compressed-form _location sharing one on-disk region."""
+    table = pa.table({"name": pa.array(["a", "b", "a", "c", "b"])})
+    path = tmp_path / "v1dict.parquet"
+    pq.write_table(table, path, data_page_version="1.0", compression="snappy")
+    node = _data_page_node(path, "name")
+
+    assert node["repetition_levels"] is None  # flat column
+    df = node["definition_levels"]
+    assert df["_kind"] == "def_block"
+    assert df["_location"]["compression_codec"] == "SNAPPY"
+    assert df["bit_width"] == 1
+    assert isinstance(df["runs"], list) and df["runs"]
+    assert df["_value"] == [1, 1, 1, 1, 1]  # all defined
+
+    vb = node["values"]
+    assert vb["_kind"] == "values_block"
+    assert "plain_values" not in vb
+    di = vb["dict_indices"]
+    assert di["_kind"] == "dict_indices"
+    assert di["bit_width"] >= 1
+    # The index stream resolves (via the dictionary) to the original values;
+    # here the raw indices map a->0, b->1, c->2 in first-seen order.
+    assert di["_value"] == [0, 1, 0, 2, 1]
+    # Runs are content dicts, not child nodes.
+    for run in di["runs"]:
+        assert run["kind"] in ("rle", "bit_packed")
+
+
+def test_body_plain_page_has_plain_values(tmp_path):
+    """A PLAIN data page's values_block child is a plain_values leaf carrying
+    the decoded values as _value."""
+    table = pa.table({"v": pa.array([1.5, 2.5, 3.5], type=pa.float64())})
+    path = tmp_path / "plain.parquet"
+    pq.write_table(table, path, use_dictionary=False, compression="none")
+    node = _data_page_node(path, "v")
+
+    vb = node["values"]
+    assert "dict_indices" not in vb
+    pv = vb["plain_values"]
+    assert pv["_kind"] == "plain_values"
+    assert pv["_value"] == [1.5, 2.5, 3.5]
+
+
+def test_body_v2_levels_have_plain_location(tmp_path):
+    """V2 stores level streams uncompressed on disk, so def_block carries the
+    plain {offset, length} _location (no compression fields)."""
+    table = pa.table({"id": pa.array([1, 2, None, 4], type=pa.int32())})
+    path = tmp_path / "v2.parquet"
+    pq.write_table(table, path, data_page_version="2.0", compression="snappy")
+    node = _data_page_node(path, "id")
+
+    df = node["definition_levels"]
+    assert set(df["_location"].keys()) == {"offset", "length"}
+    assert df["_value"] == [1, 1, 0, 1]  # index 2 is null
+
+
+def test_body_byte_array_value_is_json_safe(tmp_path):
+    """plain_values for a BYTE_ARRAY column must be JSON-safe (bytes are
+    encoded, not raw bytes objects)."""
+    import json
+
+    table = pa.table({"s": pa.array(["hi", "yo"])})
+    path = tmp_path / "ba.parquet"
+    pq.write_table(table, path, use_dictionary=False, compression="none")
+    node = _data_page_node(path, "s")
+    # Must round-trip through json without error.
+    json.dumps(node)
+
+
+def test_body_stub_level_has_lazy_markers(tmp_path):
+    """At the depth where a page is materialized but its body is at stub
+    level, the body children are _lazy stubs carrying only system fields."""
+    table = pa.table({"name": pa.array(["a", "b", "a"])})
+    path = tmp_path / "stub.parquet"
+    pq.write_table(table, path, data_page_version="1.0", compression="snappy")
+    node = _data_page_node(path, "name", depth=1)
+
+    df = node["definition_levels"]
+    assert df["_lazy"] is True
+    assert set(df.keys()) == {"_kind", "_location", "_lazy"}
+    vb = node["values"]
+    assert vb["_lazy"] is True
+    assert "dict_indices" not in vb
+
+
+def test_body_unsupported_encoding_is_opaque_not_fatal(tmp_path):
+    """A page with an out-of-scope encoding renders an opaque values_block
+    carrying _error rather than failing the whole tree render. The opaque
+    node's _location stays a well-formed v3 address even when compressed."""
+    table = pa.table({"x": pa.array(list(range(100)), type=pa.int32())})
+    path = tmp_path / "delta.parquet"
+    pq.write_table(
+        table,
+        path,
+        column_encoding={"x": "DELTA_BINARY_PACKED"},
+        compression="snappy",
+        use_dictionary=False,
+    )
+    pf = ParquetFile(str(path))
+    # Whole-file depth=all must not raise, and every node (including the
+    # opaque values_block) must satisfy the universal contract.
+    full = pf.to_json(view="tree", depth="all")
+    assert full["$schema"] == "parquet-analyzer/v3/tree"
+    _assert_universal_contract(full, view="tree")
+
+    node = _data_page_node(path, "x")
+    vb = node["values"]
+    assert vb["_kind"] == "values_block"
+    assert vb["_error"]["code"] == "encoding_not_supported"
+    assert "plain_values" not in vb and "dict_indices" not in vb
+    assert node["definition_levels"] is None
+    # The body is SNAPPY-compressed, so the opaque _location must carry the
+    # complete compressed form, not just the codec.
+    loc = vb["_location"]
+    assert loc["compression_codec"] == "SNAPPY"
+    assert loc["offset_uncompressed"] == 0
+    assert loc["length_uncompressed"] == node["uncompressed_size"]
+
+
+def test_body_only_in_tree_view_not_layout(tmp_path):
+    """Body children are tree-view only; the layout view keeps the page
+    opaque (compressed V1 sub-blocks would share one on-disk range)."""
+    table = pa.table({"name": pa.array(["a", "b", "a"])})
+    path = tmp_path / "lay.parquet"
+    pq.write_table(table, path, data_page_version="1.0", compression="snappy")
+    node = _data_page_node(path, "name", view="layout")
+    for key in ("repetition_levels", "definition_levels", "values"):
+        assert key not in node
