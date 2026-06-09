@@ -1454,6 +1454,36 @@ class Page:
         self._pf._f.seek(self.body_offset)
         return self._pf._f.read(self._t.compressed_page_size)
 
+    def decompressed_body(self) -> bytes:
+        """Read the page body and return it with compression removed, leaving
+        the encoded values/levels intact (no value decoding).
+
+        Page-type aware: a V1 data page or a dictionary page is one
+        compressed blob, so the whole body is decompressed. A V2 data page
+        stores its repetition/definition level streams uncompressed ahead of
+        an optionally-compressed values section, so the levels are preserved
+        verbatim and only the values section is decompressed — concatenating
+        to the page's ``uncompressed_page_size``.
+
+        Raises:
+            UnsupportedCodecError: the page's codec cannot be decompressed.
+        """
+        codec = self._cc.codec
+        raw = self.raw_body()
+        h2 = self._t.data_page_header_v2
+        if h2 is None:
+            # V1 data page or dictionary page: one (possibly compressed) blob.
+            return _decompress(raw, codec, self._t.uncompressed_page_size)
+        rep_len = h2.repetition_levels_byte_length or 0
+        def_len = h2.definition_levels_byte_length or 0
+        levels = raw[: rep_len + def_len]
+        values = raw[rep_len + def_len :]
+        if h2.is_compressed is None or h2.is_compressed:
+            values = _decompress(
+                values, codec, self._t.uncompressed_page_size - rep_len - def_len
+            )
+        return levels + values
+
     def decode(self) -> DecodedPage:
         """Decode this data page's body — its level streams and its values
         section — into the encoding-faithful :class:`DecodedPage` and cache it.

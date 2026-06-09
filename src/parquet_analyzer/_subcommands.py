@@ -29,6 +29,7 @@ hatch for everything beyond.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import logging
 import pathlib
@@ -37,7 +38,7 @@ from typing import Any, Callable, Iterable, Sequence
 
 from ._core import json_encode
 from . import _navigate
-from .parquet_file import ParquetFile
+from .parquet_file import ParquetFile, PageDecodeError, PlainValues
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,9 @@ logger = logging.getLogger(__name__)
 
 SCHEMA_BASE = "parquet-analyzer/v1"
 
-SUBCOMMAND_VERBS: frozenset[str] = frozenset({"file", "rowgroup", "column", "show"})
+SUBCOMMAND_VERBS: frozenset[str] = frozenset(
+    {"file", "rowgroup", "column", "page", "show"}
+)
 
 
 def _schema_uri(command: str) -> str:
@@ -67,6 +70,10 @@ SCHEMAS: dict[tuple[str, str | None], str] = {
     ("rowgroup", "show"): "rowgroup-show",
     ("column", "list"): "column-list",
     ("column", "show"): "column-show",
+    ("page", "list"): "page-list",
+    ("page", "header"): "page-header",
+    ("page", "extract"): "page-extract",
+    ("page", "decode"): "page-decode",
     ("show", None): "show",
 }
 
@@ -80,13 +87,18 @@ class CliError(Exception):
     """Raised by handlers when the command cannot complete.
 
     Carries the structured fields required by the v1 error contract.
+    ``details`` holds optional extra fields (e.g. the unsupported
+    ``encoding`` / ``codec``) that are merged into the emitted error object.
     """
 
-    def __init__(self, code: str, message: str, fix: str) -> None:
+    def __init__(
+        self, code: str, message: str, fix: str, details: dict | None = None
+    ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.fix = fix
+        self.details = details or {}
 
 
 def emit_error(err: CliError, stream=None) -> None:
@@ -98,6 +110,7 @@ def emit_error(err: CliError, stream=None) -> None:
         "error": err.code,
         "message": err.message,
         "fix": err.fix,
+        **err.details,
     }
     stream.write(json.dumps(payload, default=json_encode) + "\n")
 
@@ -638,6 +651,455 @@ def handle_column_show(args: argparse.Namespace) -> None:
     _emit_json(payload, args.output)
 
 
+# ---------------------------------------------------------------------------
+# Page subcommands (#21) — the page-walk / body-decode escape-hatch surface
+# ---------------------------------------------------------------------------
+
+
+def _resolve_page_column(
+    pf: ParquetFile, footer: dict, column: str, row_group: int | None, noun: str
+) -> tuple[int, int, Any]:
+    """Resolve ``(row_group_index, col_index, ColumnChunk)`` for a singular
+    page verb. Enforces the ``--row-group`` required-when-multiple rule: a file
+    with one row group defaults to 0; a file with several requires an explicit
+    ``--row-group`` rather than silently defaulting."""
+    n_rg = len(footer["row_groups"])
+    if row_group is None:
+        if n_rg <= 1:
+            row_group = 0
+        else:
+            raise CliError(
+                code="missing_argument",
+                message=(
+                    f"page {noun}: --row-group is required because the file has "
+                    f"{n_rg} row groups"
+                ),
+                fix=(
+                    f"parquet-analyzer page {noun} {pf.path} --column {column} "
+                    f"--page-index 0 --row-group 0"
+                ),
+            )
+    if not (0 <= row_group < n_rg):
+        raise CliError(
+            code="row_group_out_of_range",
+            message=(
+                f"row group {row_group} requested but file has {n_rg} row group(s)"
+            ),
+            fix=f"parquet-analyzer rowgroup list {pf.path}",
+        )
+    matches = _select_columns_by_name(footer, column, row_group)
+    if not matches:
+        available = sorted(_path_display(p) for p in _all_column_paths(footer))
+        raise CliError(
+            code="column_not_found",
+            message=(
+                f"column {column!r} not found in row group {row_group}. "
+                f"Available: {', '.join(available)}"
+            ),
+            fix=f"parquet-analyzer column list {pf.path}",
+        )
+    path = _path_tuple(matches[0][1])
+    rg_wrapper = pf.row_groups[row_group]
+    col_idx, cc = next(
+        (i, c) for i, c in enumerate(rg_wrapper.columns) if c.path == path
+    )
+    return row_group, col_idx, cc
+
+
+def _chunk_has_leading_dict(cc: Any) -> bool:
+    """Whether the chunk's first page is a dictionary page. Prefers the
+    footer's ``dictionary_page_offset`` on the OffsetIndex fast path (the
+    indexing model the core uses there); on the walk path it inspects the
+    actual first page kind, so older writers that carry a dictionary page but
+    leave ``dictionary_page_offset`` unset are still classified correctly."""
+    if cc.has_offset_index:
+        return bool(cc.dictionary_page_offset)
+    pages = cc.pages()
+    return bool(pages) and pages[0]._kind == "dictionary_page"
+
+
+def _resolve_page(
+    cc: Any, page_index: int, noun: str, path_str: str, column: str
+) -> tuple[Any, int, int | None]:
+    """Resolve one page by index (supporting negatives), returning
+    ``(Page, page_index, data_page_index)``."""
+    n = cc.num_pages
+    idx = page_index + n if page_index < 0 else page_index
+    if not 0 <= idx < n:
+        raise CliError(
+            code="page_out_of_range",
+            message=(
+                f"page index {page_index} out of range; column chunk has {n} pages"
+            ),
+            fix=f"parquet-analyzer page list {path_str} --column {column}",
+        )
+    page = cc.page(idx)
+    if page._kind == "dictionary_page":
+        data_page_index: int | None = None
+    else:
+        data_page_index = idx - (1 if _chunk_has_leading_dict(cc) else 0)
+    return page, idx, data_page_index
+
+
+def _cap(values: list, limit: int | None) -> tuple[list, bool]:
+    """Apply ``--limit`` to a value list, returning ``(capped, truncated)``.
+    Mirrors :func:`_wrap_list`'s truncation rule so the page surface caps
+    list- and decode-shaped output consistently."""
+    if limit is not None and limit < len(values):
+        return values[:limit], True
+    return values, False
+
+
+def handle_page_list(args: argparse.Namespace) -> None:
+    """List a column's (or every column's) pages as lightweight stubs. This is
+    the page-walk surface — cheap when the writer emitted an OffsetIndex (the
+    extents come from it), otherwise it walks the per-page headers."""
+    with ParquetFile(args.path) as pf:
+        footer = pf.footer
+        n_rg = len(footer["row_groups"])
+        if args.row_group is not None and not (0 <= args.row_group < n_rg):
+            raise CliError(
+                code="row_group_out_of_range",
+                message=(
+                    f"row group {args.row_group} requested but file has "
+                    f"{n_rg} row group(s)"
+                ),
+                fix=f"parquet-analyzer rowgroup list {args.path}",
+            )
+        rg_indices = [args.row_group] if args.row_group is not None else range(n_rg)
+        items: list[dict] = []
+        for rg_idx in rg_indices:
+            rg_wrapper = pf.row_groups[rg_idx]
+            for col_idx, cc in enumerate(rg_wrapper.columns):
+                if args.column is not None and _path_display(cc.path) != args.column:
+                    continue
+                items.extend(_page_list_items(cc, rg_idx, col_idx))
+    payload = _wrap_list(items, args.limit, "page-list")
+    if args.row_group is not None:
+        payload["row_group"] = args.row_group
+    if args.column is not None:
+        payload["column"] = args.column
+    _emit_json(payload, args.output)
+
+
+def _page_list_items(cc: Any, rg_idx: int, col_idx: int) -> list[dict]:
+    """Per-page stub items for one column chunk. Uses the OffsetIndex stubs
+    (no header reads) when available, else walks the page headers.
+
+    ``data_page_index`` is assigned by a running counter over the enumerated
+    pages, so it stays correct regardless of how the dictionary page is
+    signalled (footer offset vs. an inline header on older writers)."""
+    base = f"row_groups/{rg_idx}/columns/{col_idx}"
+    stubs = cc.page_stubs()
+    if stubs is not None:
+        descriptors = [(s.kind, s.offset, s.length, s.first_row_index) for s in stubs]
+    else:
+        descriptors = [
+            (
+                "dictionary_page" if p._kind == "dictionary_page" else "data_page",
+                p.offset,
+                p._length,
+                None,
+            )
+            for p in cc.pages()
+        ]
+    out: list[dict] = []
+    data_index = 0
+    for page_index, (kind, offset, length, first_row_index) in enumerate(descriptors):
+        if kind == "dictionary_page":
+            data_page_index: int | None = None
+        else:
+            data_page_index = data_index
+            data_index += 1
+        out.append(
+            _page_list_item(
+                cc,
+                rg_idx,
+                base,
+                page_index,
+                kind,
+                offset,
+                length,
+                first_row_index,
+                data_page_index,
+            )
+        )
+    return out
+
+
+def _page_list_item(
+    cc: Any,
+    rg_idx: int,
+    base: str,
+    page_index: int,
+    kind: str,
+    offset: int,
+    length: int,
+    first_row_index: int | None,
+    data_page_index: int | None,
+) -> dict:
+    """One ``page list`` stub. ``offset`` + ``length`` address the page's full
+    on-disk byte range — ``length`` is the whole page span (thrift header plus
+    compressed body), matching the tree view's ``_location``. (Contrast
+    ``page header``'s ``compressed_size``, which is the body-only thrift
+    field.)"""
+    return {
+        "row_group": rg_idx,
+        "column": _path_display(cc.path),
+        "_path": f"{base}/pages/{page_index}",
+        "page_index": page_index,
+        "data_page_index": data_page_index,
+        "kind": kind,
+        "offset": offset,
+        "length": length,
+        "first_row_index": first_row_index,
+    }
+
+
+def _page_header_fields(page: Any) -> dict:
+    """The curated per-page header fields, version-aware."""
+    out: dict[str, Any] = {
+        "kind": "dictionary_page" if page._kind == "dictionary_page" else "data_page",
+        "page_type": page.type,
+        "offset": page.offset,
+        "header_size": page.header_size,
+        "compressed_size": page.compressed_size,
+        "uncompressed_size": page.uncompressed_size,
+        "num_values": page.num_values,
+        "encoding": page.encoding,
+    }
+    h1 = page._t.data_page_header
+    h2 = page._t.data_page_header_v2
+    if h1 is not None:
+        out["definition_level_encoding"] = _enc_name(h1.definition_level_encoding)
+        out["repetition_level_encoding"] = _enc_name(h1.repetition_level_encoding)
+        out["statistics"] = _page_stats(page, h1)
+    elif h2 is not None:
+        out["num_nulls"] = h2.num_nulls
+        out["num_rows"] = h2.num_rows
+        out["is_compressed"] = h2.is_compressed
+        out["definition_levels_byte_length"] = h2.definition_levels_byte_length
+        out["repetition_levels_byte_length"] = h2.repetition_levels_byte_length
+        out["statistics"] = _page_stats(page, h2)
+    return out
+
+
+def _enc_name(value: int) -> str:
+    from .parquet_file import _ENCODING_NAMES
+
+    return _ENCODING_NAMES.get(value, str(value))
+
+
+def _page_stats(page: Any, header: Any) -> Any:
+    """Decode a page header's statistics against the owning column's type."""
+    from ._tree_json import _page_statistics
+
+    return _page_statistics(header, page)
+
+
+def handle_page_header(args: argparse.Namespace) -> None:
+    with ParquetFile(args.path) as pf:
+        footer = pf.footer
+        rg_idx, _col_idx, cc = _resolve_page_column(
+            pf, footer, args.column, args.row_group, "header"
+        )
+        page, page_index, data_page_index = _resolve_page(
+            cc, args.page_index, "header", args.path, args.column
+        )
+        payload = {
+            "$schema": _schema_uri("page-header"),
+            "row_group": rg_idx,
+            "column": _path_display(cc.path),
+            "page_index": page_index,
+            "data_page_index": data_page_index,
+            **_page_header_fields(page),
+        }
+    _emit_json(payload, args.output)
+
+
+def handle_page_extract(args: argparse.Namespace) -> None:
+    with ParquetFile(args.path) as pf:
+        footer = pf.footer
+        rg_idx, _col_idx, cc = _resolve_page_column(
+            pf, footer, args.column, args.row_group, "extract"
+        )
+        page, page_index, data_page_index = _resolve_page(
+            cc, args.page_index, "extract", args.path, args.column
+        )
+        try:
+            data = page.decompressed_body() if args.decompress else page.raw_body()
+        except PageDecodeError as exc:
+            raise CliError(
+                exc.code,
+                str(exc),
+                fix=f"parquet-analyzer page extract {args.path} --column {args.column} "
+                f"--page-index {args.page_index}",
+                details=_decode_error_details(exc),
+            ) from exc
+
+    if args.as_format == "raw":
+        # The deliberate JSON-contract escape hatch: write the bytes verbatim.
+        if args.output:
+            pathlib.Path(args.output).write_bytes(data)
+        else:
+            sys.stdout.buffer.write(data)
+        return
+
+    encoded = (
+        data.hex()
+        if args.as_format == "hex"
+        else base64.b64encode(data).decode("ascii")
+    )
+    payload = {
+        "$schema": _schema_uri("page-extract"),
+        "row_group": rg_idx,
+        "column": _path_display(cc.path),
+        "page_index": page_index,
+        "data_page_index": data_page_index,
+        "decompressed": args.decompress,
+        "encoding": args.as_format,
+        "byte_length": len(data),
+        "data": encoded,
+    }
+    _emit_json(payload, args.output)
+
+
+def _decode_error_details(exc: PageDecodeError) -> dict:
+    """The extra error fields a :class:`PageDecodeError` carries, for the
+    JSON error contract (e.g. ``encoding`` / ``codec``)."""
+    details: dict[str, Any] = {}
+    for attr in ("encoding", "codec", "page_type"):
+        if hasattr(exc, attr):
+            details[attr] = getattr(exc, attr)
+    return details
+
+
+def _decode_cli_error(exc: PageDecodeError, args: Any) -> CliError:
+    """Map a :class:`PageDecodeError` onto the structured CLI error contract,
+    pointing the ``fix`` at ``page extract`` (the raw-bytes fallback)."""
+    return CliError(
+        exc.code,
+        str(exc),
+        fix=f"parquet-analyzer page extract {args.path} --column {args.column} "
+        f"--page-index {args.page_index} --as hex",
+        details=_decode_error_details(exc),
+    )
+
+
+def _run_dict(run: Any) -> dict:
+    from .decoders import RleRun
+
+    if isinstance(run, RleRun):
+        return {"kind": "rle", "value": run.value, "length": run.length}
+    return {"kind": "bit_packed", "length": run.length, "values": list(run.values)}
+
+
+def _level_view(stream: Any, num_values: int, limit: int | None) -> dict | None:
+    """Curated view of a level stream (`rep`/`def`), or ``None`` when the
+    column has no such level block."""
+    if stream is None:
+        return None
+    levels, truncated = _cap(list(stream.values), limit)
+    return {
+        "bit_width": stream.bit_width,
+        "total": len(stream.values),
+        "returned": len(levels),
+        "truncated": truncated,
+        "levels": levels,
+    }
+
+
+def handle_page_decode(args: argparse.Namespace) -> None:
+    with ParquetFile(args.path) as pf:
+        footer = pf.footer
+        rg_idx, _col_idx, cc = _resolve_page_column(
+            pf, footer, args.column, args.row_group, "decode"
+        )
+        page, page_index, data_page_index = _resolve_page(
+            cc, args.page_index, "decode", args.path, args.column
+        )
+        result = _decode_view(page, args.kind, args.limit, args)
+
+        payload = {
+            "$schema": _schema_uri("page-decode"),
+            "row_group": rg_idx,
+            "column": _path_display(cc.path),
+            "page_index": page_index,
+            "data_page_index": data_page_index,
+            "kind": args.kind,
+            "encoding": page.encoding,
+            **result,
+        }
+    _emit_json(payload, args.output)
+
+
+def _decode_view(page: Any, kind: str, limit: int | None, args: Any) -> dict:
+    """Project one decoded view of a page. ``statistics`` is header-only (no
+    body decode); the others decode the body and map any decode failure to the
+    JSON error contract."""
+    if kind == "statistics":
+        header = page._t.data_page_header or page._t.data_page_header_v2
+        if header is None:
+            raise CliError(
+                code="page_type_not_supported",
+                message="statistics are only available on V1/V2 data pages",
+                fix=f"parquet-analyzer page header {args.path} --column {args.column} "
+                f"--page-index {args.page_index}",
+            )
+        return {"statistics": _page_stats(page, header)}
+
+    try:
+        decoded = page.decode()
+    except PageDecodeError as exc:
+        raise _decode_cli_error(exc, args) from exc
+
+    if kind == "values":
+        try:
+            physical = page.physical_values()
+        except PageDecodeError as exc:
+            # physical_values() resolves dictionary indices through the sibling
+            # dictionary page, which can fail independently of decode() — keep
+            # that failure on the JSON error contract too.
+            raise _decode_cli_error(exc, args) from exc
+        values, truncated = _cap(physical, limit)
+        return {
+            "total": decoded.num_values - decoded.num_nulls,
+            "returned": len(values),
+            "truncated": truncated,
+            "num_nulls": decoded.num_nulls,
+            "values": values,
+        }
+    if kind == "levels":
+        return {
+            "definition_levels": _level_view(
+                decoded.definition_levels, decoded.num_values, limit
+            ),
+            "repetition_levels": _level_view(
+                decoded.repetition_levels, decoded.num_values, limit
+            ),
+        }
+    # kind == "rle-runs"
+    section = decoded.values
+    if isinstance(section, PlainValues):
+        raise CliError(
+            code="kind_not_available",
+            message=(
+                "rle-runs is only available for dictionary-encoded pages; this "
+                f"page uses {decoded.encoding} (no RLE/bit-packed run structure)"
+            ),
+            fix=f"parquet-analyzer page decode {args.path} --column {args.column} "
+            f"--page-index {args.page_index} --kind values",
+        )
+    runs, truncated = _cap([_run_dict(r) for r in section.runs], limit)
+    return {
+        "bit_width": section.bit_width,
+        "total": len(section.runs),
+        "returned": len(runs),
+        "truncated": truncated,
+        "runs": runs,
+    }
+
+
 def handle_show(args: argparse.Namespace) -> None:
     with ParquetFile(args.path) as pf:
         try:
@@ -659,6 +1121,10 @@ HANDLERS: dict[tuple[str, str | None], Callable[[argparse.Namespace], None]] = {
     ("rowgroup", "show"): handle_rowgroup_show,
     ("column", "list"): handle_column_list,
     ("column", "show"): handle_column_show,
+    ("page", "list"): handle_page_list,
+    ("page", "header"): handle_page_header,
+    ("page", "extract"): handle_page_extract,
+    ("page", "decode"): handle_page_decode,
     ("show", None): handle_show,
 }
 
@@ -692,6 +1158,30 @@ def _add_limit(parser: argparse.ArgumentParser) -> None:
         type=int,
         default=None,
         help="cap the number of items returned (default: all). truncation is reported in the output object.",
+    )
+
+
+def _add_page_selectors(parser: argparse.ArgumentParser) -> None:
+    """``--column`` / ``--page-index`` / ``--row-group`` for the singular page
+    verbs. ``--column`` and ``--page-index`` are optional at parse time so
+    ``--schema-version`` can short-circuit; the run-time check enforces them."""
+    parser.add_argument(
+        "--column",
+        required=False,
+        help="column name (dot-joined for nested fields, e.g. 'list.element')",
+    )
+    parser.add_argument(
+        "--page-index",
+        type=int,
+        default=None,
+        help="page index over the full page order (dictionary page first, then "
+        "data pages); negative indexes from the end",
+    )
+    parser.add_argument(
+        "--row-group",
+        type=int,
+        default=None,
+        help="row group (0-based); required when the file has multiple row groups",
     )
 
 
@@ -789,6 +1279,67 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
         help="restrict to this row group (0-based); default: all row groups",
     )
 
+    # --- page (page-walk / body-decode escape hatch) ---------------------
+    page_parser = verb_subparsers.add_parser(
+        "page", help="page-level inspection (list / header / extract / decode)"
+    )
+    page_subparsers = page_parser.add_subparsers(
+        dest="noun", metavar="NOUN", required=True
+    )
+    page_subparsers.parser_class = _JsonErrorParser  # type: ignore[attr-defined]
+
+    pl = page_subparsers.add_parser(
+        "list", help="list a column's (or every column's) pages as stubs"
+    )
+    _add_common_options(pl)
+    _add_limit(pl)
+    pl.add_argument(
+        "--column",
+        default=None,
+        help="restrict to this column (dot-joined); default: all columns",
+    )
+    pl.add_argument(
+        "--row-group",
+        type=int,
+        default=None,
+        help="restrict to this row group (0-based); default: all row groups",
+    )
+
+    ph = page_subparsers.add_parser("header", help="one page's header fields")
+    _add_common_options(ph)
+    _add_page_selectors(ph)
+
+    pe = page_subparsers.add_parser(
+        "extract", help="one page's raw body bytes (hex / base64 / raw)"
+    )
+    _add_common_options(pe)
+    _add_page_selectors(pe)
+    pe.add_argument(
+        "--decompress",
+        action="store_true",
+        help="decompress the body before emitting (page-type aware)",
+    )
+    pe.add_argument(
+        "--as",
+        dest="as_format",
+        choices=["hex", "base64", "raw"],
+        default="hex",
+        help="byte encoding; 'raw' writes bytes to stdout/-o with no JSON wrapper",
+    )
+
+    pd = page_subparsers.add_parser(
+        "decode", help="decode one page's body and project a view"
+    )
+    _add_common_options(pd)
+    _add_limit(pd)
+    _add_page_selectors(pd)
+    pd.add_argument(
+        "--kind",
+        required=False,
+        choices=["values", "rle-runs", "levels", "statistics"],
+        help="which decoded view to project",
+    )
+
     # --- show (path-addressed navigation) --------------------------------
     show_parser = verb_subparsers.add_parser(
         "show",
@@ -858,6 +1409,32 @@ def _validate_required_for_run(args: argparse.Namespace) -> None:
             code="missing_argument",
             message="column show: --column is required",
             fix=f"parquet-analyzer column show {args.path} --column <name>",
+        )
+
+    # Singular page verbs require a column + page index (syntactic; the
+    # conditional --row-group rule is enforced in the handler once the file is
+    # open and the row-group count is known).
+    if args.verb == "page" and args.noun in ("header", "extract", "decode"):
+        if args.column is None:
+            raise CliError(
+                code="missing_argument",
+                message=f"page {args.noun}: --column is required",
+                fix=f"parquet-analyzer page {args.noun} {args.path} --column <name> "
+                "--page-index 0",
+            )
+        if args.page_index is None:
+            raise CliError(
+                code="missing_argument",
+                message=f"page {args.noun}: --page-index is required",
+                fix=f"parquet-analyzer page {args.noun} {args.path} "
+                f"--column {args.column} --page-index 0",
+            )
+    if (args.verb, args.noun) == ("page", "decode") and args.kind is None:
+        raise CliError(
+            code="missing_argument",
+            message="page decode: --kind is required",
+            fix=f"parquet-analyzer page decode {args.path} --column {args.column} "
+            f"--page-index {args.page_index} --kind values",
         )
 
 

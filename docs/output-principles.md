@@ -11,7 +11,7 @@ and the `show` navigation verb.
 > additional parse of an index thrift the writer already emitted
 > (OffsetIndex, ColumnIndex, BloomFilter header). Nothing in v1 may
 > walk per-page thrift headers or read page bodies — that's the
-> `page` subcommand surface (tracked in #21).
+> `page` subcommand surface.
 
 This is the one hard rule. It exists because the AI-agent and
 human-investigation use cases that motivate this tool need a
@@ -98,11 +98,11 @@ Rules for these flags:
   `<field>_known: false`, the post-walk output flips it to
   `true` (same honesty pattern, just both states now reachable).
 
-The page-subcommand work tracked in #21 lands the page-walk
-infrastructure that makes the **verb-noun** flags possible (`column show
---walk-pages`, etc.). The **navigation surface got there first**: `show
---walk-pages` (see below) already provides a landed CLI escape hatch for
-page enumeration, so the page walk is no longer Python-API-only.
+The `page` subcommand surface lands the page-walk infrastructure that
+makes the **verb-noun** flags possible (`column show --walk-pages`, etc.).
+The **navigation surface got there first**: `show --walk-pages` (see below)
+already provides a landed CLI escape hatch for page enumeration, so the page
+walk is no longer Python-API-only.
 
 ## The `show` navigation surface
 
@@ -146,24 +146,24 @@ Because each command is a fresh process, the parsed footer is cached on
 disk (content-addressed; see the README) so an interactive sequence of
 bounded steps stays fast — the footer parse is paid once, not per step.
 
-## What this implies for the page subcommands (#21)
+## How this applies to the page subcommands (#21)
 
-When the page-level subcommands land:
+The page-level subcommands implement this contract one level deeper:
 
-- `page header` / `page list` follow the same shape one level deeper:
-  page header fields are direct, computed offsets are trivial
-  derivations.
+- `page header` / `page list` follow the same shape: page header fields
+  are direct, computed offsets are trivial derivations, and `page list`
+  uses the OffsetIndex when present (one bounded index parse) before
+  falling back to a header walk.
 - `page extract` and `page decode` cross into body access and are
   explicitly opt-in by the verb name. They're allowed because the
   consumer is asking for exactly that work.
 - The **verb-noun** per-subcommand escape-hatch flags (`column show
   --walk-pages`, and the equivalent on `column list` / `rowgroup show`)
-  land there, since that work is when the page-walk CLI infrastructure
-  becomes available. (`show --walk-pages` on the navigation surface
-  already landed ahead of it — same flag, same cost contract.)
-- `num_pages_known: true` becomes a reachable state on
-  `--walk-pages` invocations (in addition to the existing
-  OffsetIndex-present case).
+  build on the same page-walk infrastructure. (`show --walk-pages` on the
+  navigation surface already landed ahead of them — same flag, same cost
+  contract.)
+- `num_pages_known: true` becomes a reachable state on `--walk-pages`
+  invocations (in addition to the existing OffsetIndex-present case).
 
 The contract — footer-bounded and walk-free by default, with the
 `page` surface and per-subcommand opt-in flags as the explicit
