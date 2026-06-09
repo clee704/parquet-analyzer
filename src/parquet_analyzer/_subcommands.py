@@ -883,6 +883,22 @@ def _page_list_scope(
             ),
             fix=f"parquet-analyzer rowgroup list {args.path}",
         )
+    if args.column is not None and not _select_columns_by_name(
+        pf.footer, args.column, args.row_group
+    ):
+        # Validate a named column the same way the singular verbs do — and the
+        # same way this command already validates --row-group — rather than
+        # silently returning an empty listing for a typo'd name.
+        scope = f" in row group {args.row_group}" if args.row_group is not None else ""
+        available = sorted(_path_display(p) for p in _all_column_paths(pf.footer))
+        raise CliError(
+            code="column_not_found",
+            message=(
+                f"column {args.column!r} not found{scope}. "
+                f"Available: {', '.join(available)}"
+            ),
+            fix=f"parquet-analyzer column list {args.path}",
+        )
     return args.row_group, None, args.column
 
 

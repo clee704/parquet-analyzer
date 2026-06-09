@@ -220,10 +220,21 @@ def test_page_list_row_group_out_of_range(multi_rg, capsys):
     assert err["error"] == "row_group_out_of_range"
 
 
-def test_page_list_unknown_column_filters_to_empty(dict_v1, capsys):
-    payload = _run(["page", "list", dict_v1, "--column", "nope"], capsys)
-    assert payload["items"] == []
-    assert payload["total"] == 0
+def test_page_list_unknown_column_errors(dict_v1, capsys):
+    """An unknown --column is a typo'd request, not an empty filter — it errors
+    with column_not_found (consistent with how page list already validates
+    --row-group, and with the singular page verbs)."""
+    err = _run_err(["page", "list", dict_v1, "--column", "nope"], capsys)
+    assert err["error"] == "column_not_found"
+    assert "Available:" in err["message"]
+
+
+def test_page_list_unknown_column_in_row_group_errors(multi_rg, capsys):
+    err = _run_err(
+        ["page", "list", multi_rg, "--column", "nope", "--row-group", "1"], capsys
+    )
+    assert err["error"] == "column_not_found"
+    assert "in row group 1" in err["message"]
 
 
 def test_page_list_limit_truncates(dict_v1, capsys):
@@ -1216,3 +1227,17 @@ def test_page_out_of_range_fix_keeps_row_group(multi_rg, capsys):
     )
     assert err["error"] == "page_out_of_range"
     assert "--row-group 2" in err["fix"]
+
+
+def test_page_list_valid_column_filters_multi_column_file(tmp_path, capsys):
+    """`--column` on a multi-column file lists only that column's pages
+    (exercising the per-column filter skip)."""
+    path = tmp_path / "two_col_filter.parquet"
+    pq.write_table(
+        pa.table({"a": [1, 2, 3], "b": ["x", "y", "z"]}),
+        path,
+        use_dictionary=False,
+    )
+    payload = _run(["page", "list", path, "--column", "b"], capsys)
+    assert payload["column"] == "b"
+    assert {i["column"] for i in payload["items"]} == {"b"}
