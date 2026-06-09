@@ -994,7 +994,7 @@ def _run_dict(run: Any) -> dict:
     return {"kind": "bit_packed", "length": run.length, "values": list(run.values)}
 
 
-def _level_view(stream: Any, num_values: int, limit: int | None) -> dict | None:
+def _level_view(stream: Any, limit: int | None) -> dict | None:
     """Curated view of a level stream (`rep`/`def`), or ``None`` when the
     column has no such level block."""
     if stream is None:
@@ -1071,12 +1071,8 @@ def _decode_view(page: Any, kind: str, limit: int | None, args: Any) -> dict:
         }
     if kind == "levels":
         return {
-            "definition_levels": _level_view(
-                decoded.definition_levels, decoded.num_values, limit
-            ),
-            "repetition_levels": _level_view(
-                decoded.repetition_levels, decoded.num_values, limit
-            ),
+            "definition_levels": _level_view(decoded.definition_levels, limit),
+            "repetition_levels": _level_view(decoded.repetition_levels, limit),
         }
     # kind == "rle-runs"
     section = decoded.values
