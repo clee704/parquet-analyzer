@@ -1076,3 +1076,41 @@ def test_page_list_column_navpath_selects_one_of_many(tmp_path, capsys):
     payload = _run(["page", "list", path, "row_groups/0/columns/1"], capsys)
     assert payload["column"] == "b"
     assert {i["column"] for i in payload["items"]} == {"b"}
+
+
+def test_page_decode_error_fix_keeps_row_group(tmp_path, capsys):
+    """On a multi-row-group file selected by flags, an error `fix` carries the
+    full re-selection — including --row-group — so it is runnable as-is."""
+    path = tmp_path / "multirg_delta.parquet"
+    pq.write_table(
+        pa.table({"x": pa.array(list(range(80)), type=pa.int32())}),
+        path,
+        row_group_size=20,
+        column_encoding={"x": "DELTA_BINARY_PACKED"},
+        use_dictionary=False,
+    )
+    err = _run_err(
+        [
+            "page",
+            "decode",
+            path,
+            "--column",
+            "x",
+            "--page-index",
+            "0",
+            "--row-group",
+            "2",
+        ],
+        capsys,
+    )
+    assert err["error"] == "encoding_not_supported"
+    assert "--row-group 2" in err["fix"]
+
+
+def test_page_list_page_path_fix_is_runnable(dict_v1, capsys):
+    """Rejecting a page path on `page list` suggests a runnable command (a
+    singular verb on that page), not the same invalid `page list` invocation."""
+    err = _run_err(["page", "list", dict_v1, "row_groups/0/columns/0/pages/0"], capsys)
+    assert err["error"] == "invalid_path"
+    assert "page decode" in err["fix"]
+    assert "page list" not in err["fix"]

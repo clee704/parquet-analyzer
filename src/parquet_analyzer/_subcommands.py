@@ -797,6 +797,8 @@ def _select_page_singular(
         cc, args.page_index, noun, args.path, args.column
     )
     selector = f"--column {args.column} --page-index {page_index}"
+    if args.row_group is not None:
+        selector += f" --row-group {args.row_group}"
     return cc, page, rg_idx, col_idx, page_index, data_page_index, selector
 
 
@@ -862,7 +864,7 @@ def _page_list_scope(
                 f"(…/columns/<k>); {args.navpath!r} addresses a {kind}. Use "
                 "page header/extract/decode for a page path"
             ),
-            fix=f"parquet-analyzer page list {args.path} {args.navpath}",
+            fix=f"parquet-analyzer page decode {args.path} {args.navpath}",
         )
     if args.row_group is not None and not (0 <= args.row_group < n_rg):
         raise CliError(
