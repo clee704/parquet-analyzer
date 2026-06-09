@@ -729,7 +729,6 @@ def _data_page_index_for(cc: Any, page: Any, idx: int) -> int | None:
 def _resolve_page(
     cc: Any,
     page_index: int,
-    noun: str,
     path_str: str,
     column: str,
     row_group: int | None,
@@ -803,7 +802,7 @@ def _select_page_singular(
         pf, pf.footer, args.column, args.row_group, noun
     )
     page, page_index, data_page_index = _resolve_page(
-        cc, args.page_index, noun, args.path, args.column, args.row_group
+        cc, args.page_index, args.path, args.column, args.row_group
     )
     selector = f"--column {args.column} --page-index {page_index}"
     if args.row_group is not None:

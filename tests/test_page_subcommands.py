@@ -954,10 +954,15 @@ def test_page_navpath_page_out_of_range(dict_v1, capsys):
 
 
 def test_page_navpath_non_page_rejected(dict_v1, capsys):
-    """A singular page verb needs a page path, not a column-chunk path."""
+    """A singular page verb needs a page path, not a column-chunk path. The
+    suggested fix (`page list <column-chunk>`) must itself be runnable."""
     err = _run_err(["page", "decode", dict_v1, "row_groups/0/columns/0"], capsys)
     assert err["error"] == "invalid_path"
     assert "page path" in err["message"]
+    assert "page list" in err["fix"]
+    # The column-chunk fix resolves (the row-group case is covered separately).
+    listed = _run(["page", "list", dict_v1, "row_groups/0/columns/0"], capsys)
+    assert listed["column"] == "s"
 
 
 def test_page_navpath_conflicts_with_selectors(dict_v1, capsys):
@@ -1241,3 +1246,26 @@ def test_page_list_valid_column_filters_multi_column_file(tmp_path, capsys):
     payload = _run(["page", "list", path, "--column", "b"], capsys)
     assert payload["column"] == "b"
     assert {i["column"] for i in payload["items"]} == {"b"}
+
+
+def test_page_list_ambiguous_column(tmp_path, capsys):
+    """`page list --column` surfaces ambiguous_column when a name matches more
+    than one distinct schema path (a top-level field literally named ``a.b``
+    and a struct ``a`` with child ``b`` both display as ``a.b``)."""
+    path = tmp_path / "ambiguous.parquet"
+    pq.write_table(
+        pa.table(
+            {
+                "a.b": pa.array([1, 2, 3], type=pa.int32()),
+                "a": pa.array(
+                    [{"b": 9}, {"b": 8}, {"b": 7}],
+                    type=pa.struct([("b", pa.int32())]),
+                ),
+            }
+        ),
+        path,
+        use_dictionary=False,
+    )
+    err = _run_err(["page", "list", path, "--column", "a.b"], capsys)
+    assert err["error"] == "ambiguous_column"
+    assert "multiple distinct paths" in err["message"]
