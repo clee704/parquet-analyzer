@@ -288,11 +288,12 @@ def test_column_show_entries_carry_show_paths(multi_rg_parquet, capsys):
 def test_subcommand_column_show_no_offset_index_marks_pages_unknown(
     sample_parquet, capsys
 ):
-    """pyarrow default writes no page index — `num_pages` must NOT be reported.
+    """pyarrow default writes no page index — `num_pages` must NOT be reported
+    by default.
 
-    This guards against accidental page-header walks (the v1 contract
-    forbids them) by asserting the behavior on a real file that lacks
-    an OffsetIndex.
+    This guards against accidental page-header walks (the footer-bounded
+    default forbids them; the explicit `--walk-pages` opt-in is what allows
+    them) by asserting the behavior on a real file that lacks an OffsetIndex.
     """
     cli.main(["column", "show", str(sample_parquet), "--column", "ints"])
     payload = json.loads(capsys.readouterr().out)
@@ -319,7 +320,9 @@ def test_subcommand_column_show_walk_pages_counts_without_offset_index(
     sample_parquet, capsys
 ):
     """`--walk-pages` opts into a per-chunk page-header walk, so `num_pages` is
-    reported even on a file with no OffsetIndex."""
+    reported even on a file with no OffsetIndex. The counted value is
+    cross-checked against `page list` (an independent code path) rather than a
+    bare ``>= 1``."""
     cli.main(
         ["column", "show", str(sample_parquet), "--column", "ints", "--walk-pages"]
     )
@@ -327,7 +330,34 @@ def test_subcommand_column_show_walk_pages_counts_without_offset_index(
     rg = payload["row_groups"][0]
     assert rg["has_offset_index"] is False
     assert rg["num_pages_known"] is True
+
+    # Ground truth: `page list` for the same chunk walks the pages independently.
+    cli.main(["page", "list", str(sample_parquet), "--column", "ints"])
+    pages_total = json.loads(capsys.readouterr().out)["total"]
+    assert rg["num_pages"] == pages_total
     assert rg["num_pages"] >= 1
+
+
+def test_subcommand_column_show_walk_pages_only_mutates_num_pages(
+    sample_parquet, capsys
+):
+    """Regression guard: `--walk-pages` changes ONLY `num_pages` /
+    `num_pages_known` — every other per-chunk field is identical to the
+    footer-only default output."""
+    cli.main(["column", "show", str(sample_parquet), "--column", "ints"])
+    default = json.loads(capsys.readouterr().out)["row_groups"][0]
+    cli.main(
+        ["column", "show", str(sample_parquet), "--column", "ints", "--walk-pages"]
+    )
+    walked = json.loads(capsys.readouterr().out)["row_groups"][0]
+
+    assert (default["num_pages"], default["num_pages_known"]) == (None, False)
+    assert walked["num_pages_known"] is True and walked["num_pages"] >= 1
+    # Everything except the two page-count fields must be byte-identical.
+    mutable = {"num_pages", "num_pages_known"}
+    assert {k: v for k, v in default.items() if k not in mutable} == {
+        k: v for k, v in walked.items() if k not in mutable
+    }
 
 
 def test_subcommand_column_list_walk_pages_counts_without_offset_index(
@@ -369,13 +399,19 @@ def test_subcommand_rowgroup_show_default_does_not_walk(sample_parquet, capsys):
     columns = json.loads(capsys.readouterr().out)["columns"]
     assert columns
     assert all(col["num_pages_known"] is False for col in columns)
+    assert all(col["num_pages"] is None for col in columns)
 
 
 def test_subcommand_column_show_walk_pages_harmless_with_offset_index(
     sample_parquet_with_page_index, capsys
 ):
-    """On a file that already has an OffsetIndex, `--walk-pages` yields the same
-    num_pages (the OffsetIndex fast path is still used)."""
+    """On a file that already has an OffsetIndex, `--walk-pages` yields
+    byte-identical output (the O(1) OffsetIndex fast path serves num_pages
+    either way — the flag is a no-op here)."""
+    cli.main(
+        ["column", "show", str(sample_parquet_with_page_index), "--column", "dict_col"]
+    )
+    default = json.loads(capsys.readouterr().out)
     cli.main(
         [
             "column",
@@ -386,8 +422,9 @@ def test_subcommand_column_show_walk_pages_harmless_with_offset_index(
             "--walk-pages",
         ]
     )
-    payload = json.loads(capsys.readouterr().out)
-    for rg in payload["row_groups"]:
+    walked = json.loads(capsys.readouterr().out)
+    assert default == walked
+    for rg in walked["row_groups"]:
         assert rg["num_pages_known"] is True
         assert rg["num_pages"] >= 1
 
