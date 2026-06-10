@@ -27,8 +27,11 @@ cost on both sides.
 
 Two reference fixtures (see ``generate.py``):
 
-- ``deep`` -- 100 row groups, no OffsetIndex. The eager walk parses
-  ~1000s of page headers; a single scoped page op parses one chunk's.
+- ``paged`` -- 12 row groups, **no** OffsetIndex, a small
+  ``data_page_size`` so each chunk holds ~tens of pages. The eager walk
+  parses every page header across all chunks; a single scoped page op
+  parses one chunk's -- the page-walk-avoidance win *without* the
+  OffsetIndex fast path. The footer is only a few % of the full walk.
 - ``indexed`` -- 4 row groups, OffsetIndex present, ~25 pages per chunk.
   ``page list`` reads the OffsetIndex (no header reads) where the eager
   walk reads every header.
@@ -39,14 +42,15 @@ explicitly:
     pytest tests/bench/test_page_commands.py --benchmark-only -o addopts="" \\
         -W ignore::pytest_benchmark.logger.PytestBenchmarkWarning
 
-The ``page_command`` group avoids the eager ``full_file_walk``. The size
-of the win depends on whether the shared footer parse is the bottleneck:
-~**order of magnitude** on an OffsetIndex-present, modest-footer file
-(``indexed``), but only ~1.5x on a file with thousands of chunks
-(``deep``), where the footer parse — the lazy core's separate concern,
-see ``test_eager_baseline.py`` — dominates both paths. Representative
-ratios (min + median, uncached) and the honest caveats are recorded in
-``baselines/page-commands-notes.md``.
+The ``page_command`` group avoids the eager ``full_file_walk`` for an
+~**order-of-magnitude** speedup on both a page-walk-dominated,
+no-OffsetIndex file (``paged``) and an OffsetIndex-present file
+(``indexed``). The win shrinks toward ~1x only when the shared footer
+parse is itself the bottleneck (files with thousands of chunks) -- that
+regime is the lazy core's separate concern, measured in
+``test_eager_baseline.py``,
+not here. Representative ratios (min + median, uncached) and the honest
+caveats are recorded in ``baselines/page-commands-notes.md``.
 """
 
 from __future__ import annotations
@@ -55,10 +59,12 @@ import pytest
 
 from parquet_analyzer import ParquetFile
 
-# A numeric chunk and a high-cardinality string chunk, so the page op cost
-# isn't read off a single column type. Indices into the generated schema
-# (type pool cycles int64, float64, string_low_card, string_high_card).
-_CHUNK_COLS = [0, 3]
+# A numeric chunk and a string chunk, so the page op cost isn't read off a
+# single column type. Indices into the generated schema (type pool cycles
+# int64, float64, string_low_card, string_high_card). Index 2 (a string
+# chunk) exists on both the 3-column ``paged`` and 10-column ``indexed``
+# fixtures.
+_CHUNK_COLS = [0, 2]
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +83,7 @@ def _full_file_walk(path: str):
 
 
 @pytest.mark.benchmark(group="full_file_walk")
-@pytest.mark.parametrize("fixture_name", ["deep_parquet", "indexed_parquet"])
+@pytest.mark.parametrize("fixture_name", ["paged_parquet", "indexed_parquet"])
 def test_full_file_walk_reference(benchmark, request, fixture_name):
     path = str(request.getfixturevalue(fixture_name))
     benchmark(_full_file_walk, path)
@@ -119,7 +125,7 @@ def _page_list_one_chunk_walk(path: str, col_index: int):
 
 
 @pytest.mark.benchmark(group="page_command")
-@pytest.mark.parametrize("fixture_name", ["deep_parquet", "indexed_parquet"])
+@pytest.mark.parametrize("fixture_name", ["paged_parquet", "indexed_parquet"])
 @pytest.mark.parametrize("col_index", _CHUNK_COLS)
 def test_page_header_single(benchmark, request, fixture_name, col_index):
     path = str(request.getfixturevalue(fixture_name))
@@ -134,7 +140,7 @@ def test_page_list_offset_index(benchmark, indexed_parquet, col_index):
 
 
 @pytest.mark.benchmark(group="page_command")
-@pytest.mark.parametrize("fixture_name", ["deep_parquet", "indexed_parquet"])
+@pytest.mark.parametrize("fixture_name", ["paged_parquet", "indexed_parquet"])
 @pytest.mark.parametrize("col_index", _CHUNK_COLS)
 def test_page_list_one_chunk_walk(benchmark, request, fixture_name, col_index):
     path = str(request.getfixturevalue(fixture_name))

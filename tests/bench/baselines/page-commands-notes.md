@@ -17,52 +17,65 @@ keeps the benchmarks out of the normal `hatch run dev:check` suite.)
 
 All opens use `use_cache=False`, so every timed run pays the **real**
 footer parse + the op — no warm footer-cache hits. (An earlier draft of
-these notes quoted ~8–12x on `deep`; that was a footer-cache artifact and
-is corrected below.)
+these notes quoted ~8–12x as a cached best-case; the figures below are
+the honest uncached measurements.)
 
 ## Representative dev run (uncached)
 
 | Fixture | Operation | min (ms) | median (ms) | vs full walk (min) |
 |---|---|---:|---:|---:|
-| `indexed` (4 row groups, OffsetIndex, ~25 pages/chunk) | `full_summary` (eager full-file walk) | ~87 | ~92 | 1x |
-| `indexed` | `page header` one page | ~8.8 | ~9.5 | **~9.9x** |
-| `indexed` | `page list` via OffsetIndex (`page_stubs`) | ~8.9 | ~9.6 | **~9.8x** |
-| `indexed` | scoped `page list` one chunk (`pages`) | ~9.6 | ~11.0 | **~9.1x** |
-| `deep` (100 row groups, no OffsetIndex) | `full_summary` (eager full-file walk) | ~441 | ~471 | 1x |
-| `deep` | `page header` one chunk | ~285 | ~306 | **~1.5x** |
-| `deep` | scoped `page list` one chunk (`pages`) | ~267 | ~303 | **~1.6x** |
+| `paged` (12 row groups, **no** OffsetIndex, ~38 pages/chunk) | `full_summary` (eager full-file walk) | ~173 | ~212 | 1x |
+| `paged` | `page header` one page | ~7.7–11.5 | ~12–15 | **~15–22x** |
+| `paged` | scoped `page list` one chunk (`pages`) | ~7.8–11.4 | ~12–17 | **~15–22x** |
+| `indexed` (4 row groups, OffsetIndex, ~25 pages/chunk) | `full_summary` (eager full-file walk) | ~96 | ~118 | 1x |
+| `indexed` | `page header` one page | ~8.7–9.6 | ~12–16 | **~10–11x** |
+| `indexed` | `page list` via OffsetIndex (`page_stubs`) | ~8.8–9.1 | ~11–15 | **~11x** |
+| `indexed` | scoped `page list` one chunk (`pages`) | ~9.0–10.0 | ~15–17 | **~10x** |
 
-(Numeric and high-cardinality string chunks measured; figures are the
-representative range across both.)
+(Each operation is measured on a numeric chunk and a string chunk; the
+range spans both. The string chunk is consistently a touch faster. These
+are one representative run: `paged`'s ratio in particular is **noisy
+run-to-run** — ~10–40x has been observed across runs — because its
+denominator is a single few-millisecond op sensitive to GC and the OS
+file cache. The stable, reproducible claim is the **order of magnitude**,
+not the exact multiple; re-run to refresh.)
 
 ## Reading the result — honestly
 
 The page subcommands answer a single-page / single-chunk question while
 touching one chunk's bytes; the eager pipeline (`full_summary` /
-`--output-mode default`) walks every page header in the file. The size of
-the win depends on how much of the total cost is the page walk vs the
-**footer parse** that both paths pay:
+`--output-mode default`) walks every page header in the file. The avoided
+work is the per-page header walk across all chunks; the **footer parse**
+is paid by both paths, so the ratio is largest when the page walk — not
+the footer — is the bulk of the eager cost:
 
-- **OffsetIndex-present file with a modest footer (`indexed`):**
-  ~**10x** faster. The footer is cheap to parse, so skipping the
-  full-file page walk is most of the cost — the clean demonstration of
-  the DoD claim. `page_stubs` reads page extents from the OffsetIndex
-  with no per-page header reads; even the no-index one-chunk walk is ~9x
-  because the eager walk reads ~1000 page headers (4 rg x 10 cols x ~25
-  pages) vs one chunk's ~25.
+- **No-OffsetIndex, page-walk-dominated file (`paged`):** an
+  **order of magnitude** faster (~15–22x in the representative run above,
+  ~10–40x across runs). This is the honest "no fast path" case — there is
+  no OffsetIndex to seek with, so the eager walk parses every page header
+  (12 rg × 3 cols × ~38 pages ≈ 1300+ headers) while a single scoped page
+  op parses one chunk's ~38. The footer is only a few % of the eager walk,
+  so almost all of it is genuinely avoided.
 
-- **File with a very large footer (`deep`, 100 row groups -> 1000
-  chunks):** only ~**1.5x**. Here the footer parse (~270 ms, paid by
-  *both* the page command and the eager walk) dominates, so the avoided
-  page walk is a smaller fraction of the total. The footer-parse cost is
-  the lazy core's *separate* concern, benchmarked in
-  `test_eager_baseline.py`; it is not what the page surface targets.
+- **OffsetIndex-present file (`indexed`):** ~**10–11x** faster (this one
+  is tight run-to-run — its full-walk reference is steadier).
+  `page_stubs` reads page extents straight from the OffsetIndex with no
+  per-page header reads; even the no-index one-chunk walk is ~10x because
+  the eager walk reads ~1000 page headers (4 rg × 10 cols × ~25) vs one
+  chunk's ~25.
 
-So: the page subcommands reliably avoid the full-file page walk, and that
-is a **substantial (~order-of-magnitude) speedup whenever the footer
-parse is not itself the bottleneck**. On pathologically chunk-heavy files
-the footer parse bounds the ratio — an honest limit worth stating rather
-than hiding behind a cached best-case number.
+So the page subcommands reliably avoid the full-file page walk, for an
+**order-of-magnitude speedup** — including on files with **no
+OffsetIndex** (`paged`), where the win comes purely from scoping the page
+walk to one chunk rather than from any index fast path.
+
+The ratio shrinks toward ~1x only when the shared **footer parse** is
+itself the bottleneck — files with thousands of column chunks, where the
+~0.25 ms/chunk footer parse (paid by both paths) dwarfs the avoided page
+walk. That footer-parse cost is the lazy core's *separate* concern,
+benchmarked in `test_eager_baseline.py` (which is what the `deep` fixture
+— 100 row groups → 1000 chunks — exists to measure); it is not what the
+page surface targets, so this benchmark uses footer-light fixtures.
 
 Important caveats:
 
@@ -75,5 +88,5 @@ Important caveats:
   a column-chunk path, or an OffsetIndex-present file, to keep it cheap.
 
 Numbers are machine-dependent; re-run to refresh. The point is the
-**regime** (order-of-magnitude when footer-light; footer-bound
-otherwise), not the exact figure.
+**regime** (order-of-magnitude whenever the footer parse is not itself
+the bottleneck), not the exact figure.

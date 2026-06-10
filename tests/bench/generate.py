@@ -16,6 +16,12 @@ is about exposing — see RFC #3:
   eliminates ~1000 page-header parses; eager pays for each.
   ~50-100× ratio, bounded by footer-parse cost which grows with
   row-group count.
+- ``paged`` — few columns, modest row groups, but a small
+  ``data_page_size`` so each chunk holds **many** pages and **no**
+  OffsetIndex. The full-file page walk is dominated by reading those
+  page headers (footer is a few %), so a single scoped page op (one
+  chunk's headers) avoids most of the cost -- the page subcommands'
+  (#21) page-walk-avoidance win *without* the OffsetIndex fast path.
 - ``indexed`` — multi-row-group AND OffsetIndex-present, with several
   data pages per chunk (small ``data_page_size``). Targets the page
   subcommands (#21): ``page list`` reads page extents from the
@@ -39,7 +45,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-Shape = Literal["wide", "tall", "deep", "indexed"]
+Shape = Literal["wide", "tall", "deep", "paged", "indexed"]
 
 
 # Shape parameters tuned so generation completes in a few seconds while
@@ -60,6 +66,10 @@ Shape = Literal["wide", "tall", "deep", "indexed"]
 #   eliminates. 100 row groups means eager parses ~1000 page headers;
 #   lazy parses a single (larger) footer. Ratio ~50-100x bounded by
 #   footer-parse cost growing with row-group count.
+#
+# "paged" and "indexed" serve the page-command benchmark
+# (test_page_commands.py) rather than the lazy-core baseline; their
+# rationale lives at their SHAPES entries and in this module's docstring.
 SHAPES: dict[str, dict] = {
     "wide": {
         "num_columns": 200,
@@ -78,6 +88,19 @@ SHAPES: dict[str, dict] = {
         "num_columns": 10,
         "num_rows": 500_000,
         "row_group_size": 5_000,  # -> 100 row groups
+    },
+    # Page-walk-dominated, NO OffsetIndex. Few columns + modest row groups
+    # keep the footer cheap (~few % of the full walk), while a small
+    # `data_page_size` packs many pages into each chunk. The eager full-file
+    # walk pays for every page header across all chunks; a single scoped page
+    # op touches one chunk's headers -- the page subcommands' (#21)
+    # page-walk-avoidance win *without* the OffsetIndex fast path.
+    "paged": {
+        "num_columns": 3,
+        "num_rows": 600_000,
+        "row_group_size": 50_000,  # -> 12 row groups (36 chunks)
+        "data_page_size": 2 * 1024,  # small pages -> many pages per chunk
+        # no write_page_index -> no OffsetIndex
     },
     # OffsetIndex-present, multi-row-group, several pages per chunk. Smaller
     # than `deep` (so generation + the eager full-walk reference stay quick)
