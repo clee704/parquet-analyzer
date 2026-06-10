@@ -16,6 +16,13 @@ is about exposing — see RFC #3:
   eliminates ~1000 page-header parses; eager pays for each.
   ~50-100× ratio, bounded by footer-parse cost which grows with
   row-group count.
+- ``indexed`` — multi-row-group AND OffsetIndex-present, with several
+  data pages per chunk (small ``data_page_size``). Targets the page
+  subcommands (#21): ``page list`` reads page extents from the
+  OffsetIndex (one bounded parse per chunk, no per-page header reads),
+  and a single ``page header`` / ``column show --walk-pages`` touches
+  one chunk rather than the whole file — both avoid the full-file page
+  walk the eager pipeline pays.
 
 The shapes are sized for CI / dev-laptop runtime (generates in tens
 of seconds, ~MB-GB on disk). Session-scoped fixtures (see
@@ -32,7 +39,7 @@ import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-Shape = Literal["wide", "tall", "deep"]
+Shape = Literal["wide", "tall", "deep", "indexed"]
 
 
 # Shape parameters tuned so generation completes in a few seconds while
@@ -71,6 +78,18 @@ SHAPES: dict[str, dict] = {
         "num_columns": 10,
         "num_rows": 500_000,
         "row_group_size": 5_000,  # -> 100 row groups
+    },
+    # OffsetIndex-present, multi-row-group, several pages per chunk. Smaller
+    # than `deep` (so generation + the eager full-walk reference stay quick)
+    # but with `write_page_index=True` and a small `data_page_size` so each
+    # chunk holds many pages -- the case where `page list` reads the
+    # OffsetIndex instead of walking page headers.
+    "indexed": {
+        "num_columns": 10,
+        "num_rows": 200_000,
+        "row_group_size": 50_000,  # -> 4 row groups
+        "write_page_index": True,
+        "data_page_size": 4 * 1024,  # small pages -> many pages per chunk
     },
 }
 
@@ -116,11 +135,14 @@ def generate(path: Path, shape: Shape, *, seed: int = 42) -> Path:
             columns[name] = pa.array(data, type=pa_type)
 
     table = pa.table(columns)
-    pq.write_table(
-        table,
-        path,
-        compression="snappy",
-        row_group_size=cfg["row_group_size"],
-        use_dictionary=True,
-    )
+    write_kwargs: dict = {
+        "compression": "snappy",
+        "row_group_size": cfg["row_group_size"],
+        "use_dictionary": True,
+    }
+    if cfg.get("write_page_index"):
+        write_kwargs["write_page_index"] = True
+    if "data_page_size" in cfg:
+        write_kwargs["data_page_size"] = cfg["data_page_size"]
+    pq.write_table(table, path, **write_kwargs)
     return path
