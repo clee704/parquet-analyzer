@@ -54,11 +54,15 @@ python -m parquet_analyzer example.parquet
 
 The verb-noun surface answers one question per invocation and is built for
 chaining with `jq` and consumption by AI agents. The eight verb-noun
-subcommands listed here are **footer-only** — they do not walk page headers
-or read page bodies. A ninth verb, [`show`](#show--path-addressed-navigation),
-offers path-addressed tree navigation (also bounded — it never walks page
-headers unless you pass `--walk-pages`). Page-level subcommands (`page list /
-header / extract / decode`) land in a future release.
+subcommands under `file`/`rowgroup`/`column` are **footer-only** — they do not
+walk page headers or read page bodies. A ninth verb,
+[`show`](#show--path-addressed-navigation), offers path-addressed tree
+navigation (also bounded — it never walks page headers unless you pass
+`--walk-pages`). The [`page`](#page--page-level-inspection) verb is the escape
+hatch into the page layer: it lists a chunk's pages, dumps a single page
+header, extracts raw body bytes, and decodes a page body into its
+encoding-faithful structure. Reading page bodies is opt-in by construction —
+you pay the per-page cost only for the page you name.
 
 ### Conventions
 
@@ -82,8 +86,9 @@ header / extract / decode`) land in a future release.
 > the parsed footer plus, at most, one extra parse of an index thrift
 > the writer already wrote (OffsetIndex, ColumnIndex, BloomFilter
 > header). Anything that would require walking per-page thrift headers
-> or reading page bodies is explicitly deferred to the `page` subcommand
-> surface (tracked in #21).
+> or reading page bodies is handled by the
+> [`page`](#page--page-level-inspection) subcommand surface — the deliberate,
+> per-page opt-in into header walks and body reads.
 
 ### `file` — file-level inspection
 
@@ -290,6 +295,161 @@ listing is capped by **`--limit N`** (default 100; `0` lists all); the
 `children_truncated`, and truncation only bounds the *listing* — every child
 stays addressable by its index. `show` is tree-structured; the verb-noun
 subcommands above remain the way to get flat, aggregated views.
+
+### `page` — page-level inspection
+
+The `page` verb is the escape hatch into the page layer — the one surface that
+deliberately reads past the footer. Where the footer-only verbs stop at the
+column chunk, `page` walks into the pages of a single chunk to list them, dump
+a header, extract raw body bytes, or decode a body into the structure of its
+actual on-disk encoding. You pay the page cost only for the page(s) you name.
+
+All four nouns share a page selector: `--column NAME`, `--page-index N` (over
+the chunk's full page order — the dictionary page is index `0` when present,
+then the data pages; negative indexes count from the end), and `--row-group M`
+(required only when the file has more than one row group). The singular verbs
+report both `page_index` (full order) and `data_page_index` (position among
+data pages only — the `OffsetIndex` correspondence, `null` for the dictionary
+page).
+
+Equivalently, any page noun accepts a **navpath** positional — the same
+`_path` that `page list` (and `show`) emit — instead of the selectors, so a
+`page list` → `page decode` round-trip is copy-paste. For the singular verbs
+the navpath addresses a page (`row_groups/0/columns/4/pages/1`); for `page
+list` it scopes to a row group (`row_groups/0`) or a column chunk
+(`row_groups/0/columns/4`). The navpath and the `--column`/`--page-index`/
+`--row-group` selectors are mutually exclusive. Every singular-verb output
+echoes the resolved `_path`.
+
+**`--limit N`** bounds the potentially-large output (`page list` and `page
+decode` accept it; `page header` and `page extract` don't — they return a
+single object or raw bytes). For `page list` it caps the `items`. For `page
+decode` it bounds each collection in the view to the first **N rows** of the
+page: each level stream's `levels`, the resolved/PLAIN `values`, and the
+dictionary index `runs` — with the `runs` *clipped* so they cover exactly N
+rows (a single `{value: 0, length: 1000000}` run shows as `{value: 0, length:
+5}` under `--limit 5`, not in full). Every bounded collection reports its own
+`total` / `returned` / `truncated`, so a truncation is always explicit.
+`--kind statistics` ignores it (the header's statistics aren't per-row).
+Default is no limit (the whole page).
+
+One subtlety on **nullable** columns: the level streams have one entry per row
+(nulls included), while the value/index collections — resolved `values`, PLAIN
+`values`, and the dictionary `runs` — only carry the **present (non-null)**
+values, since parquet stores no index or value for a null. So `--limit N`
+bounds the level streams to the first N rows and the value/index collections to
+the first N present values; the two coincide exactly when the page has no
+nulls, and otherwise their `total`s differ (rows vs. non-null count) and their
+windows diverge by the nulls in the prefix.
+
+This makes `--limit` the tool for a page that's tiny on disk but expands to
+millions of values (one long RLE run): `page decode … --kind values --limit 10`
+samples the first ten decoded values without materializing the rest.
+
+```bash
+$ parquet-analyzer page list data.parquet --column Sex | jq -r '.items[1]._path' \
+  | xargs parquet-analyzer page decode data.parquet
+```
+
+**`page list`** is the page-walk surface: a column's (or every column's) pages
+as lightweight stubs. It is cheap when the writer emitted an `OffsetIndex` (the
+extents come from it, and stubs carry `first_row_index`); otherwise it walks
+the per-page headers. Like the other `list` verbs it wraps in
+`{items, total, returned, truncated}` and every item carries a `_path`.
+
+```bash
+$ parquet-analyzer page list example.parquet --column Sex
+{
+  "$schema": "parquet-analyzer/v1/page-list",
+  "items": [
+    {"row_group": 0, "column": "Sex", "_path": "row_groups/0/columns/4/pages/0",
+     "page_index": 0, "data_page_index": null, "kind": "dictionary_page",
+     "offset": 24256, "length": 33, "first_row_index": null},
+    {"row_group": 0, "column": "Sex", "_path": "row_groups/0/columns/4/pages/1",
+     "page_index": 1, "data_page_index": 0, "kind": "data_page",
+     "offset": 24289, "length": 468, "first_row_index": null}
+  ],
+  "returned": 2, "total": 2, "truncated": false, "column": "Sex"
+}
+```
+
+**`page header`** dumps one page's full header fields. It is version-aware: V1
+data pages report the level encodings, V2 data pages report
+`num_nulls`/`num_rows`/`is_compressed` and the level byte lengths.
+
+```bash
+$ parquet-analyzer page header example.parquet --column Sex --page-index 1
+{
+  "$schema": "parquet-analyzer/v1/page-header",
+  "_path": "row_groups/0/columns/4/pages/1",
+  "row_group": 0, "column": "Sex", "page_index": 1, "data_page_index": 0,
+  "kind": "data_page", "page_type": "DATA_PAGE", "offset": 24289,
+  "header_size": 20, "compressed_size": 448, "uncompressed_size": 846,
+  "num_values": 891, "encoding": "RLE_DICTIONARY",
+  "definition_level_encoding": "RLE", "repetition_level_encoding": "RLE",
+  "statistics": null
+}
+```
+
+**`page extract`** emits one page's raw body bytes. `--decompress` removes the
+page codec (page-type aware: a V2 page keeps its uncompressed level streams and
+expands only the values section). `--as {hex,base64,raw}` chooses the encoding;
+`--as raw` is the JSON escape hatch — it writes the bytes verbatim to stdout
+(or `-o FILE`) with no JSON envelope.
+
+```bash
+$ parquet-analyzer page extract example.parquet --column Sex --page-index 0 --as hex
+$ parquet-analyzer page extract example.parquet --column Sex --page-index 1 --decompress --as raw -o body.bin
+```
+
+**`page decode`** decodes a page body. With no `--kind` it emits the full
+**encoding-faithful** decode in one object — the definition/repetition level
+streams plus the values section in its native encoding form, which the page's
+encoding determines (no choice to make):
+
+```bash
+$ parquet-analyzer page decode example.parquet row_groups/0/columns/4/pages/1 --limit 3
+{
+  "$schema": "parquet-analyzer/v1/page-decode",
+  "_path": "row_groups/0/columns/4/pages/1",
+  "row_group": 0, "column": "Sex", "page_index": 1, "data_page_index": 0,
+  "encoding": "RLE_DICTIONARY", "num_values": 891, "num_nulls": 0,
+  "definition_levels": {"bit_width": 1, "total": 891, "returned": 3, "truncated": true, "levels": [1, 1, 1]},
+  "repetition_levels": null,
+  "encoded_values": {
+    "kind": "dictionary_indices", "bit_width": 2, "total": 891, "returned": 3, "truncated": true,
+    "runs": [{"kind": "rle", "value": 0, "length": 1}, {"kind": "rle", "value": 1, "length": 2}]
+  }
+}
+```
+
+`encoded_values` is the values section as it is literally stored: for a
+dictionary-encoded page the index RLE/bit-packed runs (`kind:
+"dictionary_indices"`); for a PLAIN page the verbatim values (`kind: "plain"`).
+This is the encoding-faithful view — the data the encoding scheme actually
+stores, not a flattened logical reconstruction.
+
+`--kind` narrows to a single view (and is the only way to get the *resolved*
+physical values):
+
+- `values` — the page's **resolved** physical values, with dictionary indices
+  resolved through the sibling dictionary page to the physical-type values.
+  Nulls are skipped, so `total` is the non-null count.
+- `levels` — just the definition and repetition level streams (each a
+  `bit_width` plus the expanded `levels`; either `null` when the column has no
+  such block — a flat column has no repetition levels, a required column no
+  definition levels).
+- `rle-runs` — just the dictionary index runs (`kind_not_available` on a PLAIN
+  page).
+- `statistics` — the page header's statistics (header-only; no body decode).
+
+```bash
+$ parquet-analyzer page decode example.parquet --column Sex --page-index 1 --kind values --limit 2
+```
+
+A page whose encoding or codec this tool does not yet decode returns a
+structured error (`encoding_not_supported` / `codec_not_supported`) that names
+the unsupported scheme — fall back to `page extract` for the raw bytes.
 
 ### Schema-version discovery
 
