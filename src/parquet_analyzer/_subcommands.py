@@ -270,7 +270,7 @@ def _column_chunk_summary(
     rg_index: int,
     col_index: int,
     footer_column: dict,
-    cc_wrapper: Any | None = None,
+    cc_wrapper: Any,
     walk_pages: bool = False,
 ) -> dict:
     """Footer-only per-chunk summary.
@@ -323,7 +323,7 @@ def _column_chunk_summary(
 
     num_pages: int | None = None
     num_pages_known = False
-    if cc_wrapper is not None and (has_offset_index or walk_pages):
+    if has_offset_index or walk_pages:
         # cc_wrapper.num_pages is O(1) when has_offset_index is True (the
         # ColumnChunk wrapper caches the OffsetIndex thrift parse). With
         # walk_pages set and no OffsetIndex it instead walks this chunk's
