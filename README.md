@@ -321,14 +321,21 @@ list` it scopes to a row group (`row_groups/0`) or a column chunk
 `--row-group` selectors are mutually exclusive. Every singular-verb output
 echoes the resolved `_path`.
 
-**`--limit N`** bounds the potentially-large collections (`page list` and
-`page decode` accept it; `page header` and `page extract` don't — they return
-a single object or raw bytes). For `page list` it caps the `items`. For `page
-decode` it caps **each collection in the view independently** — the `levels`
-of each level stream, the `runs`, and the `values` — and every such collection
-reports its own `total` / `returned` / `truncated`, so nothing is silently
-dropped. `--kind statistics` ignores it (the page header's statistics aren't a
-collection). Default is no limit (the full collection).
+**`--limit N`** bounds the potentially-large output (`page list` and `page
+decode` accept it; `page header` and `page extract` don't — they return a
+single object or raw bytes). For `page list` it caps the `items`. For `page
+decode` it means **the first N rows of the page**, applied consistently to
+every collection in the view: each level stream's `levels`, the resolved/PLAIN
+`values`, and the dictionary index `runs` are all bounded to N rows — and the
+`runs` are *clipped* so they cover exactly N rows (a single `{value: 0, length:
+1000000}` run shows as `{value: 0, length: 5}` under `--limit 5`, not in full).
+Every bounded collection reports its own `total` / `returned` / `truncated` in
+rows, so a truncation is always explicit. `--kind statistics` ignores it (the
+header's statistics aren't per-row). Default is no limit (the whole page).
+
+This makes `--limit` the tool for a page that's tiny on disk but expands to
+millions of values (one long RLE run): `page decode … --kind values --limit 10`
+samples the first ten decoded values without materializing the rest.
 
 ```bash
 $ parquet-analyzer page list data.parquet --column Sex | jq -r '.items[1]._path' \

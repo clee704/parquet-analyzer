@@ -1105,9 +1105,64 @@ def _run_dict(run: Any) -> dict:
     return {"kind": "bit_packed", "length": run.length, "values": list(run.values)}
 
 
+def _clip_run_dict(run: dict, rows: int) -> dict:
+    """Clip a run dict to its first ``rows`` rows (``rows`` < the run's length)."""
+    if run["kind"] == "rle":
+        return {"kind": "rle", "value": run["value"], "length": rows}
+    return {"kind": "bit_packed", "length": rows, "values": run["values"][:rows]}
+
+
+def _runs_view(section: Any, limit: int | None) -> dict:
+    """A view of a dictionary index stream's RLE/bit-packed runs, bounded by
+    ``--limit`` in **rows** (not runs): the runs are clipped so the values they
+    represent sum to at most ``limit`` rows, with the boundary run shortened.
+    ``total`` / ``returned`` count rows (the index stream's decoded value
+    count), keeping ``--limit`` consistent with the level and value views — so a
+    single million-length run shows as a length-``limit`` run, not in full.
+
+    Row counts come from ``section.values`` (the flattened decoded indices), not
+    from summed run lengths: a final bit-packed run pads to a group of 8, so its
+    declared ``length`` can exceed the real values it carries."""
+    run_dicts = [_run_dict(r) for r in section.runs]
+    total_rows = len(section.values)
+    if limit is None or limit >= total_rows:
+        return {
+            "bit_width": section.bit_width,
+            "total": total_rows,
+            "returned": total_rows,
+            "truncated": False,
+            "runs": run_dicts,
+        }
+    out: list[dict] = []
+    rows = 0
+    for run in run_dicts:
+        room = limit - rows
+        if room <= 0:
+            break
+        real = (
+            len(run["values"])
+            if run["kind"] == "bit_packed"
+            else min(run["length"], total_rows - rows)
+        )
+        if real <= room:
+            out.append(run)
+            rows += real
+        else:
+            out.append(_clip_run_dict(run, room))
+            rows += room
+    return {
+        "bit_width": section.bit_width,
+        "total": total_rows,
+        "returned": rows,
+        "truncated": True,
+        "runs": out,
+    }
+
+
 def _level_view(stream: Any, limit: int | None) -> dict | None:
     """Curated view of a level stream (`rep`/`def`), or ``None`` when the
-    column has no such level block."""
+    column has no such level block. ``--limit`` caps the levels in rows (one
+    level per row)."""
     if stream is None:
         return None
     levels, truncated = _cap(list(stream.values), limit)
@@ -1158,15 +1213,8 @@ def _encoded_values_view(decoded: Any, limit: int | None) -> dict:
             "truncated": truncated,
             "values": values,
         }
-    runs, truncated = _cap([_run_dict(r) for r in section.runs], limit)
-    return {
-        "kind": "dictionary_indices",
-        "bit_width": section.bit_width,
-        "total": len(section.runs),
-        "returned": len(runs),
-        "truncated": truncated,
-        "runs": runs,
-    }
+    runs_view = _runs_view(section, limit)
+    return {"kind": "dictionary_indices", **runs_view}
 
 
 def _decode_view(
@@ -1232,14 +1280,7 @@ def _decode_view(
             ),
             fix=f"parquet-analyzer page decode {path} {selector} --kind values",
         )
-    runs, truncated = _cap([_run_dict(r) for r in section.runs], limit)
-    return {
-        "bit_width": section.bit_width,
-        "total": len(section.runs),
-        "returned": len(runs),
-        "truncated": truncated,
-        "runs": runs,
-    }
+    return _runs_view(section, limit)
 
 
 def handle_show(args: argparse.Namespace) -> None:

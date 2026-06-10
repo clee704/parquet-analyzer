@@ -606,13 +606,43 @@ def test_page_decode_rle_runs_dictionary(tmp_path, capsys):
     )
     assert payload["kind"] == "rle-runs"
     assert payload["bit_width"] >= 1
-    # The runs must expand back to the page's 100 values (a real invariant,
-    # not the tautological total == len(runs)).
-    assert payload["total"] == len(payload["runs"])
+    # total/returned are in ROWS (the values the runs expand to), so they equal
+    # the page's 100 values and the runs expand back to exactly that.
+    assert payload["total"] == 100
+    assert payload["returned"] == 100
+    assert payload["truncated"] is False
     assert _expanded_run_count(payload["runs"]) == 100
     rle_run = next(r for r in payload["runs"] if r["kind"] == "rle")
     assert set(rle_run) == {"kind", "value", "length"}
     assert rle_run["length"] >= 1
+
+
+def test_page_decode_rle_runs_limit_clips_to_rows(tmp_path, capsys):
+    """--limit on the runs view bounds it in ROWS: a single long run is clipped
+    to the row limit, not shown whole, and total/returned count rows."""
+    path = tmp_path / "one_run.parquet"
+    pq.write_table(pa.table({"s": ["x"] * 100}), path, use_dictionary=True)
+    payload = _run(
+        [
+            "page",
+            "decode",
+            path,
+            "--column",
+            "s",
+            "--page-index",
+            "1",
+            "--kind",
+            "rle-runs",
+            "--limit",
+            "7",
+        ],
+        capsys,
+    )
+    assert payload["total"] == 100
+    assert payload["returned"] == 7
+    assert payload["truncated"] is True
+    assert _expanded_run_count(payload["runs"]) == 7  # the run was clipped
+    assert payload["runs"] == [{"kind": "rle", "value": 0, "length": 7}]
 
 
 def test_page_decode_rle_runs_includes_bit_packed(tmp_path, capsys):
@@ -1047,9 +1077,10 @@ def test_page_decode_faithful_default_dictionary(dict_v1, capsys):
     ev = payload["encoded_values"]
     assert ev["kind"] == "dictionary_indices"
     assert ev["bit_width"] >= 1
-    # The index runs must expand back to the page's 6 values, and each index
-    # must be a valid dictionary position (the column has 2 distinct values).
-    assert ev["total"] == len(ev["runs"])
+    # total/returned are in ROWS: the index runs expand back to the page's 6
+    # values, and each index is a valid dictionary position (2 distinct values).
+    assert ev["total"] == 6
+    assert ev["returned"] == 6
     assert _expanded_run_count(ev["runs"]) == 6
     rle_indices = [r["value"] for r in ev["runs"] if r["kind"] == "rle"]
     assert all(i in (0, 1) for i in rle_indices)
@@ -1269,3 +1300,67 @@ def test_page_list_ambiguous_column(tmp_path, capsys):
     err = _run_err(["page", "list", path, "--column", "a.b"], capsys)
     assert err["error"] == "ambiguous_column"
     assert "multiple distinct paths" in err["message"]
+
+
+def test_page_decode_rle_runs_limit_spans_multiple_runs(tmp_path, capsys):
+    """A row limit that spans past the first run includes it whole and clips the
+    next, so the runs cover exactly `limit` rows."""
+    path = tmp_path / "two_runs.parquet"
+    pq.write_table(pa.table({"s": ["x"] * 50 + ["y"] * 50}), path, use_dictionary=True)
+    payload = _run(
+        [
+            "page",
+            "decode",
+            path,
+            "--column",
+            "s",
+            "--page-index",
+            "1",
+            "--kind",
+            "rle-runs",
+            "--limit",
+            "60",
+        ],
+        capsys,
+    )
+    assert payload["total"] == 100
+    assert payload["returned"] == 60
+    assert payload["truncated"] is True
+    assert _expanded_run_count(payload["runs"]) == 60
+    assert payload["runs"][0]["length"] == 50  # first run whole
+    assert payload["runs"][1]["length"] == 10  # second run clipped
+
+
+def test_page_decode_rle_runs_limit_clips_bit_packed_run(tmp_path, capsys):
+    """Clipping a bit-packed run trims its values to the row limit."""
+    path = tmp_path / "bitpacked_clip.parquet"
+    rng = random.Random(3)
+    pq.write_table(
+        pa.table({"s": [f"v{rng.randint(0, 8)}" for _ in range(200)]}),
+        path,
+        use_dictionary=True,
+    )
+    payload = _run(
+        [
+            "page",
+            "decode",
+            path,
+            "--column",
+            "s",
+            "--page-index",
+            "1",
+            "--kind",
+            "rle-runs",
+            "--limit",
+            "3",
+        ],
+        capsys,
+    )
+    assert payload["total"] == 200
+    assert payload["returned"] == 3
+    assert payload["truncated"] is True
+    assert _expanded_run_count(payload["runs"]) == 3
+    first = payload["runs"][0]
+    assert first["kind"] == "bit_packed"
+    assert len(first["values"]) == 3
+    assert first["length"] == 3
