@@ -1,0 +1,58 @@
+name: Release
+
+# Publishes the package to PyPI via Trusted Publishing (OIDC) — no API
+# token or password is stored anywhere. PyPI is configured to trust this
+# repository + workflow + environment; the job mints a short-lived OIDC
+# token at runtime.
+#
+# Triggers:
+#   - release: published  — the normal path; building the release's tag.
+#   - workflow_dispatch    — manual, with an optional `ref` input so a
+#     specific tag (e.g. a release cut before this workflow existed) can
+#     be built and published. The workflow definition is always read from
+#     the default branch; the `ref` only controls what gets checked out
+#     and built.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref (tag) to build & publish, e.g. v0.6.0"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  pypi-publish:
+    name: Build and publish to PyPI
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/parquet-analyzer
+    permissions:
+      contents: read # required for actions/checkout (job perms replace top-level)
+      id-token: write # required for Trusted Publishing (OIDC)
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install hatch
+      - name: Refuse to publish a development version
+        run: |
+          version="$(hatch version)"
+          echo "building version: $version"
+          case "$version" in
+            *dev*)
+              echo "::error::refusing to publish a development version ($version); dispatch with a release tag via the 'ref' input"
+              exit 1
+              ;;
+          esac
+      - run: hatch build
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
