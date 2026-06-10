@@ -224,11 +224,15 @@ $ parquet-analyzer column show example.parquet --column Sex
 }
 ```
 
-`num_pages` is reported (`num_pages_known: true`) only when the chunk has
-an `OffsetIndex` — counting otherwise would require walking page headers,
-which the v1 subcommand contract forbids. SNPW (Spark Native Parquet Writer)
-writes OffsetIndex on every chunk; pyarrow does when
-`write_page_index=True`; older parquet-mr and many DuckDB files do not.
+`num_pages` is reported (`num_pages_known: true`) when the chunk has an
+`OffsetIndex` — an O(1) lookup. Without one, counting pages requires walking
+page headers, which the footer-bounded default avoids (`num_pages: null`,
+`num_pages_known: false`). Pass **`--walk-pages`** (on `column show`, `column
+list`, or `rowgroup show`) to opt into that walk and populate `num_pages`
+anyway — it reads the page headers of every selected chunk, so `--limit` caps
+the output but not the walk. SNPW (Spark Native Parquet Writer) writes
+OffsetIndex on every chunk; pyarrow does when `write_page_index=True`; older
+parquet-mr and many DuckDB files do not.
 
 **Byte-range pairs.** Every per-chunk output carries the seek-and-read
 pair `chunk_offset` / `chunk_length`, plus `offset_index_offset` /

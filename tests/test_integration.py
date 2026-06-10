@@ -315,6 +315,83 @@ def test_subcommand_column_show_with_offset_index_reports_pages(
         assert rg["num_pages"] >= 1
 
 
+def test_subcommand_column_show_walk_pages_counts_without_offset_index(
+    sample_parquet, capsys
+):
+    """`--walk-pages` opts into a per-chunk page-header walk, so `num_pages` is
+    reported even on a file with no OffsetIndex."""
+    cli.main(
+        ["column", "show", str(sample_parquet), "--column", "ints", "--walk-pages"]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    rg = payload["row_groups"][0]
+    assert rg["has_offset_index"] is False
+    assert rg["num_pages_known"] is True
+    assert rg["num_pages"] >= 1
+
+
+def test_subcommand_column_list_walk_pages_counts_without_offset_index(
+    sample_parquet, capsys
+):
+    cli.main(["column", "list", str(sample_parquet), "--walk-pages"])
+    items = json.loads(capsys.readouterr().out)["items"]
+    assert items
+    for item in items:
+        assert item["has_offset_index"] is False
+        assert item["num_pages_known"] is True
+        assert item["num_pages"] >= 1
+
+
+def test_subcommand_column_list_default_does_not_walk(sample_parquet, capsys):
+    """Without the flag, the default stays footer-only: num_pages unknown."""
+    cli.main(["column", "list", str(sample_parquet)])
+    items = json.loads(capsys.readouterr().out)["items"]
+    assert items
+    assert all(item["num_pages_known"] is False for item in items)
+    assert all(item["num_pages"] is None for item in items)
+
+
+def test_subcommand_rowgroup_show_walk_pages_counts_without_offset_index(
+    sample_parquet, capsys
+):
+    cli.main(
+        ["rowgroup", "show", str(sample_parquet), "--row-group", "0", "--walk-pages"]
+    )
+    columns = json.loads(capsys.readouterr().out)["columns"]
+    assert columns
+    for col in columns:
+        assert col["num_pages_known"] is True
+        assert col["num_pages"] >= 1
+
+
+def test_subcommand_rowgroup_show_default_does_not_walk(sample_parquet, capsys):
+    cli.main(["rowgroup", "show", str(sample_parquet), "--row-group", "0"])
+    columns = json.loads(capsys.readouterr().out)["columns"]
+    assert columns
+    assert all(col["num_pages_known"] is False for col in columns)
+
+
+def test_subcommand_column_show_walk_pages_harmless_with_offset_index(
+    sample_parquet_with_page_index, capsys
+):
+    """On a file that already has an OffsetIndex, `--walk-pages` yields the same
+    num_pages (the OffsetIndex fast path is still used)."""
+    cli.main(
+        [
+            "column",
+            "show",
+            str(sample_parquet_with_page_index),
+            "--column",
+            "dict_col",
+            "--walk-pages",
+        ]
+    )
+    payload = json.loads(capsys.readouterr().out)
+    for rg in payload["row_groups"]:
+        assert rg["num_pages_known"] is True
+        assert rg["num_pages"] >= 1
+
+
 def test_subcommand_column_show_unknown_column_lists_available(sample_parquet, capsys):
     with pytest.raises(SystemExit) as exc_info:
         cli.main(["column", "show", str(sample_parquet), "--column", "missing"])

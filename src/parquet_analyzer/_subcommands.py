@@ -13,12 +13,14 @@ v1 contract this module implements:
   the command to print just the schema URI
 * list-shaped outputs accept ``--limit N``
 
-The handlers are intentionally footer-only: nothing here triggers an eager
-walk through :meth:`ParquetFile.all_pages` /
+The handlers are intentionally footer-only by default: nothing here triggers
+an eager walk through :meth:`ParquetFile.all_pages` /
 :meth:`ParquetFile.all_segments`, and ``cc.num_pages`` is only consulted when
-``cc.has_offset_index`` is true (otherwise the lookup would walk page
-headers). Page-level subcommands (``page list / header / extract / decode``)
-are tracked in #21.
+``cc.has_offset_index`` is true (an O(1) lookup) — UNLESS the caller passes
+``--walk-pages`` on ``column show`` / ``column list`` / ``rowgroup show``, the
+explicit opt-in that counts pages by reading each selected chunk's page
+headers. Page-level inspection lives in the ``page`` verb (``page list /
+header / extract / decode``).
 
 **Adding a new field to any subcommand's output?** See
 ``docs/output-principles.md`` for the v1 contract — footer-bounded and
@@ -237,6 +239,7 @@ def _column_chunk_summary(
     col_index: int,
     footer_column: dict,
     cc_wrapper: Any | None = None,
+    walk_pages: bool = False,
 ) -> dict:
     """Footer-only per-chunk summary.
 
@@ -254,12 +257,13 @@ def _column_chunk_summary(
     * Existing ``data_page_offset``, ``dictionary_page_offset``,
       ``compressed_size``, ``uncompressed_size`` are unchanged.
 
-    ``num_pages`` is reported only when the chunk has an OffsetIndex
-    (``offset_index_offset`` present) AND ``cc_wrapper`` is supplied — the
-    wrapper does an O(1) OffsetIndex lookup via the offset_index_length
-    that the footer records. Without an OffsetIndex, computing the count
-    requires walking page headers; the v1 contract forbids that, so we
-    report ``num_pages: null`` / ``num_pages_known: false`` instead.
+    ``num_pages`` is reported (``num_pages_known: true``) when the chunk has
+    an OffsetIndex — an O(1) lookup via the ``offset_index_length`` the footer
+    records — OR when ``walk_pages`` is set, in which case the per-chunk page
+    headers are walked to count them (the ``--walk-pages`` opt-in, paying the
+    page-header read the footer-bounded default avoids). Without either, the
+    count would require a page walk that the default contract forbids, so
+    ``num_pages: null`` / ``num_pages_known: false`` is reported instead.
 
     ``_path`` is the canonical ``show`` navigation path for this chunk
     (``row_groups/<rg_index>/columns/<col_index>``) — feed it to ``show``
@@ -285,10 +289,12 @@ def _column_chunk_summary(
 
     num_pages: int | None = None
     num_pages_known = False
-    if has_offset_index and cc_wrapper is not None:
+    if cc_wrapper is not None and (has_offset_index or walk_pages):
         # cc_wrapper.num_pages is O(1) when has_offset_index is True (the
-        # ColumnChunk wrapper caches the OffsetIndex thrift parse). Verified
-        # in parquet_file.ColumnChunk.num_pages.
+        # ColumnChunk wrapper caches the OffsetIndex thrift parse). With
+        # walk_pages set and no OffsetIndex it instead walks this chunk's
+        # page headers (len(cc.pages())) — the per-chunk cost the
+        # --walk-pages opt-in accepts.
         num_pages = cc_wrapper.num_pages
         num_pages_known = True
 
@@ -526,7 +532,9 @@ def handle_rowgroup_show(args: argparse.Namespace) -> None:
 
         rg_wrapper = pf.row_groups[args.row_group]
         columns = [
-            _column_chunk_summary(args.row_group, col_idx, footer_cc, cc_wrapper)
+            _column_chunk_summary(
+                args.row_group, col_idx, footer_cc, cc_wrapper, args.walk_pages
+            )
             for col_idx, (footer_cc, cc_wrapper) in enumerate(
                 zip(rg.get("columns", []), rg_wrapper.columns)
             )
@@ -565,7 +573,9 @@ def handle_column_list(args: argparse.Namespace) -> None:
                 zip(footer_rg.get("columns", []), rg_wrapper.columns)
             ):
                 items.append(
-                    _column_chunk_summary(rg_idx, col_idx, footer_cc, cc_wrapper)
+                    _column_chunk_summary(
+                        rg_idx, col_idx, footer_cc, cc_wrapper, args.walk_pages
+                    )
                 )
     payload = _wrap_list(items, args.limit, "column-list")
     if args.row_group is not None:
@@ -622,7 +632,9 @@ def handle_column_show(args: argparse.Namespace) -> None:
                 (0, None),
             )
             row_group_details.append(
-                _column_chunk_summary(rg_idx, col_idx, footer_cc, cc_wrapper)
+                _column_chunk_summary(
+                    rg_idx, col_idx, footer_cc, cc_wrapper, args.walk_pages
+                )
             )
 
     # Aggregates across matched row groups. All footer-derived (sum of
@@ -1344,6 +1356,20 @@ def _add_limit(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_walk_pages(parser: argparse.ArgumentParser) -> None:
+    """The ``--walk-pages`` opt-in for the footer-only column/row-group verbs.
+    Off by default (footer-bounded); when set, it counts each chunk's pages by
+    walking its page headers so ``num_pages`` is reported even without an
+    OffsetIndex."""
+    parser.add_argument(
+        "--walk-pages",
+        action="store_true",
+        help="populate num_pages by reading page headers for chunks that have "
+        "no OffsetIndex (off by default — this walks the headers of every "
+        "selected chunk; --limit caps the output, not the walk)",
+    )
+
+
 _PAGE_NAVPATH_HELP = (
     "page path to address (e.g. 'row_groups/0/columns/4/pages/1', as emitted "
     "by 'page list'); alternative to --column/--page-index/--row-group"
@@ -1439,6 +1465,7 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
     rgs.add_argument(
         "--row-group", type=int, required=False, help="row group index (0-based)"
     )
+    _add_walk_pages(rgs)
 
     # --- column ----------------------------------------------------------
     col_parser = verb_subparsers.add_parser("column", help="column-chunk inspection")
@@ -1458,6 +1485,7 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
         default=None,
         help="restrict to this row group (0-based); default: all row groups",
     )
+    _add_walk_pages(cl)
 
     cs = col_subparsers.add_parser(
         "show", help="per-column-chunk metadata across row groups"
@@ -1474,6 +1502,7 @@ def build_subcommand_parser() -> argparse.ArgumentParser:
         default=None,
         help="restrict to this row group (0-based); default: all row groups",
     )
+    _add_walk_pages(cs)
 
     # --- page (page-walk / body-decode escape hatch) ---------------------
     page_parser = verb_subparsers.add_parser(

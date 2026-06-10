@@ -159,10 +159,10 @@ The page-level subcommands implement this contract one level deeper:
   consumer is asking for exactly that work.
 - The **verb-noun** per-subcommand escape-hatch flags (`column show
   --walk-pages`, and the equivalent on `column list` / `rowgroup show`)
-  build on the same page-walk infrastructure. (`show --walk-pages` on the
-  navigation surface already landed ahead of them — same flag, same cost
-  contract.)
-- `num_pages_known: true` becomes a reachable state on `--walk-pages`
+  build on the same page-walk infrastructure — and have landed. (`show
+  --walk-pages` on the navigation surface landed ahead of them — same flag,
+  same cost contract.)
+- `num_pages_known: true` is a reachable state on `--walk-pages`
   invocations (in addition to the existing OffsetIndex-present case).
 
 The contract — footer-bounded and walk-free by default, with the
