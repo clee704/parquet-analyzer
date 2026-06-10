@@ -28,3 +28,5 @@ def _make_fixture(shape: str):
 wide_parquet = _make_fixture("wide")
 tall_parquet = _make_fixture("tall")
 deep_parquet = _make_fixture("deep")
+paged_parquet = _make_fixture("paged")
+indexed_parquet = _make_fixture("indexed")
