@@ -263,7 +263,9 @@ def _column_chunk_summary(
     headers are walked to count them (the ``--walk-pages`` opt-in, paying the
     page-header read the footer-bounded default avoids). Without either, the
     count would require a page walk that the default contract forbids, so
-    ``num_pages: null`` / ``num_pages_known: false`` is reported instead.
+    ``num_pages: null`` / ``num_pages_known: false`` is reported instead — with
+    a ``num_pages_hint`` string pointing at ``--walk-pages`` so the output is
+    self-describing (``num_pages_hint`` is null once the count is known).
 
     ``_path`` is the canonical ``show`` navigation path for this chunk
     (``row_groups/<rg_index>/columns/<col_index>``) — feed it to ``show``
@@ -298,6 +300,17 @@ def _column_chunk_summary(
         num_pages = cc_wrapper.num_pages
         num_pages_known = True
 
+    # Self-describing affordance: when the count is unknown only because the
+    # footer-bounded default declined to walk, point the consumer at the opt-in
+    # (mirrors the `show` surface's _walk_required hint). Null once the count is
+    # known — via OffsetIndex or because --walk-pages already ran.
+    num_pages_hint: str | None = None
+    if not num_pages_known and not walk_pages:
+        num_pages_hint = (
+            "no OffsetIndex; re-run with --walk-pages to count pages "
+            "(reads page headers)"
+        )
+
     out: dict[str, Any] = {
         "row_group": rg_index,
         "_path": f"row_groups/{rg_index}/columns/{col_index}",
@@ -325,6 +338,7 @@ def _column_chunk_summary(
         "bloom_filter_length": md.get("bloom_filter_length"),
         "num_pages": num_pages,
         "num_pages_known": num_pages_known,
+        "num_pages_hint": num_pages_hint,
     }
 
     statistics = md.get("statistics")

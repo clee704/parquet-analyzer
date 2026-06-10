@@ -181,6 +181,7 @@ $ parquet-analyzer rowgroup show example.parquet --row-group 0
       "has_column_index": false, "column_index_offset": null, "column_index_length": null,
       "has_bloom_filter": false, "bloom_filter_offset": null, "bloom_filter_length": null,
       "num_pages": null, "num_pages_known": false,
+      "num_pages_hint": "no OffsetIndex; re-run with --walk-pages to count pages (reads page headers)",
       ...
     },
     ...
@@ -218,6 +219,7 @@ $ parquet-analyzer column show example.parquet --column Sex
       "has_column_index": false, "column_index_offset": null, "column_index_length": null,
       "has_bloom_filter": false, "bloom_filter_offset": null, "bloom_filter_length": null,
       "num_pages": null, "num_pages_known": false,
+      "num_pages_hint": "no OffsetIndex; re-run with --walk-pages to count pages (reads page headers)",
       "statistics": {"min": "...", "max": "...", "null_count": 0}
     }
   ]
@@ -227,12 +229,13 @@ $ parquet-analyzer column show example.parquet --column Sex
 `num_pages` is reported (`num_pages_known: true`) when the chunk has an
 `OffsetIndex` — an O(1) lookup. Without one, counting pages requires walking
 page headers, which the footer-bounded default avoids (`num_pages: null`,
-`num_pages_known: false`). Pass **`--walk-pages`** (on `column show`, `column
-list`, or `rowgroup show`) to opt into that walk and populate `num_pages`
-anyway — it reads the page headers of every selected chunk, so `--limit` caps
-the output but not the walk. SNPW (Spark Native Parquet Writer) writes
-OffsetIndex on every chunk; pyarrow does when `write_page_index=True`; older
-parquet-mr and many DuckDB files do not.
+`num_pages_known: false`, plus a `num_pages_hint` string pointing at
+`--walk-pages` so the output is self-describing). Pass **`--walk-pages`** (on
+`column show`, `column list`, or `rowgroup show`) to opt into that walk and
+populate `num_pages` anyway — it reads the page headers of every selected
+chunk, so `--limit` caps the output but not the walk. SNPW (Spark Native
+Parquet Writer) writes OffsetIndex on every chunk; pyarrow does when
+`write_page_index=True`; older parquet-mr and many DuckDB files do not.
 
 **Byte-range pairs.** Every per-chunk output carries the seek-and-read
 pair `chunk_offset` / `chunk_length`, plus `offset_index_offset` /

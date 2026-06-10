@@ -301,6 +301,8 @@ def test_subcommand_column_show_no_offset_index_marks_pages_unknown(
     assert rg["has_offset_index"] is False
     assert rg["num_pages"] is None
     assert rg["num_pages_known"] is False
+    # The output is self-describing: it points at the --walk-pages opt-in.
+    assert "--walk-pages" in rg["num_pages_hint"]
 
 
 def test_subcommand_column_show_with_offset_index_reports_pages(
@@ -314,6 +316,7 @@ def test_subcommand_column_show_with_offset_index_reports_pages(
         assert rg["has_offset_index"] is True
         assert rg["num_pages_known"] is True
         assert rg["num_pages"] >= 1
+        assert rg["num_pages_hint"] is None  # count known → no hint
 
 
 def test_subcommand_column_show_walk_pages_counts_without_offset_index(
@@ -330,6 +333,7 @@ def test_subcommand_column_show_walk_pages_counts_without_offset_index(
     rg = payload["row_groups"][0]
     assert rg["has_offset_index"] is False
     assert rg["num_pages_known"] is True
+    assert rg["num_pages_hint"] is None  # count now known → no hint
 
     # Ground truth: `page list` for the same chunk walks the pages independently.
     cli.main(["page", "list", str(sample_parquet), "--column", "ints"])
@@ -353,8 +357,8 @@ def test_subcommand_column_show_walk_pages_only_mutates_num_pages(
 
     assert (default["num_pages"], default["num_pages_known"]) == (None, False)
     assert walked["num_pages_known"] is True and walked["num_pages"] >= 1
-    # Everything except the two page-count fields must be byte-identical.
-    mutable = {"num_pages", "num_pages_known"}
+    # Everything except the page-count fields must be byte-identical.
+    mutable = {"num_pages", "num_pages_known", "num_pages_hint"}
     assert {k: v for k, v in default.items() if k not in mutable} == {
         k: v for k, v in walked.items() if k not in mutable
     }
@@ -373,12 +377,14 @@ def test_subcommand_column_list_walk_pages_counts_without_offset_index(
 
 
 def test_subcommand_column_list_default_does_not_walk(sample_parquet, capsys):
-    """Without the flag, the default stays footer-only: num_pages unknown."""
+    """Without the flag, the default stays footer-only: num_pages unknown, and
+    every item carries the --walk-pages hint."""
     cli.main(["column", "list", str(sample_parquet)])
     items = json.loads(capsys.readouterr().out)["items"]
     assert items
     assert all(item["num_pages_known"] is False for item in items)
     assert all(item["num_pages"] is None for item in items)
+    assert all("--walk-pages" in item["num_pages_hint"] for item in items)
 
 
 def test_subcommand_rowgroup_show_walk_pages_counts_without_offset_index(
@@ -392,6 +398,7 @@ def test_subcommand_rowgroup_show_walk_pages_counts_without_offset_index(
     for col in columns:
         assert col["num_pages_known"] is True
         assert col["num_pages"] >= 1
+        assert col["num_pages_hint"] is None
 
 
 def test_subcommand_rowgroup_show_default_does_not_walk(sample_parquet, capsys):
@@ -400,6 +407,7 @@ def test_subcommand_rowgroup_show_default_does_not_walk(sample_parquet, capsys):
     assert columns
     assert all(col["num_pages_known"] is False for col in columns)
     assert all(col["num_pages"] is None for col in columns)
+    assert all("--walk-pages" in col["num_pages_hint"] for col in columns)
 
 
 def test_subcommand_column_show_walk_pages_harmless_with_offset_index(
