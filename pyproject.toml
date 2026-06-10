@@ -109,6 +109,3 @@ extend-exclude = ["src/parquet"]
 [tool.pytest.ini_options]
 addopts = "-q --ignore=tests/bench"
 testpaths = ["tests"]
-
-[tool.setuptools.package-data]
-"parquet_analyzer" = ["templates/*.j2", "static/*"]

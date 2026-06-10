@@ -37,7 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.inputs.ref || github.ref }}
+          ref: ${{ inputs.ref || github.ref }}
           fetch-depth: 0 # full history + tags so hatch-vcs can derive the version
           persist-credentials: false
       - uses: actions/setup-python@v5
