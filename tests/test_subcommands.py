@@ -536,8 +536,11 @@ def test_rowgroup_show_uses_wrapper_for_num_pages(monkeypatch):
     assert payload["num_rows"] == 10
     assert payload["columns"][0]["num_pages"] == 4
     assert payload["columns"][0]["num_pages_known"] is True
+    assert payload["columns"][0]["num_pages_hint"] is None  # known → no hint
     assert payload["columns"][1]["num_pages"] is None
     assert payload["columns"][1]["num_pages_known"] is False
+    # Unknown only because of the footer-bounded default → self-describing hint.
+    assert "--walk-pages" in payload["columns"][1]["num_pages_hint"]
 
 
 def test_column_show_emits_byte_offset_fields(monkeypatch):
