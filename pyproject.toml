@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.24"]
+requires = ["hatchling>=1.24", "hatch-vcs>=0.4"]
 build-backend = "hatchling.build"
 
 [project]
@@ -54,7 +54,10 @@ Source = "https://github.com/clee704/parquet-analyzer"
 "parquet-analyzer" = "parquet_analyzer.cli:main"
 
 [tool.hatch.version]
-path = "src/parquet_analyzer/__init__.py"
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/parquet_analyzer/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = [
@@ -106,6 +109,3 @@ extend-exclude = ["src/parquet"]
 [tool.pytest.ini_options]
 addopts = "-q --ignore=tests/bench"
 testpaths = ["tests"]
-
-[tool.setuptools.package-data]
-"parquet_analyzer" = ["templates/*.j2", "static/*"]
