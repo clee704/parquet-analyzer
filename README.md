@@ -324,14 +324,23 @@ echoes the resolved `_path`.
 **`--limit N`** bounds the potentially-large output (`page list` and `page
 decode` accept it; `page header` and `page extract` don't — they return a
 single object or raw bytes). For `page list` it caps the `items`. For `page
-decode` it means **the first N rows of the page**, applied consistently to
-every collection in the view: each level stream's `levels`, the resolved/PLAIN
-`values`, and the dictionary index `runs` are all bounded to N rows — and the
-`runs` are *clipped* so they cover exactly N rows (a single `{value: 0, length:
-1000000}` run shows as `{value: 0, length: 5}` under `--limit 5`, not in full).
-Every bounded collection reports its own `total` / `returned` / `truncated` in
-rows, so a truncation is always explicit. `--kind statistics` ignores it (the
-header's statistics aren't per-row). Default is no limit (the whole page).
+decode` it bounds each collection in the view to the first **N rows** of the
+page: each level stream's `levels`, the resolved/PLAIN `values`, and the
+dictionary index `runs` — with the `runs` *clipped* so they cover exactly N
+rows (a single `{value: 0, length: 1000000}` run shows as `{value: 0, length:
+5}` under `--limit 5`, not in full). Every bounded collection reports its own
+`total` / `returned` / `truncated`, so a truncation is always explicit.
+`--kind statistics` ignores it (the header's statistics aren't per-row).
+Default is no limit (the whole page).
+
+One subtlety on **nullable** columns: the level streams have one entry per row
+(nulls included), while the value/index collections — resolved `values`, PLAIN
+`values`, and the dictionary `runs` — only carry the **present (non-null)**
+values, since parquet stores no index or value for a null. So `--limit N`
+bounds the level streams to the first N rows and the value/index collections to
+the first N present values; the two coincide exactly when the page has no
+nulls, and otherwise their `total`s differ (rows vs. non-null count) and their
+windows diverge by the nulls in the prefix.
 
 This makes `--limit` the tool for a page that's tiny on disk but expands to
 millions of values (one long RLE run): `page decode … --kind values --limit 10`
@@ -408,8 +417,8 @@ $ parquet-analyzer page decode example.parquet row_groups/0/columns/4/pages/1 --
   "definition_levels": {"bit_width": 1, "total": 891, "returned": 3, "truncated": true, "levels": [1, 1, 1]},
   "repetition_levels": null,
   "encoded_values": {
-    "kind": "dictionary_indices", "bit_width": 2, "total": 419, "returned": 3, "truncated": true,
-    "runs": [{"kind": "rle", "value": 0, "length": 1}, {"kind": "rle", "value": 1, "length": 3}, {"kind": "rle", "value": 0, "length": 4}]
+    "kind": "dictionary_indices", "bit_width": 2, "total": 891, "returned": 3, "truncated": true,
+    "runs": [{"kind": "rle", "value": 0, "length": 1}, {"kind": "rle", "value": 1, "length": 2}]
   }
 }
 ```

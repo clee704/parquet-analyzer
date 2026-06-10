@@ -1114,6 +1114,9 @@ def test_page_decode_faithful_default_respects_limit(multi_data_page, capsys):
     ev = payload["encoded_values"]
     assert ev["returned"] == 1
     assert ev["truncated"] is True
+    # The runs are actually clipped to cover exactly 1 row, not just metadata.
+    assert _expanded_run_count(ev["runs"]) == 1
+    assert ev["total"] > 1
 
 
 def test_page_decode_faithful_default_unsupported_encoding(tmp_path, capsys):
@@ -1364,3 +1367,58 @@ def test_page_decode_rle_runs_limit_clips_bit_packed_run(tmp_path, capsys):
     assert first["kind"] == "bit_packed"
     assert len(first["values"]) == 3
     assert first["length"] == 3
+
+
+def test_page_decode_rle_runs_limit_zero(tmp_path, capsys):
+    """--limit 0 on the runs view returns an empty runs array (0 rows)."""
+    path = tmp_path / "limit0.parquet"
+    pq.write_table(pa.table({"s": ["x"] * 100}), path, use_dictionary=True)
+    payload = _run(
+        [
+            "page",
+            "decode",
+            path,
+            "--column",
+            "s",
+            "--page-index",
+            "1",
+            "--kind",
+            "rle-runs",
+            "--limit",
+            "0",
+        ],
+        capsys,
+    )
+    assert payload["total"] == 100
+    assert payload["returned"] == 0
+    assert payload["truncated"] is True
+    assert payload["runs"] == []
+
+
+def test_page_decode_faithful_default_limit_nullable(tmp_path, capsys):
+    """On a nullable column, --limit bounds the level streams by row (nulls
+    included) but the value/index collections by present (non-null) value — so
+    their `total`s differ and a truncation reflects each domain. Documented
+    behavior: the two coincide only when the page has no nulls."""
+    path = tmp_path / "nullable.parquet"
+    pq.write_table(
+        pa.table(
+            {"s": pa.array([None, "a", None, "b", "a", "b", "a"], type=pa.string())}
+        ),
+        path,
+        use_dictionary=True,
+    )
+    payload = _run(
+        ["page", "decode", path, "--column", "s", "--page-index", "1", "--limit", "3"],
+        capsys,
+    )
+    assert payload["num_values"] == 7
+    assert payload["num_nulls"] == 2
+    # Level stream: one entry per row, so total counts all 7 rows.
+    assert payload["definition_levels"]["total"] == 7
+    assert payload["definition_levels"]["returned"] == 3
+    # Index stream: only the 5 present values; total is the non-null count.
+    ev = payload["encoded_values"]
+    assert ev["total"] == 5
+    assert ev["returned"] == 3
+    assert _expanded_run_count(ev["runs"]) == 3
