@@ -38,24 +38,18 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 0 # full history + tags so hatch-vcs can derive the version
           persist-credentials: false
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Refuse to publish a development version
+      - name: Refuse to publish a non-tagged (development) version
         run: |
-          version="$(grep -oP '__version__\s*=\s*"\K[^"]+' src/parquet_analyzer/__init__.py || true)"
-          if [ -z "$version" ]; then
-            echo "::error::could not determine __version__ from src/parquet_analyzer/__init__.py"
+          if ! git describe --exact-match --tags HEAD >/dev/null 2>&1; then
+            echo "::error::HEAD is not exactly on a tag, so hatch-vcs would produce a .dev/local version that PyPI rejects. Dispatch with a release tag via the 'ref' input (e.g. v0.6.0), or publish from a 'release: published' event."
             exit 1
           fi
-          echo "building version: $version"
-          case "$version" in
-            *dev*)
-              echo "::error::refusing to publish a development version ($version); dispatch with a release tag via the 'ref' input"
-              exit 1
-              ;;
-          esac
+          echo "building tagged version: $(git describe --exact-match --tags HEAD)"
       - name: Build sdist and wheel
         run: |
           python -m pip install --upgrade build
