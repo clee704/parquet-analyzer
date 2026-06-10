@@ -234,6 +234,15 @@ def _all_column_paths(footer: dict) -> list[tuple[str, ...]]:
 # ---------------------------------------------------------------------------
 
 
+# Self-describing affordance emitted as `num_pages_hint` when a chunk's page
+# count is unknown only because it has no OffsetIndex and the footer-bounded
+# default declined to walk. Names the --walk-pages opt-in (mirrors the `show`
+# surface's _walk_required hint).
+_NUM_PAGES_WALK_HINT = (
+    "no OffsetIndex; re-run with --walk-pages to count pages (reads page headers)"
+)
+
+
 def _column_chunk_summary(
     rg_index: int,
     col_index: int,
@@ -301,15 +310,14 @@ def _column_chunk_summary(
         num_pages_known = True
 
     # Self-describing affordance: when the count is unknown only because the
-    # footer-bounded default declined to walk, point the consumer at the opt-in
-    # (mirrors the `show` surface's _walk_required hint). Null once the count is
-    # known — via OffsetIndex or because --walk-pages already ran.
+    # chunk has no OffsetIndex and the footer-bounded default declined to walk,
+    # point the consumer at the opt-in (mirrors the `show` surface's
+    # _walk_required hint). Gated on `not has_offset_index` so the hint's "no
+    # OffsetIndex" wording always matches the actual reason. Null once the count
+    # is known — via OffsetIndex or because --walk-pages already ran.
     num_pages_hint: str | None = None
-    if not num_pages_known and not walk_pages:
-        num_pages_hint = (
-            "no OffsetIndex; re-run with --walk-pages to count pages "
-            "(reads page headers)"
-        )
+    if not num_pages_known and not walk_pages and not has_offset_index:
+        num_pages_hint = _NUM_PAGES_WALK_HINT
 
     out: dict[str, Any] = {
         "row_group": rg_index,

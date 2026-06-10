@@ -374,17 +374,20 @@ def test_subcommand_column_list_walk_pages_counts_without_offset_index(
         assert item["has_offset_index"] is False
         assert item["num_pages_known"] is True
         assert item["num_pages"] >= 1
+        assert item["num_pages_hint"] is None  # count now known → no hint
 
 
 def test_subcommand_column_list_default_does_not_walk(sample_parquet, capsys):
     """Without the flag, the default stays footer-only: num_pages unknown, and
-    every item carries the --walk-pages hint."""
+    every item carries the exact --walk-pages hint."""
+    from parquet_analyzer._subcommands import _NUM_PAGES_WALK_HINT
+
     cli.main(["column", "list", str(sample_parquet)])
     items = json.loads(capsys.readouterr().out)["items"]
     assert items
     assert all(item["num_pages_known"] is False for item in items)
     assert all(item["num_pages"] is None for item in items)
-    assert all("--walk-pages" in item["num_pages_hint"] for item in items)
+    assert all(item["num_pages_hint"] == _NUM_PAGES_WALK_HINT for item in items)
 
 
 def test_subcommand_rowgroup_show_walk_pages_counts_without_offset_index(
