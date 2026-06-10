@@ -648,11 +648,19 @@ def handle_column_show(args: argparse.Namespace) -> None:
             # Locate the same column chunk in the wrapper list. Matching by
             # path tuple is safe because parquet guarantees one chunk per
             # path per row group; its position is the column index used in
-            # the navigation _path.
-            col_idx, cc_wrapper = next(
+            # the navigation _path. If the match is ever absent the footer
+            # and the wrapper list have drifted apart — fail loudly rather
+            # than fabricate a placeholder index that would emit a wrong
+            # _path.
+            match = next(
                 ((i, c) for i, c in enumerate(rg_wrapper.columns) if c.path == path),
-                (0, None),
+                None,
             )
+            assert match is not None, (
+                f"column chunk {_path_display(path)!r} is present in the footer "
+                f"but absent from row group {rg_idx}'s parsed column list"
+            )
+            col_idx, cc_wrapper = match
             row_group_details.append(
                 _column_chunk_summary(
                     rg_idx, col_idx, footer_cc, cc_wrapper, args.walk_pages

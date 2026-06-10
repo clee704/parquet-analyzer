@@ -728,6 +728,25 @@ def test_column_show_not_found_lists_available(monkeypatch):
     assert "Available: a, b" in payload["message"]
 
 
+def test_column_show_raises_on_footer_wrapper_drift(monkeypatch):
+    """A column present in the footer but absent from the row group's parsed
+    column list is an internal inconsistency. The handler asserts the match
+    instead of fabricating a placeholder index (which would emit a wrong
+    navigation _path). The failure surfaces loudly rather than being masked
+    as a user-facing ``invalid_parquet_file`` error."""
+    cols = [_make_column(("a",))]
+    fake = _FakeParquetFile(
+        footer=_make_footer([(10, 100, cols)]),
+        num_rows=10,
+        num_columns=1,
+        # Wrapper's column list lacks ("a",) — the footer/wrapper invariant
+        # is broken. Cannot happen for a well-formed file.
+        row_group_wrappers=[_FakeRowGroup([])],
+    )
+    with pytest.raises(AssertionError, match="absent from row group 0"):
+        _run(["column", "show", "f.parquet", "--column", "a"], monkeypatch, fake)
+
+
 def test_column_show_filter_row_group_includes_marker(monkeypatch):
     cols = [_make_column(("a",))]
     fake = _FakeParquetFile(
