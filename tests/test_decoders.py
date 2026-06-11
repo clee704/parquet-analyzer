@@ -976,7 +976,7 @@ def test_decode_delta_binary_packed_roundtrip_via_pyarrow(
     assert page["encoding"] == "DELTA_BINARY_PACKED"
 
     decoded, stats = decode_delta_binary_packed(
-        stream, page["num_values"], parquet_type
+        stream, parquet_type, page["num_values"]
     )
 
     assert decoded == values
@@ -990,7 +990,7 @@ def test_decode_delta_binary_packed_single_value_has_no_blocks(tmp_path):
     path = tmp_path / "delta-one.parquet"
     _write_delta(path, pa.int32(), [123456])
     page, stream = _delta_value_stream(path)
-    decoded, stats = decode_delta_binary_packed(stream, page["num_values"], "INT32")
+    decoded, stats = decode_delta_binary_packed(stream, "INT32", page["num_values"])
     assert decoded == [123456]
     assert stats.first_value == 123456
     assert stats.total_value_count == 1
@@ -1003,7 +1003,7 @@ def test_decode_delta_binary_packed_all_equal_zero_deltas(tmp_path):
     path = tmp_path / "delta-equal.parquet"
     _write_delta(path, pa.int64(), [99] * 40)
     page, stream = _delta_value_stream(path)
-    decoded, stats = decode_delta_binary_packed(stream, page["num_values"], "INT64")
+    decoded, stats = decode_delta_binary_packed(stream, "INT64", page["num_values"])
     assert decoded == [99] * 40
     assert len(stats.blocks) == 1
     block = stats.blocks[0]
@@ -1022,7 +1022,7 @@ def test_decode_delta_binary_packed_multiblock(tmp_path):
     path = tmp_path / "delta-multi.parquet"
     _write_delta(path, pa.int32(), values)
     page, stream = _delta_value_stream(path)
-    decoded, stats = decode_delta_binary_packed(stream, page["num_values"], "INT32")
+    decoded, stats = decode_delta_binary_packed(stream, "INT32", page["num_values"])
     assert decoded == values
     assert len(stats.blocks) > 1, "expected more than one delta block"
     # Some miniblock somewhere must pack at a non-zero bit width given the
@@ -1047,7 +1047,7 @@ def test_decode_delta_binary_packed_empty_via_all_null_page(tmp_path):
     page, stream = _delta_value_stream(path)
     assert page["encoding"] == "DELTA_BINARY_PACKED"
     # All three values are null, so the stream encodes zero non-null values.
-    decoded, stats = decode_delta_binary_packed(stream, 0, "INT32")
+    decoded, stats = decode_delta_binary_packed(stream, "INT32", 0)
     assert decoded == []
     assert stats.total_value_count == 0
     assert stats.blocks == ()
@@ -1055,13 +1055,13 @@ def test_decode_delta_binary_packed_empty_via_all_null_page(tmp_path):
 
 def test_decode_delta_binary_packed_negative_num_values_raises():
     with pytest.raises(ValueError, match="num_values"):
-        decode_delta_binary_packed(b"\x80\x01\x04\x00\x00", -1, "INT32")
+        decode_delta_binary_packed(b"\x80\x01\x04\x00\x00", "INT32", -1)
 
 
 def test_decode_delta_binary_packed_unsupported_type_raises():
     # DELTA_BINARY_PACKED only encodes INT32 / INT64.
     with pytest.raises(ValueError, match="INT32"):
-        decode_delta_binary_packed(b"\x80\x01\x04\x00\x00", 0, "FLOAT")
+        decode_delta_binary_packed(b"\x80\x01\x04\x00\x00", "FLOAT", 0)
 
 
 def test_decode_delta_binary_packed_num_values_mismatch_raises(tmp_path):
@@ -1071,13 +1071,13 @@ def test_decode_delta_binary_packed_num_values_mismatch_raises(tmp_path):
     _write_delta(path, pa.int32(), list(range(20)))
     page, stream = _delta_value_stream(path)
     with pytest.raises(ValueError, match="total value count"):
-        decode_delta_binary_packed(stream, page["num_values"] - 1, "INT32")
+        decode_delta_binary_packed(stream, "INT32", page["num_values"] - 1)
 
 
 def test_decode_delta_binary_packed_truncated_header_raises():
     # A lone continuation byte: the block-size varint never terminates.
     with pytest.raises(ValueError, match="varint"):
-        decode_delta_binary_packed(b"\x80", 1, "INT32")
+        decode_delta_binary_packed(b"\x80", "INT32", 1)
 
 
 def test_decode_delta_binary_packed_truncated_bit_widths_raises():
@@ -1085,7 +1085,7 @@ def test_decode_delta_binary_packed_truncated_bit_widths_raises():
     # min_delta byte but only 2 of the required 4 miniblock bit-width bytes.
     stream = bytes([0x80, 0x01, 0x04, 0x02, 0x00, 0x00, 0x00, 0x00])
     with pytest.raises(ValueError, match="truncated"):
-        decode_delta_binary_packed(stream, 2, "INT32")
+        decode_delta_binary_packed(stream, "INT32", 2)
 
 
 def test_decode_delta_binary_packed_truncated_miniblock_raises():
@@ -1096,7 +1096,7 @@ def test_decode_delta_binary_packed_truncated_miniblock_raises():
         [0x80, 0x01, 0x04, 0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0xFF, 0xFF]
     )
     with pytest.raises(ValueError, match="truncated"):
-        decode_delta_binary_packed(stream, 2, "INT32")
+        decode_delta_binary_packed(stream, "INT32", 2)
 
 
 def test_decode_delta_binary_packed_invalid_miniblocks_per_block_raises():
@@ -1104,14 +1104,14 @@ def test_decode_delta_binary_packed_invalid_miniblocks_per_block_raises():
     # divided into zero miniblocks).
     stream = bytes([0x80, 0x01, 0x00, 0x00, 0x00])
     with pytest.raises(ValueError, match="miniblock"):
-        decode_delta_binary_packed(stream, 0, "INT32")
+        decode_delta_binary_packed(stream, "INT32", 0)
 
 
 def test_decode_delta_binary_packed_block_size_not_divisible_raises():
     # block_size=3, miniblocks_per_block=2 → 3 is not divisible by 2.
     stream = bytes([0x03, 0x02, 0x00, 0x00])
     with pytest.raises(ValueError, match="divisible"):
-        decode_delta_binary_packed(stream, 0, "INT32")
+        decode_delta_binary_packed(stream, "INT32", 0)
 
 
 def test_decode_delta_binary_packed_bit_width_too_large_raises():
@@ -1119,7 +1119,7 @@ def test_decode_delta_binary_packed_bit_width_too_large_raises():
     # Block: min_delta=0, miniblock 0 declares bit width 33 (> 32 for INT32).
     stream = bytes([0x80, 0x01, 0x04, 0x02, 0x00, 0x00, 0x21, 0x00, 0x00, 0x00])
     with pytest.raises(ValueError, match="bit width"):
-        decode_delta_binary_packed(stream, 2, "INT32")
+        decode_delta_binary_packed(stream, "INT32", 2)
 
 
 def test_decode_delta_binary_packed_stats_is_immutable():

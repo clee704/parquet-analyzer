@@ -832,7 +832,7 @@ def _unpack_bitpacked(data: bytes, pos: int, count: int, bit_width: int) -> list
 
 
 def decode_delta_binary_packed(
-    data: bytes, num_values: int, parquet_type: str
+    data: bytes, parquet_type: str, num_values: int
 ) -> tuple[list[int], DeltaBinaryPackedStats]:
     """Decode a DELTA_BINARY_PACKED value stream (Parquet encoding enum 5).
 
@@ -869,9 +869,9 @@ def decode_delta_binary_packed(
 
     Args:
         data: raw DELTA_BINARY_PACKED stream bytes (no level block).
+        parquet_type: ``INT32`` or ``INT64`` (case-insensitive).
         num_values: expected number of values (the column's non-null count).
             Must be >= 0 and equal the stream's header ``total value count``.
-        parquet_type: ``INT32`` or ``INT64`` (case-insensitive).
 
     Returns:
         Tuple of ``(values, stats)`` where ``values`` has length
