@@ -119,10 +119,11 @@ Every `show` step obeys the footer-bounded, walk-free rule:
   + the `_path` to descend) are footer-derived.
 - **Listing a column's pages never forces a page-header walk.** With an
   OffsetIndex the page stubs come from it (one bounded index parse — the
-  contract's "bounded extra index parse" tier); without one, the listing
-  is *withheld* behind a `_walk_required` affordance rather than silently
-  walking. That is the honesty pattern (above) applied to navigation: the
-  output says "this needs a walk" instead of quietly doing it.
+  contract's "bounded extra index parse" tier); without one, `pages` is
+  `null` and the listing is *withheld* behind a `walk_required` affordance
+  on the `_navigation` block rather than silently walking. That is the
+  honesty pattern (above) applied to navigation: the output says "this
+  needs a walk" instead of quietly doing it.
 
 `show` carries the two cost/size knobs the contract implies:
 
