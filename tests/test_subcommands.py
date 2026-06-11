@@ -728,6 +728,36 @@ def test_column_show_not_found_lists_available(monkeypatch):
     assert "Available: a, b" in payload["message"]
 
 
+def test_column_show_raises_on_footer_wrapper_drift(monkeypatch):
+    """A column present in the footer but absent from the row group's parsed
+    column list is an internal inconsistency. ``column show`` asserts the
+    match (via ``_locate_column_chunk``) instead of fabricating a placeholder
+    index (which would emit a wrong navigation _path). The failure surfaces
+    loudly rather than being masked as a user-facing ``invalid_parquet_file``
+    error — ``run_subcommand`` does not catch ``AssertionError``."""
+    cols = [_make_column(("a",))]
+    fake = _FakeParquetFile(
+        footer=_make_footer([(10, 100, cols)]),
+        num_rows=10,
+        num_columns=1,
+        # Wrapper's column list lacks ("a",) — the footer/wrapper invariant
+        # is broken. Cannot happen for a well-formed file.
+        row_group_wrappers=[_FakeRowGroup([])],
+    )
+    with pytest.raises(AssertionError, match="absent from row group 0"):
+        _run(["column", "show", "f.parquet", "--column", "a"], monkeypatch, fake)
+
+
+def test_locate_column_chunk_asserts_on_drift():
+    """The shared column-chunk lookup (used by both ``column show`` and the
+    ``page`` verbs) raises a diagnostic ``AssertionError`` naming the missing
+    path and row group when the footer and the parsed column list disagree,
+    rather than fabricating a placeholder index."""
+    rg = _FakeRowGroup([_FakeColumnChunk(("b",))])
+    with pytest.raises(AssertionError, match=r"'a'.*absent from row group 2"):
+        _subcommands._locate_column_chunk(rg, ("a",), 2)
+
+
 def test_column_show_filter_row_group_includes_marker(monkeypatch):
     cols = [_make_column(("a",))]
     fake = _FakeParquetFile(

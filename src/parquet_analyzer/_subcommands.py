@@ -229,6 +229,29 @@ def _all_column_paths(footer: dict) -> list[tuple[str, ...]]:
     return list(seen)
 
 
+def _locate_column_chunk(
+    rg_wrapper: Any, path: tuple[str, ...], rg_index: int
+) -> tuple[int, Any]:
+    """Return ``(col_index, ColumnChunk)`` for the chunk matching ``path`` in
+    the row group's parsed column list. The position is the column index used
+    in the navigation ``_path``.
+
+    Matching by path tuple is safe because parquet guarantees one chunk per
+    path per row group. If the match is ever absent the footer and the parsed
+    column list have drifted apart — fail loudly rather than fabricate a
+    placeholder index that would emit a wrong ``_path``.
+    """
+    match = next(
+        ((i, c) for i, c in enumerate(rg_wrapper.columns) if c.path == path),
+        None,
+    )
+    assert match is not None, (
+        f"column chunk {_path_display(path)!r} is present in the footer "
+        f"but absent from row group {rg_index}'s parsed column list"
+    )
+    return match
+
+
 # ---------------------------------------------------------------------------
 # Per-column-chunk summarisation (footer-only)
 # ---------------------------------------------------------------------------
@@ -247,7 +270,7 @@ def _column_chunk_summary(
     rg_index: int,
     col_index: int,
     footer_column: dict,
-    cc_wrapper: Any | None = None,
+    cc_wrapper: Any,
     walk_pages: bool = False,
 ) -> dict:
     """Footer-only per-chunk summary.
@@ -300,7 +323,7 @@ def _column_chunk_summary(
 
     num_pages: int | None = None
     num_pages_known = False
-    if cc_wrapper is not None and (has_offset_index or walk_pages):
+    if has_offset_index or walk_pages:
         # cc_wrapper.num_pages is O(1) when has_offset_index is True (the
         # ColumnChunk wrapper caches the OffsetIndex thrift parse). With
         # walk_pages set and no OffsetIndex it instead walks this chunk's
@@ -645,14 +668,7 @@ def handle_column_show(args: argparse.Namespace) -> None:
         row_group_details: list[dict] = []
         for rg_idx, footer_cc in matches:
             rg_wrapper = pf.row_groups[rg_idx]
-            # Locate the same column chunk in the wrapper list. Matching by
-            # path tuple is safe because parquet guarantees one chunk per
-            # path per row group; its position is the column index used in
-            # the navigation _path.
-            col_idx, cc_wrapper = next(
-                ((i, c) for i, c in enumerate(rg_wrapper.columns) if c.path == path),
-                (0, None),
-            )
+            col_idx, cc_wrapper = _locate_column_chunk(rg_wrapper, path, rg_idx)
             row_group_details.append(
                 _column_chunk_summary(
                     rg_idx, col_idx, footer_cc, cc_wrapper, args.walk_pages
@@ -734,9 +750,7 @@ def _resolve_page_column(
         )
     path = _path_tuple(matches[0][1])
     rg_wrapper = pf.row_groups[row_group]
-    col_idx, cc = next(
-        (i, c) for i, c in enumerate(rg_wrapper.columns) if c.path == path
-    )
+    col_idx, cc = _locate_column_chunk(rg_wrapper, path, row_group)
     return row_group, col_idx, cc
 
 
