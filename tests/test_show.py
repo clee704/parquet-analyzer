@@ -187,6 +187,8 @@ def test_show_column_no_offset_index_withholds_pages(no_index, monkeypatch):
     assert nav["reason"] == "no OffsetIndex"
     assert "--walk-pages" in nav["hint"]
     assert nav["children_total"] is None
+    assert nav["children_shown"] == 0
+    assert nav["children_truncated"] is False
     assert out["dictionary_page"] is None
     assert counts["page"] == 0, "withheld listing must not read any page header"
 
