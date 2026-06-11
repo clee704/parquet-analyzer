@@ -1,9 +1,9 @@
 # Parquet Analyzer
 
-The parquet inspection CLI for AI agents and humans who need to verify
-encoding-level behavior — what codec a column actually got, where on
-disk its pages live, whether dictionary encoding was applied, what the
-RLE runs inside a page look like.
+The parquet inspection toolkit — a CLI and Python library for AI agents and
+humans who need to verify encoding-level behavior: what codec a column
+actually got, where on disk its pages live, whether dictionary encoding was
+applied, what the RLE runs inside a page look like.
 
 ```bash
 $ parquet-analyzer file summary data.parquet
@@ -152,6 +152,37 @@ parquet-analyzer file validate data.parquet
 ```
 
 → See [file](#file--file-level-inspection)
+
+### 6. Use it as a Python library
+
+`ParquetFile` is a first-class Python API. Open a file lazily (footer-only
+on construction), walk row groups and column chunks, and decode a page body
+in your own code — no subprocess, no JSON parsing:
+
+```python
+from parquet_analyzer import ParquetFile
+
+with ParquetFile("titanic.parquet") as pf:
+    print(pf.num_rows, pf.num_row_groups, pf.num_columns)
+    # 891 1 12
+
+    cc = pf.row_groups[0].columns[4]   # Sex column
+    print(cc.path, cc.type, cc.encodings)
+    # ('Sex',) BYTE_ARRAY ('PLAIN', 'RLE_DICTIONARY')
+
+    page = cc.page(1)                  # data page (index 1; 0 is the dict page)
+    decoded = page.decode()
+    print(decoded.definition_levels.bit_width, decoded.values.bit_width)
+    # 1 2
+
+    print(decoded.values.runs[:3])     # dictionary index RLE runs, on-disk structure
+    # (RleRun(value=0, length=1), RleRun(value=1, length=3), RleRun(value=0, length=4))
+
+    print(page.physical_values()[:5])  # dict indices resolved to physical-type values
+    # [b'male', b'female', b'female', b'female', b'male']
+```
+
+→ See [Library API](#library-api)
 
 ## Compared to
 
@@ -699,122 +730,6 @@ exits non-zero on operational errors. `file validate` is the exception:
 parse failures are reported as findings (`valid: false`, exit 0) so the
 subcommand stays useful for "is this file partially-written?" queries.
 
-### Legacy whole-file modes
-
-The legacy CLI surface accepts a positional file path plus an optional
-`--output-mode` flag. It performs a full eager walk of all page headers and
-emits a complete JSON bundle or an interactive HTML report. Use the
-verb-noun subcommands above for targeted inspection; reach for these modes
-when you want a complete dump or the interactive HTML view.
-
-```bash
-# Full JSON bundle (summary + footer + pages)
-parquet-analyzer example.parquet
-
-# Raw segment structures (offsets, lengths, thrift payloads)
-parquet-analyzer --output-mode segments example.parquet
-
-# Interactive HTML report
-parquet-analyzer --output-mode html -o report.html example.parquet
-
-# HTML report with selected sections only
-parquet-analyzer --output-mode html \
-  --html-sections summary schema key-value-metadata row-groups columns segments \
-  -o report.html example.parquet
-
-# Enable debug logging
-parquet-analyzer --log-level DEBUG example.parquet
-```
-
-#### Standard output (`--output-mode default`)
-
-The default output provides a structured JSON payload with three main sections:
-
-**Summary statistics**
-```json
-{
-  "summary": {
-    "num_rows": 10,
-    "num_row_groups": 1,
-    "num_columns": 2,
-    "num_pages": 2,
-    "num_data_pages": 2,
-    "num_v1_data_pages": 2,
-    "num_v2_data_pages": 0,
-    "num_dict_pages": 0,
-    "page_header_size": 47,
-    "uncompressed_page_data_size": 130,
-    "compressed_page_data_size": 96,
-    "uncompressed_page_size": 177,
-    "compressed_page_size": 143,
-    "column_index_size": 48,
-    "offset_index_size": 23,
-    "bloom_filter_size": 0,
-    "footer_size": 527,
-    "file_size": 753
-  }
-}
-```
-
-**Footer metadata** — complete Parquet file metadata including schema
-definition, row group information, column chunk metadata, and encoding and
-compression details.
-
-**Page information** — detailed breakdown of all pages organized by column:
-data pages with encoding and statistics, dictionary pages, column indexes,
-offset indexes, and bloom filters.
-
-#### Segments (`--output-mode segments`)
-
-When using `--output-mode segments`, the tool outputs a detailed segment-by-segment breakdown showing:
-
-```json
-[
-  {
-    "offset": 0,
-    "length": 4,
-    "name": "magic_number",
-    "value": "PAR1"
-  },
-  {
-    "offset": 4,
-    "length": 24,
-    "name": "page",
-    "value": [
-      {
-        "offset": 5,
-        "length": 1,
-        "name": "type",
-        "value": 0,
-        "metadata": {
-          "type": "i32",
-          "enum_type": "PageType",
-          "enum_name": "DATA_PAGE"
-        }
-      }
-    ]
-  }
-]
-```
-
-This mode is useful for:
-- Understanding exact binary layout
-- Analyzing file format compliance
-- Optimizing file structure
-
-#### HTML report (`--output-mode html`)
-
-Emits a standalone HTML document with collapsible sections for summary statistics, schema, key-value metadata, row groups, aggregated column statistics, segments, and the raw footer. Use the `--html-sections` flag to control which sections are rendered:
-
-```bash
-parquet-analyzer --output-mode html \
-  --html-sections summary schema key-value-metadata row-groups columns segments \
-  -o report.html \
-  example.parquet
-```
-
-Example: https://clee704.github.io/parquet-analyzer/examples/example.html
-
 ## Library API
 
 `parquet-analyzer` is also a Python library. Anything the CLI does is available as an importable function, so you can build encoding-level verification scripts without shelling out.
@@ -1025,6 +940,122 @@ Gotchas worth knowing:
 * **Required columns have no level block.** When `max_def_level == 0`, the file contains no def-level bytes at all. `decode_levels` returns `[0] * num_values` in that case.
 * **Indices skip nulls.** For nullable columns, the indices stream length is the non-null row count (`sum(def_levels)` when `max_def_level == 1`), not the page's `num_values`. Asking `decode_rle_bitpacked_hybrid` for too many values raises `truncated` (or silently produces garbage indices if the indices block is followed by other bytes).
 * **Per-page dictionary-index bit width.** Dictionary-encoded data pages start their indices block with a 1-byte `bit_width` chosen by the writer (it may exceed `ceil(log2(dict_size))`). Read that byte first, then pass the rest to `decode_rle_bitpacked_hybrid`.
+
+### Legacy whole-file modes
+
+The legacy CLI surface accepts a positional file path plus an optional
+`--output-mode` flag. It performs a full eager walk of all page headers and
+emits a complete JSON bundle or an interactive HTML report. Use the
+verb-noun subcommands above for targeted inspection; reach for these modes
+when you want a complete dump or the interactive HTML view.
+
+```bash
+# Full JSON bundle (summary + footer + pages)
+parquet-analyzer example.parquet
+
+# Raw segment structures (offsets, lengths, thrift payloads)
+parquet-analyzer --output-mode segments example.parquet
+
+# Interactive HTML report
+parquet-analyzer --output-mode html -o report.html example.parquet
+
+# HTML report with selected sections only
+parquet-analyzer --output-mode html \
+  --html-sections summary schema key-value-metadata row-groups columns segments \
+  -o report.html example.parquet
+
+# Enable debug logging
+parquet-analyzer --log-level DEBUG example.parquet
+```
+
+#### Standard output (`--output-mode default`)
+
+The default output provides a structured JSON payload with three main sections:
+
+**Summary statistics**
+```json
+{
+  "summary": {
+    "num_rows": 10,
+    "num_row_groups": 1,
+    "num_columns": 2,
+    "num_pages": 2,
+    "num_data_pages": 2,
+    "num_v1_data_pages": 2,
+    "num_v2_data_pages": 0,
+    "num_dict_pages": 0,
+    "page_header_size": 47,
+    "uncompressed_page_data_size": 130,
+    "compressed_page_data_size": 96,
+    "uncompressed_page_size": 177,
+    "compressed_page_size": 143,
+    "column_index_size": 48,
+    "offset_index_size": 23,
+    "bloom_filter_size": 0,
+    "footer_size": 527,
+    "file_size": 753
+  }
+}
+```
+
+**Footer metadata** — complete Parquet file metadata including schema
+definition, row group information, column chunk metadata, and encoding and
+compression details.
+
+**Page information** — detailed breakdown of all pages organized by column:
+data pages with encoding and statistics, dictionary pages, column indexes,
+offset indexes, and bloom filters.
+
+#### Segments (`--output-mode segments`)
+
+When using `--output-mode segments`, the tool outputs a detailed segment-by-segment breakdown showing:
+
+```json
+[
+  {
+    "offset": 0,
+    "length": 4,
+    "name": "magic_number",
+    "value": "PAR1"
+  },
+  {
+    "offset": 4,
+    "length": 24,
+    "name": "page",
+    "value": [
+      {
+        "offset": 5,
+        "length": 1,
+        "name": "type",
+        "value": 0,
+        "metadata": {
+          "type": "i32",
+          "enum_type": "PageType",
+          "enum_name": "DATA_PAGE"
+        }
+      }
+    ]
+  }
+]
+```
+
+This mode is useful for:
+- Understanding exact binary layout
+- Analyzing file format compliance
+- Optimizing file structure
+
+#### HTML report (`--output-mode html`)
+
+Emits a standalone HTML document with collapsible sections for summary statistics, schema, key-value metadata, row groups, aggregated column statistics, segments, and the raw footer. Use the `--html-sections` flag to control which sections are rendered:
+
+```bash
+parquet-analyzer --output-mode html \
+  --html-sections summary schema key-value-metadata row-groups columns segments \
+  -o report.html \
+  example.parquet
+```
+
+Example: https://clee704.github.io/parquet-analyzer/examples/example.html
 
 ## Design
 
