@@ -1122,6 +1122,28 @@ def test_decode_delta_binary_packed_bit_width_too_large_raises():
         decode_delta_binary_packed(stream, "INT32", 2)
 
 
+def test_decode_delta_binary_packed_corrupt_huge_block_size_raises_not_oom():
+    # A corrupt block_size (2^21) with a non-zero bit width must be rejected as
+    # truncated against the actual stream length, NOT trigger a ~MB allocation.
+    # Header: block_size=2097152 (ULEB128 80 80 80 01), miniblocks=1, total=2,
+    # first_value=0; block: min_delta=0, miniblock-0 bit width 1, no body bytes.
+    stream = bytes([0x80, 0x80, 0x80, 0x01, 0x01, 0x02, 0x00, 0x00, 0x01])
+    with pytest.raises(ValueError, match="truncated"):
+        decode_delta_binary_packed(stream, "INT32", 2)
+
+
+def test_decode_delta_binary_packed_huge_block_size_zero_bitwidth_caps_allocation():
+    # bit_width 0 carries no body, so the truncation check can't catch a corrupt
+    # block_size — the decoder must instead materialize only the values still
+    # needed (here 1), not block_size (65536) zeros per miniblock.
+    # Header: block_size=65536 (ULEB128 80 80 04), miniblocks=1, total=2,
+    # first_value=0; block: min_delta=5 (zigzag 0x0A), miniblock-0 bit width 0.
+    stream = bytes([0x80, 0x80, 0x04, 0x01, 0x02, 0x00, 0x0A, 0x00])
+    decoded, stats = decode_delta_binary_packed(stream, "INT32", 2)
+    assert decoded == [0, 5]
+    assert stats.block_size == 65536
+
+
 def test_decode_delta_binary_packed_stats_is_immutable():
     """Frozen dataclasses — assignment should raise."""
     block = DeltaBlock(min_delta=1, bit_widths=(0, 0, 0, 0))

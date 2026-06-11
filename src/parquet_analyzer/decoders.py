@@ -802,20 +802,16 @@ def _zigzag_decode(n: int) -> int:
 
 def _unpack_bitpacked(data: bytes, pos: int, count: int, bit_width: int) -> list[int]:
     """Unpack ``count`` LSB-first bit-packed values of ``bit_width`` bits each,
-    starting at ``pos``. Consumes ``ceil(count * bit_width / 8)`` bytes; the
-    caller advances its own cursor by that amount.
+    starting at ``pos``. ``bit_width == 0`` yields ``count`` zeros and consumes
+    no bytes.
 
-    ``bit_width == 0`` yields ``count`` zeros and consumes no bytes.
+    Precondition: the caller guarantees ``ceil(count * bit_width / 8)`` bytes
+    are available at ``pos``. The DELTA_BINARY_PACKED decoder validates the
+    full (padded) miniblock body — see ``decode_delta_binary_packed`` — before
+    calling, so this helper does not re-check bounds.
     """
     if bit_width == 0:
         return [0] * count
-    nbytes = (count * bit_width + 7) // 8
-    if pos + nbytes > len(data):
-        raise ValueError(
-            f"DELTA_BINARY_PACKED miniblock truncated at offset {pos}: need "
-            f"{nbytes} bytes for {count} values at bit width {bit_width}, "
-            f"have {len(data) - pos}"
-        )
     mask = (1 << bit_width) - 1
     values: list[int] = []
     bit_buf = 0
@@ -950,15 +946,23 @@ def decode_delta_binary_packed(
                     f"DELTA_BINARY_PACKED miniblock bit width {bit_width} "
                     f"exceeds the {type_bits}-bit {ptype} type width"
                 )
-            unpacked = _unpack_bitpacked(data, pos, values_per_miniblock, bit_width)
-            pos += (values_per_miniblock * bit_width + 7) // 8
-            for delta in unpacked:
-                if len(values) >= total_value_count:
-                    break
+            body_nbytes = (values_per_miniblock * bit_width + 7) // 8
+            if pos + body_nbytes > end:
+                raise ValueError(
+                    f"DELTA_BINARY_PACKED miniblock truncated at offset {pos}: "
+                    f"need {body_nbytes} bytes for {values_per_miniblock} "
+                    f"values at bit width {bit_width}, have {end - pos}"
+                )
+            # Materialize only the values still needed. A corrupt block_size
+            # would otherwise force a huge allocation for a tiny stream; the
+            # cursor still advances past the full (padded) miniblock body.
+            take = min(values_per_miniblock, total_value_count - len(values))
+            for delta in _unpack_bitpacked(data, pos, take, bit_width):
                 value = (values[-1] + min_delta + delta) & type_mask
                 if value & sign_bit:
                     value -= type_mask + 1
                 values.append(value)
+            pos += body_nbytes
 
     stats = DeltaBinaryPackedStats(
         block_size=block_size,
