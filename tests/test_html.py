@@ -454,10 +454,15 @@ def test_encode_stats_value_decimal_int64_and_fixed_len():
     assert _html.decode_stats_value(encoded_i64, "INT64", decimal_type) == Decimal(
         "12.34"
     )
-    # FIXED_LEN_BYTE_ARRAY decimal is big-endian two's-complement.
+    # FIXED_LEN_BYTE_ARRAY decimal is big-endian two's-complement. The branch
+    # currently encodes to the minimal width and IGNORES type_length (passing 4
+    # below still yields 2 bytes for 1234) — see issue #61. The HTML report only
+    # round-trips the value for display, so the width is not user-visible; this
+    # pins the current behavior until #61 tightens it to the schema width.
     encoded_flba = _html.encode_stats_value(
-        Decimal("12.34"), "FIXED_LEN_BYTE_ARRAY", 0, decimal_type
+        Decimal("12.34"), "FIXED_LEN_BYTE_ARRAY", 4, decimal_type
     )
+    assert encoded_flba == b"\x04\xd2"  # minimal width; type_length(4) not honored
     assert int.from_bytes(encoded_flba, byteorder="big", signed=True) == 1234
     assert _html.decode_stats_value(
         encoded_flba, "FIXED_LEN_BYTE_ARRAY", decimal_type
