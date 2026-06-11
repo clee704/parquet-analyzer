@@ -37,14 +37,7 @@ DEFAULT_FLOOR = 95.0
 # Modules below the default floor, pinned to a ratcheting baseline + a
 # tracking issue. floor = the current baseline (coverage may not drop
 # below it); issue = the GitHub issue tracking the work to clear it.
-KNOWN_GAPS: dict[str, dict] = {
-    # Legacy HTML report generator; tracked by issue #28. The baseline
-    # dropped from 87.0 to 86.0 when the statistics-decode kernel moved out
-    # of _html into _core (shared with the tree serializer) — that removed
-    # *covered* lines from _html, lowering its ratio without any real
-    # coverage loss (the logic is now covered in _core). Not a regression.
-    "parquet_analyzer/_html.py": {"floor": 86.0, "issue": 28},
-}
+KNOWN_GAPS: dict[str, dict] = {}
 
 # Trivial or generated modules with no meaningful logic to test.
 EXCLUDE = {
