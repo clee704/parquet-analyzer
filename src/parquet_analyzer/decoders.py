@@ -57,8 +57,11 @@ import cramjam  # type: ignore[import-untyped]
 __all__ = [
     "BitPackedRun",
     "DecodeStats",
+    "DeltaBinaryPackedStats",
+    "DeltaBlock",
     "RleBitPackedStream",
     "RleRun",
+    "decode_delta_binary_packed",
     "decode_levels",
     "decode_plain",
     "decode_rle_bitpacked_hybrid",
@@ -149,6 +152,51 @@ class DecodeStats:
     rle_run_lengths: tuple[int, ...]
     rle_run_values: tuple[int, ...]
     bit_packed_run_lengths: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class DeltaBlock:
+    """One block of a DELTA_BINARY_PACKED stream.
+
+    ``min_delta`` is the block's minimum delta (subtracted from every delta in
+    the block before bit-packing, so the packed values are non-negative).
+    ``bit_widths`` records the packing width of each miniblock, in order, as
+    read from the one-bit-width-byte-per-miniblock list at the front of the
+    block.
+
+    ``bit_widths`` always has ``miniblocks_per_block`` entries — the
+    **encoder-declared** widths from disk. In the final block the encoder still
+    writes a bit-width byte for every miniblock even when the trailing
+    miniblocks hold no values (those miniblocks carry no body bytes); recording
+    all of them preserves "what the encoder wrote on disk" inspection
+    semantics, mirroring :class:`DecodeStats`'s encoder-declared run lengths."""
+
+    min_delta: int
+    bit_widths: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class DeltaBinaryPackedStats:
+    """Header and per-block structure of a DELTA_BINARY_PACKED stream produced
+    by :func:`decode_delta_binary_packed`.
+
+    A flat view of the encoder's choices that the reconstructed values alone do
+    not reveal: the block/miniblock geometry, the self-described value count,
+    the first value, and each block's ``min_delta`` + miniblock ``bit_widths``.
+
+    ``block_size`` and ``miniblocks_per_block`` come from the stream header and
+    set the miniblock geometry (``block_size // miniblocks_per_block`` values
+    per miniblock). ``total_value_count`` is the header's self-described value
+    count (equals the decoded-list length). ``first_value`` is the seed value
+    the deltas accumulate from. ``blocks`` is the ordered per-block structure;
+    it is empty for a single-value stream (the header alone encodes it) and for
+    a zero-value stream."""
+
+    block_size: int
+    miniblocks_per_block: int
+    total_value_count: int
+    first_value: int
+    blocks: tuple[DeltaBlock, ...]
 
 
 # ---------------------------------------------------------------------------
@@ -737,3 +785,196 @@ def _decode_plain_fixed_len_byte_array(
     return [
         bytes(data[i * type_length : (i + 1) * type_length]) for i in range(num_values)
     ]
+
+
+# ---------------------------------------------------------------------------
+# DELTA_BINARY_PACKED values
+# ---------------------------------------------------------------------------
+
+
+_DELTA_TYPE_BITS: dict[str, int] = {"INT32": 32, "INT64": 64}
+
+
+def _zigzag_decode(n: int) -> int:
+    """Decode a zigzag-encoded unsigned integer back to its signed value."""
+    return (n >> 1) ^ -(n & 1)
+
+
+def _unpack_bitpacked(data: bytes, pos: int, count: int, bit_width: int) -> list[int]:
+    """Unpack ``count`` LSB-first bit-packed values of ``bit_width`` bits each,
+    starting at ``pos``. ``bit_width == 0`` yields ``count`` zeros and consumes
+    no bytes.
+
+    Precondition: the caller guarantees ``ceil(count * bit_width / 8)`` bytes
+    are available at ``pos``. The DELTA_BINARY_PACKED decoder validates the
+    full (padded) miniblock body — see ``decode_delta_binary_packed`` — before
+    calling, so this helper does not re-check bounds.
+    """
+    if bit_width == 0:
+        return [0] * count
+    mask = (1 << bit_width) - 1
+    values: list[int] = []
+    bit_buf = 0
+    bit_count = 0
+    for _ in range(count):
+        while bit_count < bit_width:
+            bit_buf |= data[pos] << bit_count
+            pos += 1
+            bit_count += 8
+        values.append(bit_buf & mask)
+        bit_buf >>= bit_width
+        bit_count -= bit_width
+    return values
+
+
+def decode_delta_binary_packed(
+    data: bytes, parquet_type: str, num_values: int
+) -> tuple[list[int], DeltaBinaryPackedStats]:
+    """Decode a DELTA_BINARY_PACKED value stream (Parquet encoding enum 5).
+
+    This is the modern default encoding pyarrow / parquet-mr emit for ``INT32``
+    and ``INT64`` columns. The stream stores a header followed by a sequence of
+    blocks of bit-packed deltas:
+
+    * **Header** — ``block size`` (ULEB128), ``miniblocks per block``
+      (ULEB128), ``total value count`` (ULEB128), and the ``first value`` (a
+      zigzag ULEB128). Every miniblock holds ``block_size //
+      miniblocks_per_block`` values.
+    * **Each block** — a ``min delta`` (zigzag varint), then one bit-width byte
+      per miniblock, then the miniblock bodies. Each body is LSB-first
+      bit-packed at its declared width. A value is reconstructed as
+      ``value[i] = value[i-1] + min_delta + unpacked[i]``.
+
+    The final block writes a bit-width byte for every declared miniblock, but
+    only the miniblocks that actually carry values have body bytes; reading
+    stops once ``total_value_count`` values have been produced, so trailing
+    padding (within the last used miniblock and the unused miniblocks) is
+    ignored.
+
+    Reconstruction wraps to the column type's width and reinterprets as signed
+    (``INT32`` → 32 bits, ``INT64`` → 64 bits). This is required for
+    correctness: deltas between extreme values overflow the fixed-width type,
+    and the encoder relies on two's-complement wraparound.
+
+    ``data`` is the raw value stream only — for a data page, slice off any
+    definition/repetition-level block first (see :func:`decode_v1_level_block`
+    for V1, or the header byte lengths for V2). ``num_values`` is the expected
+    non-null value count; it is cross-checked against the stream's
+    self-described ``total value count`` and a ``ValueError`` is raised on
+    mismatch.
+
+    Args:
+        data: raw DELTA_BINARY_PACKED stream bytes (no level block).
+        parquet_type: ``INT32`` or ``INT64`` (case-insensitive).
+        num_values: expected number of values (the column's non-null count).
+            Must be >= 0 and equal the stream's header ``total value count``.
+
+    Returns:
+        Tuple of ``(values, stats)`` where ``values`` has length
+        ``num_values`` and ``stats`` is the :class:`DeltaBinaryPackedStats`
+        header/block structure.
+
+    Raises:
+        ValueError: ``num_values`` is negative, ``parquet_type`` is not
+            ``INT32``/``INT64``, the header is structurally invalid, a
+            declared bit width exceeds the type width, the stream is
+            truncated, or ``num_values`` disagrees with the header's total
+            value count.
+    """
+    if num_values < 0:
+        raise ValueError(f"num_values must be >= 0, got {num_values}")
+    ptype = parquet_type.upper()
+    if ptype not in _DELTA_TYPE_BITS:
+        raise ValueError(
+            f"DELTA_BINARY_PACKED only encodes INT32 and INT64 values; got "
+            f"{parquet_type!r}."
+        )
+    type_bits = _DELTA_TYPE_BITS[ptype]
+
+    end = len(data)
+    block_size, pos = _read_varint(data, 0, end)
+    miniblocks_per_block, pos = _read_varint(data, pos, end)
+    total_value_count, pos = _read_varint(data, pos, end)
+    first_zigzag, pos = _read_varint(data, pos, end)
+    first_value = _zigzag_decode(first_zigzag)
+
+    if miniblocks_per_block <= 0:
+        raise ValueError(
+            f"DELTA_BINARY_PACKED miniblocks per block must be > 0, got "
+            f"{miniblocks_per_block}"
+        )
+    if block_size <= 0 or block_size % miniblocks_per_block != 0:
+        raise ValueError(
+            f"DELTA_BINARY_PACKED block size {block_size} must be a positive "
+            f"multiple of the {miniblocks_per_block} miniblocks per block"
+        )
+    if total_value_count != num_values:
+        raise ValueError(
+            f"DELTA_BINARY_PACKED total value count {total_value_count} does "
+            f"not match expected num_values {num_values}"
+        )
+
+    values_per_miniblock = block_size // miniblocks_per_block
+    type_mask = (1 << type_bits) - 1
+    sign_bit = 1 << (type_bits - 1)
+
+    # The first value is the raw seed; reinterpret it at the column's width
+    # (two's-complement) exactly like every subsequent value, so a corrupt
+    # out-of-range seed can't escape the type. A no-op for valid data.
+    first_value &= type_mask
+    if first_value & sign_bit:
+        first_value -= type_mask + 1
+
+    values: list[int] = []
+    blocks: list[DeltaBlock] = []
+    if total_value_count > 0:
+        values.append(first_value)
+
+    while len(values) < total_value_count:
+        min_delta_zigzag, pos = _read_varint(data, pos, end)
+        min_delta = _zigzag_decode(min_delta_zigzag)
+        if pos + miniblocks_per_block > end:
+            raise ValueError(
+                f"DELTA_BINARY_PACKED block truncated at offset {pos}: need "
+                f"{miniblocks_per_block} bit-width bytes, have {end - pos}"
+            )
+        bit_widths = tuple(data[pos : pos + miniblocks_per_block])
+        pos += miniblocks_per_block
+        blocks.append(DeltaBlock(min_delta=min_delta, bit_widths=bit_widths))
+
+        for bit_width in bit_widths:
+            if len(values) >= total_value_count:
+                # The remaining miniblocks of the final block carry no body
+                # bytes (their declared bit widths were already recorded).
+                break
+            if bit_width > type_bits:
+                raise ValueError(
+                    f"DELTA_BINARY_PACKED miniblock bit width {bit_width} "
+                    f"exceeds the {type_bits}-bit {ptype} type width"
+                )
+            body_nbytes = (values_per_miniblock * bit_width + 7) // 8
+            if pos + body_nbytes > end:
+                raise ValueError(
+                    f"DELTA_BINARY_PACKED miniblock truncated at offset {pos}: "
+                    f"need {body_nbytes} bytes for {values_per_miniblock} "
+                    f"values at bit width {bit_width}, have {end - pos}"
+                )
+            # Materialize only the values still needed. A corrupt block_size
+            # would otherwise force a huge allocation for a tiny stream; the
+            # cursor still advances past the full (padded) miniblock body.
+            take = min(values_per_miniblock, total_value_count - len(values))
+            for delta in _unpack_bitpacked(data, pos, take, bit_width):
+                value = (values[-1] + min_delta + delta) & type_mask
+                if value & sign_bit:
+                    value -= type_mask + 1
+                values.append(value)
+            pos += body_nbytes
+
+    stats = DeltaBinaryPackedStats(
+        block_size=block_size,
+        miniblocks_per_block=miniblocks_per_block,
+        total_value_count=total_value_count,
+        first_value=first_value,
+        blocks=tuple(blocks),
+    )
+    return values, stats
