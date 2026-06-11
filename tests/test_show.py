@@ -196,6 +196,11 @@ def test_show_column_no_offset_index_walk_pages_lists(no_index):
         out = render(pf, "row_groups/0/columns/0", walk_pages=True)
     assert isinstance(out["pages"], list)
     assert out["pages"][0]["_path"] == "row_groups/0/columns/0/pages/0"
+    # Listed side of the withheld/listed asymmetry: no walk_required
+    # affordance, and children_total is a concrete count (not null).
+    nav = out["_navigation"]
+    assert "walk_required" not in nav
+    assert isinstance(nav["children_total"], int)
 
 
 def test_show_column_offset_index_lists_without_walk(indexed, monkeypatch):
