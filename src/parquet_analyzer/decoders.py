@@ -906,8 +906,7 @@ def decode_delta_binary_packed(
     if block_size <= 0 or block_size % miniblocks_per_block != 0:
         raise ValueError(
             f"DELTA_BINARY_PACKED block size {block_size} must be a positive "
-            f"multiple divisible by the {miniblocks_per_block} miniblocks per "
-            f"block"
+            f"multiple of the {miniblocks_per_block} miniblocks per block"
         )
     if total_value_count != num_values:
         raise ValueError(
@@ -918,6 +917,13 @@ def decode_delta_binary_packed(
     values_per_miniblock = block_size // miniblocks_per_block
     type_mask = (1 << type_bits) - 1
     sign_bit = 1 << (type_bits - 1)
+
+    # The first value is the raw seed; reinterpret it at the column's width
+    # (two's-complement) exactly like every subsequent value, so a corrupt
+    # out-of-range seed can't escape the type. A no-op for valid data.
+    first_value &= type_mask
+    if first_value & sign_bit:
+        first_value -= type_mask + 1
 
     values: list[int] = []
     blocks: list[DeltaBlock] = []

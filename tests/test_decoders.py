@@ -1110,7 +1110,7 @@ def test_decode_delta_binary_packed_invalid_miniblocks_per_block_raises():
 def test_decode_delta_binary_packed_block_size_not_divisible_raises():
     # block_size=3, miniblocks_per_block=2 → 3 is not divisible by 2.
     stream = bytes([0x03, 0x02, 0x00, 0x00])
-    with pytest.raises(ValueError, match="divisible"):
+    with pytest.raises(ValueError, match="multiple of"):
         decode_delta_binary_packed(stream, "INT32", 0)
 
 
@@ -1142,6 +1142,17 @@ def test_decode_delta_binary_packed_huge_block_size_zero_bitwidth_caps_allocatio
     decoded, stats = decode_delta_binary_packed(stream, "INT32", 2)
     assert decoded == [0, 5]
     assert stats.block_size == 65536
+
+
+def test_decode_delta_binary_packed_wraps_out_of_range_first_value():
+    # A corrupt seed that decodes above INT32_MAX must be reinterpreted at the
+    # type width (like every subsequent value), not emitted out of range.
+    # Header: block_size=128, miniblocks=4, total=1; first_value zigzag = 2^32
+    # (decodes to 2^31, one past INT32_MAX). total=1 → no blocks follow.
+    stream = bytes([0x80, 0x01, 0x04, 0x01, 0x80, 0x80, 0x80, 0x80, 0x10])
+    decoded, stats = decode_delta_binary_packed(stream, "INT32", 1)
+    assert decoded == [-(2**31)]
+    assert stats.first_value == -(2**31)
 
 
 def test_decode_delta_binary_packed_stats_is_immutable():
