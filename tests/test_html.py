@@ -408,3 +408,226 @@ def test_generate_html_report_end_to_end(sections):
     assert "parquet analyzer" in html.lower()
     if "segments" in sections:
         assert "segment" in html.lower()
+
+
+# ---------------------------------------------------------------------------
+# Helper edge-case coverage (the branches the happy-path tests above don't hit)
+# ---------------------------------------------------------------------------
+
+
+def test_format_logical_type_all_variants():
+    assert _html.format_logical_type({"STRING": {}}) == "STRING"
+    assert _html.format_logical_type({"DATE": {}}) == "DATE"
+    # TIME / TIMESTAMP across every unit, with and without UTC adjustment.
+    assert (
+        _html.format_logical_type({"TIME": {"unit": {"MILLIS": {}}}}) == "TIME(MILLIS)"
+    )
+    assert _html.format_logical_type({"TIME": {"unit": {"NANOS": {}}}}) == "TIME(NANOS)"
+    assert _html.format_logical_type({"TIME": {"unit": {}}}) == "TIME(unknown unit)"
+    assert (
+        _html.format_logical_type(
+            {"TIMESTAMP": {"isAdjustedToUTC": True, "unit": {"MILLIS": {}}}}
+        )
+        == "TIMESTAMP(MILLIS) (adjusted to UTC)"
+    )
+    assert (
+        _html.format_logical_type({"TIMESTAMP": {"unit": {"MICROS": {}}}})
+        == "TIMESTAMP(MICROS)"
+    )
+    assert (
+        _html.format_logical_type({"TIMESTAMP": {"unit": {"NANOS": {}}}})
+        == "TIMESTAMP(NANOS)"
+    )
+    assert (
+        _html.format_logical_type({"TIMESTAMP": {"unit": {}}})
+        == "TIMESTAMP(unknown unit)"
+    )
+    # Unknown logical type falls back to its repr.
+    assert _html.format_logical_type({"MAP": {}}) == "{'MAP': {}}"
+
+
+def test_encode_stats_value_decimal_int64_and_fixed_len():
+    decimal_type = {"DECIMAL": {"scale": 2}}
+    # INT64 decimal round-trips through the shared decode kernel.
+    encoded_i64 = _html.encode_stats_value(Decimal("12.34"), "INT64", 0, decimal_type)
+    assert struct.unpack("<q", encoded_i64)[0] == 1234
+    assert _html.decode_stats_value(encoded_i64, "INT64", decimal_type) == Decimal(
+        "12.34"
+    )
+    # FIXED_LEN_BYTE_ARRAY decimal is big-endian two's-complement.
+    encoded_flba = _html.encode_stats_value(
+        Decimal("12.34"), "FIXED_LEN_BYTE_ARRAY", 0, decimal_type
+    )
+    assert int.from_bytes(encoded_flba, byteorder="big", signed=True) == 1234
+    assert _html.decode_stats_value(
+        encoded_flba, "FIXED_LEN_BYTE_ARRAY", decimal_type
+    ) == Decimal("12.34")
+
+
+def test_format_stats_value_truncates_long_string_and_bytes():
+    # Short string bytes render verbatim.
+    assert _html.format_stats_value(b"hello", "BYTE_ARRAY", {"STRING": {}}) == "hello"
+    # Long string bytes are truncated with a remaining-characters suffix.
+    long_str = _html.format_stats_value(b"a" * 300, "BYTE_ARRAY", {"STRING": {}})
+    assert long_str.startswith("a" * 256)
+    assert long_str.endswith("… (44 more characters)")
+    # Long non-string bytes are truncated with a remaining-bytes suffix.
+    long_bytes = _html.format_stats_value(b"\x01" * 300, "BYTE_ARRAY", None)
+    assert long_bytes.startswith("0x" + "01" * 256)
+    assert long_bytes.endswith("… (44 more bytes)")
+
+
+def test_group_segments_by_page_orphan_page_without_data():
+    # A "page" with no following "page_data" is emitted as-is (warned, not grouped).
+    segments = [{"name": "page", "offset": 0, "length": 2, "value": []}]
+    grouped = _html.group_segments_by_page(segments)
+    assert len(grouped) == 1
+    assert grouped[0]["name"] == "page"
+
+
+def test_get_num_values_dictionary_header_and_missing():
+    dict_page = {
+        "value": [
+            {
+                "name": "dictionary_page_header",
+                "value": [{"name": "num_values", "value": 11}],
+            }
+        ]
+    }
+    assert _html.get_num_values(dict_page) == 11
+    # No num_values present and a known offset → returns None (warns).
+    assert _html.get_num_values({"offset": 42, "value": []}) is None
+
+
+def test_get_next_page_offset_edge_cases():
+    # Missing length/value keys.
+    assert _html.get_next_page_offset(0, {}) is None
+    # Non-int length.
+    assert _html.get_next_page_offset(0, {"length": "x", "value": []}) is None
+    # Non-int compressed_page_size.
+    bad = {"length": 5, "value": [{"name": "compressed_page_size", "value": "x"}]}
+    assert _html.get_next_page_offset(0, bad) is None
+    # No compressed_page_size field at all.
+    assert _html.get_next_page_offset(0, {"length": 5, "value": []}) is None
+    # Happy path: current + header length + compressed size.
+    good = {"length": 5, "value": [{"name": "compressed_page_size", "value": 7}]}
+    assert _html.get_next_page_offset(100, good) == 112
+
+
+def test_fix_duckdb_data_page_offset_branches():
+    # No dictionary page offset → returned unchanged.
+    assert _html.fix_duckdb_data_page_offset(50, None, {}) == 50
+    # Dictionary offset not in the page mapping → unchanged.
+    assert _html.fix_duckdb_data_page_offset(50, 10, {}) == 50
+    # Dict page header length not an int → unchanged.
+    assert _html.fix_duckdb_data_page_offset(50, 10, {10: {"length": "x"}}) == 50
+    # compressed_page_size not an int → unchanged.
+    mapping = {
+        10: {"length": 5, "value": [{"name": "compressed_page_size", "value": "x"}]}
+    }
+    assert _html.fix_duckdb_data_page_offset(50, 10, mapping) == 50
+    # No compressed_page_size (dict_page_size stays 0) → unchanged.
+    assert (
+        _html.fix_duckdb_data_page_offset(50, 10, {10: {"length": 5, "value": []}})
+        == 50
+    )
+    # data_page_offset already at/after the expected position → unchanged.
+    ok_mapping = {
+        10: {"length": 5, "value": [{"name": "compressed_page_size", "value": 3}]}
+    }
+    assert _html.fix_duckdb_data_page_offset(100, 10, ok_mapping) == 100
+    # data_page_offset before the expected position → fixed to dict+header+size.
+    assert _html.fix_duckdb_data_page_offset(12, 10, ok_mapping) == 18
+
+
+def test_sanitize_segment_truncates_and_recurses():
+    # A long scalar value is replaced by a value_truncated record.
+    seg = {"name": "x", "value": "a" * 300}
+    _html.sanitize_segment(seg, 256)
+    assert "value" not in seg
+    assert seg["value_truncated"]["original_length"] == 300
+    assert seg["value_truncated"]["remaining_length"] == 44
+    assert seg["value_truncated"]["value"] == "a" * 256
+    # Nested list values are sanitized recursively.
+    nested = {"name": "g", "value": [{"name": "y", "value": b"b" * 300}]}
+    _html.sanitize_segment(nested, 256)
+    assert nested["value"][0]["value_truncated"]["original_length"] == 300
+
+
+def test_aggregate_column_chunks_skips_chunk_without_path():
+    footer = {
+        "row_groups": [
+            {"columns": [{"meta_data": {"type": "INT32"}}]}  # no path_in_schema
+        ]
+    }
+    assert _html.aggregate_column_chunks(footer, {}) == []
+
+
+def test_group_segments_unmapped_page_is_kept_standalone():
+    # A page whose offset maps to no column chunk (footer has none) is kept
+    # standalone rather than folded into a column-chunk-pages group.
+    segments = [
+        {
+            "name": "page",
+            "offset": 300,
+            "length": 10,
+            "value": [
+                {"name": "compressed_page_size", "value": 5},
+                {
+                    "name": "data_page_header",
+                    "value": [{"name": "num_values", "value": 2}],
+                },
+            ],
+        },
+        {"name": "page_data", "offset": 310, "length": 5, "value": []},
+    ]
+    footer = {"row_groups": []}  # nothing to map the page to
+    grouped = _html.group_segments(segments, footer)
+    names = [g["name"] for g in grouped]
+    assert _html.page_header_and_data_name in names
+    assert _html.page_group_name not in names
+
+
+def test_build_page_mapping_stops_on_indeterminate_page_with_values_left():
+    # First data page accounts for some values; the next reachable page has no
+    # determinable num_values, so the walk breaks with values still unmapped.
+    page_segments = [
+        {
+            "name": "page",
+            "offset": 300,
+            "length": 10,
+            "value": [
+                {"name": "compressed_page_size", "value": 5},
+                {
+                    "name": "data_page_header",
+                    "value": [{"name": "num_values", "value": 2}],
+                },
+            ],
+        },
+        {
+            "name": "page",
+            "offset": 315,  # 300 + length(10) + compressed_page_size(5)
+            "length": 8,
+            "value": [{"name": "compressed_page_size", "value": 0}],  # no num_values
+        },
+    ]
+    page_mapping = _html.get_page_mapping(page_segments)
+    footer = {
+        "row_groups": [
+            {
+                "columns": [
+                    {
+                        "meta_data": {
+                            "path_in_schema": ["c"],
+                            "data_page_offset": 300,
+                            "num_values": 10,
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+    mapping = _html.build_page_offset_to_column_chunk_mapping(footer, page_mapping)
+    # The first data page is mapped; the indeterminate second page is not.
+    assert mapping[300] == (0, 0)
+    assert 315 not in mapping
