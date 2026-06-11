@@ -144,7 +144,10 @@ def render(pf: Any, navpath: str, *, walk_pages: bool, limit: int = 100) -> dict
     thousands of pages); ``limit <= 0`` lists all. The ``_navigation`` block
     reports ``children_total`` / ``children_shown`` / ``children_truncated``.
     Truncation only bounds the *listing* — every child remains addressable by
-    its index regardless of ``limit``.
+    its index regardless of ``limit``. When a column's pages can't be listed
+    without a page-header walk (no OffsetIndex, no ``walk_pages``), ``pages``
+    is ``null`` and ``_navigation`` carries a ``walk_required`` / ``reason`` /
+    ``hint`` affordance instead.
     """
     node, kind, canonical = resolve(pf, navpath, walk_pages=walk_pages)
 
@@ -205,18 +208,22 @@ def _render_column_show(cc: Any, base: str, walk_pages: bool, limit: int) -> dic
         }
     else:
         out["dictionary_page"] = _withheld_dict_stub(cc, base)
-        out["pages"] = {
-            "_walk_required": True,
+        # No OffsetIndex and no --walk-pages: the data-page listing is
+        # withheld. `pages` stays cleanly null-or-list (never an object),
+        # mirroring `dictionary_page` (null-or-node); the listing block is
+        # the single source of listing state and carries the affordance
+        # explaining why the listing is empty.
+        out["pages"] = None
+        out["_listing"] = {
+            "children_total": None,
+            "children_shown": 0,
+            "children_truncated": False,
+            "walk_required": True,
             "reason": "no OffsetIndex",
             "hint": (
                 f"re-run with '{base}/pages/<n> --walk-pages' to address a "
                 "page (reads every page header)"
             ),
-        }
-        out["_listing"] = {
-            "children_total": None,
-            "children_shown": 0,
-            "children_truncated": False,
         }
     out.update(render_tree_index_children(cc, 0))
     return out

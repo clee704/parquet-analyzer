@@ -179,7 +179,16 @@ def test_show_column_no_offset_index_withholds_pages(no_index, monkeypatch):
     counts = _probe(monkeypatch)
     with ParquetFile(str(no_index)) as pf:
         out = render(pf, "row_groups/0/columns/0", walk_pages=False)
-    assert out["pages"]["_walk_required"] is True
+    # pages is cleanly null (never an object); the withheld affordance lives
+    # in the _navigation listing block.
+    assert out["pages"] is None
+    nav = out["_navigation"]
+    assert nav["walk_required"] is True
+    assert nav["reason"] == "no OffsetIndex"
+    assert "--walk-pages" in nav["hint"]
+    assert nav["children_total"] is None
+    assert nav["children_shown"] == 0
+    assert nav["children_truncated"] is False
     assert out["dictionary_page"] is None
     assert counts["page"] == 0, "withheld listing must not read any page header"
 
@@ -189,6 +198,11 @@ def test_show_column_no_offset_index_walk_pages_lists(no_index):
         out = render(pf, "row_groups/0/columns/0", walk_pages=True)
     assert isinstance(out["pages"], list)
     assert out["pages"][0]["_path"] == "row_groups/0/columns/0/pages/0"
+    # Listed side of the withheld/listed asymmetry: no walk_required
+    # affordance, and children_total is a concrete count (not null).
+    nav = out["_navigation"]
+    assert "walk_required" not in nav
+    assert isinstance(nav["children_total"], int)
 
 
 def test_show_column_offset_index_lists_without_walk(indexed, monkeypatch):
@@ -320,7 +334,8 @@ def test_show_withheld_path_shows_dict_stub(no_index_dict):
     assert dp["_kind"] == "dictionary_page"
     assert dp["_location"]["offset"] == cc.dictionary_page_offset
     assert dp["_location"]["length"] == expected_len
-    assert out["pages"]["_walk_required"] is True
+    assert out["pages"] is None
+    assert out["_navigation"]["walk_required"] is True
 
 
 def test_show_limit_caps_page_listing(many_pages):

@@ -287,12 +287,15 @@ v3 tree-node `_location` address — `{offset, length}`, the file byte range.)
 **Listing a column's pages never forces a page-header walk.** With an
 OffsetIndex the pages are listed from it (one small read, independent of
 page count). Without one, the listing is withheld behind an explicit
-`--walk-pages` opt-in, and `show` reports a `_walk_required` affordance
-instead of paying an O(pages) walk:
+`--walk-pages` opt-in: `pages` is `null` and the `_navigation` block carries
+a `walk_required` affordance instead of paying an O(pages) walk:
 
 ```jsonc
-"pages": {"_walk_required": true, "reason": "no OffsetIndex",
-          "hint": "re-run with '.../pages/<n> --walk-pages' ..."}
+"pages": null,
+"_navigation": {"path": "...", "parent": "...", "kind": "column_chunk",
+                "children_total": null, "children_shown": 0, "children_truncated": false,
+                "walk_required": true, "reason": "no OffsetIndex",
+                "hint": "re-run with '.../pages/<n> --walk-pages' ..."}
 ```
 
 `--walk-pages` enables listing/addressing pages of such a column (it reads

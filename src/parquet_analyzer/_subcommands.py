@@ -260,7 +260,7 @@ def _locate_column_chunk(
 # Self-describing affordance emitted as `num_pages_hint` when a chunk's page
 # count is unknown only because it has no OffsetIndex and the footer-bounded
 # default declined to walk. Names the --walk-pages opt-in (mirrors the `show`
-# surface's _walk_required hint).
+# surface's walk_required hint).
 _NUM_PAGES_WALK_HINT = (
     "no OffsetIndex; re-run with --walk-pages to count pages (reads page headers)"
 )
@@ -335,7 +335,7 @@ def _column_chunk_summary(
     # Self-describing affordance: when the count is unknown only because the
     # chunk has no OffsetIndex and the footer-bounded default declined to walk,
     # point the consumer at the opt-in (mirrors the `show` surface's
-    # _walk_required hint). Gated on `not has_offset_index` so the hint's "no
+    # walk_required hint). Gated on `not has_offset_index` so the hint's "no
     # OffsetIndex" wording always matches the actual reason. Null once the count
     # is known — via OffsetIndex or because --walk-pages already ran.
     num_pages_hint: str | None = None
