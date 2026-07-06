@@ -297,7 +297,7 @@ $ parquet-analyzer file schema titanic.parquet | jq '.elements[:4]'
   {"repetition_type": "REQUIRED", "name": "duckdb_schema", "num_children": 12},
   {"type": "INT64", "repetition_type": "OPTIONAL", "name": "PassengerId", "converted_type": "INT_64"},
   {"type": "INT64", "repetition_type": "OPTIONAL", "name": "Survived", "converted_type": "INT_64"},
-  {"type": "BYTE_ARRAY", "repetition_type": "OPTIONAL", "name": "Name", "converted_type": "UTF8"}
+  {"type": "INT64", "repetition_type": "OPTIONAL", "name": "Pclass", "converted_type": "INT_64"}
 ]
 
 $ parquet-analyzer file validate titanic.parquet
@@ -371,7 +371,13 @@ $ parquet-analyzer rowgroup show titanic.parquet --row-group 0 | jq '{row_group,
     "num_pages": null,
     "num_pages_known": false,
     "num_pages_hint": "no OffsetIndex; re-run with --walk-pages to count pages (reads page headers)",
-    "statistics": null
+    "statistics": {
+      "max": {"type": "binary", "length": 8, "value": [123, 3, 0, 0, 0, 0, 0, 0]},
+      "min": {"type": "binary", "length": 8, "value": [1, 0, 0, 0, 0, 0, 0, 0]},
+      "null_count": 0,
+      "max_value": {"type": "binary", "length": 8, "value": [123, 3, 0, 0, 0, 0, 0, 0]},
+      "min_value": {"type": "binary", "length": 8, "value": [1, 0, 0, 0, 0, 0, 0, 0]}
+    }
   }
 }
 ```
@@ -426,10 +432,12 @@ $ parquet-analyzer column show titanic.parquet --column Sex
       "num_pages_known": false,
       "num_pages_hint": "no OffsetIndex; re-run with --walk-pages to count pages (reads page headers)",
       "statistics": {
+        "max": {"type": "binary", "length": 4, "value": [109, 97, 108, 101]},
+        "min": {"type": "binary", "length": 6, "value": [102, 101, 109, 97, 108, 101]},
         "null_count": 0,
         "distinct_count": 2,
-        "min_value": "female",
-        "max_value": "male"
+        "max_value": {"type": "binary", "length": 4, "value": [109, 97, 108, 101]},
+        "min_value": {"type": "binary", "length": 6, "value": [102, 101, 109, 97, 108, 101]}
       }
     }
   ]
@@ -458,6 +466,13 @@ chunk; `total_compressed_size` already includes the dictionary). Together
 these let an AI agent issue `read(chunk_offset, chunk_length)` against
 the file and get the entire compressed chunk bytes without re-parsing the
 footer.
+
+**Raw statistics.** The flat `column`/`rowgroup` verbs surface a chunk's
+footer statistics as-is: `min`/`max` and `min_value`/`max_value` are raw
+byte objects (`{type, length, value}`), not decoded — the value shown for
+`Sex` above is the UTF-8 bytes of `female`/`male`. The `show` verb (below)
+decodes min/max to typed scalars (`"female"`, `891`, …) for readability;
+the flat verbs stay byte-exact so an agent can verify the on-disk encoding.
 
 #### `show` — path-addressed navigation
 
@@ -495,6 +510,7 @@ $ parquet-analyzer show titanic.parquet row_groups/0/columns/4
   "uncompressed_size": 897,
   "data_page_offset": 24276,
   "dictionary_page_offset": 24256,
+  "file_offset": 0,
   "statistics": {"null_count": 0, "distinct_count": 2, "min_value": "female", "max_value": "male"},
   "dictionary_page": {
     "_kind": "dictionary_page",
@@ -503,15 +519,19 @@ $ parquet-analyzer show titanic.parquet row_groups/0/columns/4
     "_path": "row_groups/0/columns/4/pages/0"
   },
   "pages": null,
+  "offset_index": null,
+  "column_index": null,
+  "bloom_filter": null,
   "_navigation": {
     "path": "row_groups/0/columns/4",
     "parent": "row_groups/0",
     "kind": "column_chunk",
     "children_total": null,
     "children_shown": 0,
+    "children_truncated": false,
     "walk_required": true,
     "reason": "no OffsetIndex",
-    "hint": "re-run with 'row_groups/0/columns/4/pages/<n> --walk-pages' to address a page"
+    "hint": "re-run with 'row_groups/0/columns/4/pages/<n> --walk-pages' to address a page (reads every page header)"
   }
 }
 ```
